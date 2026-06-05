@@ -1,0 +1,26 @@
+# Composer
+vendor/
+composer.lock
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Logs
+*.log
+
+# Env
+.env
+.env.local
+
+# dual-model eval worktrees
+.worktrees/
+
+# OpenSpec docs (kept locally, not versioned)
+openspec/
+.claude/
