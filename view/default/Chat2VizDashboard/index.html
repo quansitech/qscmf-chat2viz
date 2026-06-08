@@ -1,0 +1,16 @@
+<extend name="Admin@default/common/dashboard_layout" />
+
+<block name="content">
+    <section class="content-header clearfix">
+        <h1 class="pull-left">{$meta_title}</h1>
+    </section>
+    <section class="content">
+        <div id="dashboard-list-app"></div>
+    </section>
+</block>
+
+<block name="script">
+    <link rel="stylesheet" href="__PUBLIC__/chat2viz-dashboard/dashboard-list.css">
+    <script>var __PAGE_DATA__ = {:json_encode(['dashboards' => $dashboards, 'total' => $total, 'page' => $page, 'perPage' => $perPage])};</script>
+    <script src="__PUBLIC__/chat2viz-dashboard/dashboard-list.js?v=1"></script>
+</block>

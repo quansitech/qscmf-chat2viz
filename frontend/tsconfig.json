@@ -1,0 +1,40 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "jsx": "react-jsx",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": false,
+    "outDir": "../asset/chat2viz-dashboard",
+    "baseUrl": ".",
+    "typeRoots": [
+      "./node_modules/@types"
+    ],
+    "paths": {
+      "./adapters": ["../asset/inertia/Chat2viz/adapters/smarty"],
+      "antd": ["./node_modules/antd"],
+      "antd/*": ["./node_modules/antd/*"],
+      "@ant-design/icons": ["./node_modules/@ant-design/icons"],
+      "@tanstack/react-query": ["./node_modules/@tanstack/react-query"],
+      "zustand": ["./node_modules/zustand"],
+      "zustand/middleware/immer": ["./node_modules/zustand/middleware/immer"],
+      "zundo": ["./node_modules/zundo"],
+      "immer": ["./node_modules/immer"]
+    },
+    "allowJs": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true
+  },
+  "include": [
+    "entries/**/*",
+    "../asset/inertia/Chat2viz/**/*"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
+}

@@ -1,0 +1,17 @@
+<extend name="Admin@default/common/dashboard_layout" />
+
+<block name="content">
+    <section class="content-header clearfix">
+        <h1 class="pull-left">{$meta_title}</h1>
+    </section>
+    <section class="content">
+        <div id="dashboard-edit-app"></div>
+    </section>
+</block>
+
+<block name="script">
+    <link rel="stylesheet" href="__PUBLIC__/chat2viz-dashboard/dashboard-edit.css">
+    <script src="https://unpkg.com/@antv/g2@5/dist/g2.min.js"></script>
+    <script>var __PAGE_DATA__ = {:json_encode(['dashboard' => $dashboard])};</script>
+    <script src="__PUBLIC__/chat2viz-dashboard/dashboard-edit.js?v=1"></script>
+</block>
