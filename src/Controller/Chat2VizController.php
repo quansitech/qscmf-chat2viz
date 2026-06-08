@@ -12,8 +12,10 @@ use Qscmf\SseCore\Contracts\SseEventHandler;
 use Qscmf\SseCore\SseError;
 use Qscmf\SseCore\SseEvent;
 use Qscmf\SseCore\SsePassthrough;
+use Qscmf\SseCore\SseProxy;
 use Qscmf\SseCore\SseReader;
 use Qscmf\SseCore\SseWriter;
+use Qscmf\SseCore\SocketTransport;
 use Qscmf\Chat2Viz\Traits\JsonInputTrait;
 
 class Chat2VizController extends GyController
@@ -81,14 +83,78 @@ class Chat2VizController extends GyController
     public function api_ask_stream()
     {
         $input = $this->parseJsonInput();
-        $validation = $this->validateParsedInput($input);
+        $validation = $this->validateSocketInput($input);
         if ($validation !== null) {
             $this->ajaxReturn($validation);
             return;
         }
 
         $payload = $this->buildPayloadFromParsed($input);
+
+        try {
+            $transport = $this->createSocketTransport();
+            $requestFrame = [
+                'id'     => bin2hex(random_bytes(16)),
+                'method' => 'ask_stream',
+                'params' => $payload,
+                'auth'   => ['api_key' => $this->apiKey],
+            ];
+            SseProxy::socket($transport, $requestFrame);
+        } catch (\Throwable $e) {
+            $this->logError('socket failed, falling back to http', $e->getMessage());
+
+            // H10: SseProxy::socket() has already called sendHeaders().
+            // If headers were sent, we cannot fall back to Guzzle SSE (it also calls sendHeaders).
+            if (headers_sent()) {
+                $writer = new SseWriter(autoStart: false);
+                $writer->sendError('socket_fallback_failed', '分析服务连接失败');
+                return;
+            }
+            $this->fallbackGuzzleStream($payload);
+        }
+    }
+
+    private function validateSocketInput(?array $input): ?array
+    {
+        if (!is_array($input)) {
+            $contentType = (string) ($_SERVER['CONTENT_TYPE'] ?? '');
+            if (stripos($contentType, 'application/json') === false) {
+                return ['status' => 0, 'info' => '请求格式不支持'];
+            }
+            return ['status' => 0, 'info' => '请求格式错误'];
+        }
+
+        $question = trim((string) ($input['question'] ?? ''));
+        if ($question === '') {
+            return ['status' => 0, 'info' => '请输入问题'];
+        }
+
+        if (mb_strlen($question) > 1000) {
+            return ['status' => 0, 'info' => '问题长度不能超过1000字'];
+        }
+
+        $conversationId = $input['conversation_id'] ?? null;
+        if ($conversationId !== null && !preg_match('/^[a-f0-9\-]{1,64}$/i', (string) $conversationId)) {
+            return ['status' => 0, 'info' => '无效的会话ID'];
+        }
+
+        return null;
+    }
+
+    private function createSocketTransport(): SocketTransport
+    {
+        return new SocketTransport([
+            'socket_path' => env('CHAT2VIZ_SOCKET_PATH', '/run/chat2viz.sock'),
+            'host'        => env('CHAT2VIZ_SOCKET_HOST'),
+            'port'        => (int) env('CHAT2VIZ_SOCKET_PORT', 9501),
+            'timeout'     => (int) env('CHAT2VIZ_SSE_TIMEOUT', 180),
+        ]);
+    }
+
+    private function fallbackGuzzleStream(array $payload): void
+    {
         $headers = $this->buildHeaders();
+        $timeout = (int) env('CHAT2VIZ_SSE_TIMEOUT', 180);
 
         try {
             $response = $this->httpClient->post(
@@ -97,7 +163,7 @@ class Chat2VizController extends GyController
                     RequestOptions::JSON    => $payload,
                     RequestOptions::HEADERS => $headers,
                     RequestOptions::STREAM  => true,
-                    RequestOptions::TIMEOUT => 120,
+                    RequestOptions::TIMEOUT => $timeout,
                 ]
             );
         } catch (ConnectException $e) {

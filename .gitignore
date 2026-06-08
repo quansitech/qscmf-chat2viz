@@ -27,9 +27,19 @@ asset/chat2viz-dashboard/*.LICENSE.txt
 frontend/node_modules/
 frontend/package-lock.json
 
+# Composer (package is a path repository, uses root project's vendor)
+vendor/
+composer.lock
+
+# ThinkPHP runtime (generated when ROOT_PATH was misresolved)
+app/
+
 # dual-model eval worktrees
 .worktrees/
 
 # OpenSpec docs (kept locally, not versioned)
 openspec/
 .claude/
+
+phpunit.xml
+.phpunit.cache/

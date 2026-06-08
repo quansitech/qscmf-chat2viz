@@ -3,7 +3,11 @@
 namespace Qscmf\Chat2Viz\Adapter;
 
 use Qscmf\Chat2Viz\Repository\DashboardRepositoryInterface;
+use Qscmf\Chat2Viz\Repository\ThinkModelDashboardRepository;
+use Qscmf\Chat2Viz\Repository\EloquentDashboardRepository;
 use Qscmf\Chat2Viz\Renderer\PageRendererInterface;
+use Qscmf\Chat2Viz\Renderer\SmartyRenderer;
+use Qscmf\Chat2Viz\Renderer\InertiaRenderer;
 
 class AdapterFactory
 {

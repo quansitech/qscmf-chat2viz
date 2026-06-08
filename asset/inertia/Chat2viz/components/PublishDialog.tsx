@@ -48,7 +48,7 @@ export default function PublishDialog({ uid, title, visible, onClose }: PublishD
 
       if (result.status === 1) {
         message.success('Dashboard published successfully');
-        navigate(`/extends/Chat2VizDashboard/show/uid/${uid}`);
+        navigate(`/extends/Chat2VizDashboard/view/uid/${uid}`);
       } else {
         message.error(result.info || 'Publish failed');
       }

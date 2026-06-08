@@ -5,6 +5,7 @@ namespace Qscmf\Chat2Viz;
 use Bootstrap\Provider;
 use Bootstrap\LaravelProvider;
 use Bootstrap\RegisterContainer;
+use Qscmf\Chat2Viz\Command\AskCommand;
 use Qscmf\Chat2Viz\Controller\Chat2VizController;
 use Qscmf\Chat2Viz\Controller\DashboardController;
 
@@ -49,9 +50,17 @@ class Chat2VizServiceProvider implements Provider, LaravelProvider
         );
 
         // v14/v15 Inertia source (host Vite compiles) - skip if path unavailable (v13)
-        $inertiaPath = function_exists('base_path')
-            ? realpath(base_path('resources/js/backend/Pages/Chat2viz'))
-            : false;
+        $inertiaPath = false;
+        if (class_exists(\Illuminate\Foundation\Application::class)) {
+            try {
+                $candidate = realpath(app_path('../../resources/js/backend/Pages/Chat2viz'));
+                if ($candidate !== false) {
+                    $inertiaPath = $candidate;
+                }
+            } catch (\Throwable $e) {
+                // Not in a Laravel context — skip silently
+            }
+        }
         if ($inertiaPath !== false) {
             RegisterContainer::registerSymLink(
                 $inertiaPath,
@@ -66,6 +75,7 @@ class Chat2VizServiceProvider implements Provider, LaravelProvider
             $artisan->resolveCommands([
                 \Qscmf\Chat2Viz\Command\SeedSakilaCommand::class,
                 \Qscmf\Chat2Viz\Command\UnseedSakilaCommand::class,
+                AskCommand::class,
             ]);
         });
 

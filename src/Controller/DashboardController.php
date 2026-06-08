@@ -22,7 +22,7 @@ class DashboardController extends GyController
      *
      * @var string[]
      */
-    protected array $publicActions = ['show', 'api_widget_data'];
+    protected array $publicActions = ['view', 'api_widget_data'];
 
     protected function _initialize()
     {
@@ -78,9 +78,9 @@ class DashboardController extends GyController
 
     /**
      * Published dashboard view page (public).
-     * URL: GET /extends/Chat2VizDashboard/show?uid={uid}
+     * URL: GET /extends/Chat2VizDashboard/view?uid={uid}
      */
-    public function show()
+    public function view()
     {
         $uid = (string) ($_GET['uid'] ?? '');
         if ($uid === '') {

@@ -72,7 +72,7 @@ export default function DashboardList() {
         <div style={{ display: 'flex', gap: 8 }}>
           <Button
             size="small"
-            onClick={() => navigate(`/extends/Chat2VizDashboard/show/uid/${record.uid}`)}
+            onClick={() => navigate(`/extends/Chat2VizDashboard/view/uid/${record.uid}`)}
           >
             View
           </Button>
