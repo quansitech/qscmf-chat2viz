@@ -14,9 +14,11 @@ use Qscmf\SseCore\SseEvent;
 use Qscmf\SseCore\SsePassthrough;
 use Qscmf\SseCore\SseReader;
 use Qscmf\SseCore\SseWriter;
+use Qscmf\Chat2Viz\Traits\JsonInputTrait;
 
 class Chat2VizController extends GyController
 {
+    use JsonInputTrait;
     protected string $serviceUrl;
     protected string $apiKey;
     protected Client $httpClient;
@@ -38,7 +40,7 @@ class Chat2VizController extends GyController
 
     public function api_ask()
     {
-        $input = $this->parseInput();
+        $input = $this->parseJsonInput();
         $validation = $this->validateParsedInput($input);
         if ($validation !== null) {
             $this->ajaxReturn($validation);
@@ -78,7 +80,7 @@ class Chat2VizController extends GyController
 
     public function api_ask_stream()
     {
-        $input = $this->parseInput();
+        $input = $this->parseJsonInput();
         $validation = $this->validateParsedInput($input);
         if ($validation !== null) {
             $this->ajaxReturn($validation);
@@ -162,17 +164,6 @@ class Chat2VizController extends GyController
         (new SseReader($body))->consume($handler);
     }
 
-    private function parseInput(): ?array
-    {
-        $contentType = (string) ($_SERVER['CONTENT_TYPE'] ?? '');
-        if (stripos($contentType, 'application/json') === false) {
-            return null;
-        }
-        $raw = file_get_contents('php://input');
-        $decoded = json_decode((string) $raw, true);
-        return is_array($decoded) ? $decoded : null;
-    }
-
     private function validateParsedInput(?array $input): ?array
     {
         if (!is_array($input)) {
@@ -212,6 +203,11 @@ class Chat2VizController extends GyController
         $payload = ['question' => $question];
         if (is_string($conversationId) && $conversationId !== '') {
             $payload['conversation_id'] = $conversationId;
+        }
+
+        // Forward dashboard context for dashboard-aware conversations
+        if (!empty($input['dashboard_context'])) {
+            $payload['dashboard_context'] = $input['dashboard_context'];
         }
 
         return $payload;
