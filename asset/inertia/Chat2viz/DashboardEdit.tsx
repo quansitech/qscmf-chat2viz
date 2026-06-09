@@ -89,6 +89,23 @@ export default function DashboardEdit() {
         }
       }
       useDashboardStore.setState({ widgets: widgetsMap });
+
+      // Fetch data for widgets that have SQL but no data
+      const uid = dashboard.uid;
+      for (const w of schema.widgets) {
+        if (w.id && w.sql && (!w.data || Object.keys(w.data || {}).length === 0)) {
+          fetch(`/extends/Chat2VizDashboard/api_draft_widget_data?uid=${encodeURIComponent(uid)}&widgetId=${encodeURIComponent(w.id)}`, {
+            credentials: 'same-origin',
+          })
+            .then((r) => r.json())
+            .then((result) => {
+              if (result.status === 1 && Array.isArray(result.data) && result.data.length > 0) {
+                useDashboardStore.getState().updateWidget(w.id, { data: { rows: result.data as Record<string, unknown>[] } });
+              }
+            })
+            .catch(() => { /* non-critical */ });
+        }
+      }
     }
   }, [dashboard?.uid]);
 

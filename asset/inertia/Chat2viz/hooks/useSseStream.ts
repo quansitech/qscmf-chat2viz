@@ -74,7 +74,10 @@ export function useSseStream() {
         const response = await fetch(SSE_ENDPOINT, {
           method: 'POST',
           credentials: 'same-origin',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Event-Format': 'chat2viz',
+          },
           body: JSON.stringify(payload),
           signal: controller.signal,
         });

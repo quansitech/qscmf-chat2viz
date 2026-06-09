@@ -17,6 +17,7 @@ use Qscmf\SseCore\SseReader;
 use Qscmf\SseCore\SseWriter;
 use Qscmf\SseCore\SocketTransport;
 use Qscmf\Chat2Viz\Adapter\AdapterFactory;
+use Qscmf\Chat2Viz\Sse\Nl2sqlEventTransformer;
 use Qscmf\Chat2Viz\Traits\JsonInputTrait;
 
 class Chat2VizController extends GyController
@@ -30,8 +31,8 @@ class Chat2VizController extends GyController
     {
         parent::_initialize();
 
-        $this->serviceUrl = rtrim((string) env('CHAT2VIZ_SERVICE_URL', ''), '/');
-        $this->apiKey = (string) env('CHAT2VIZ_API_KEY', '');
+        $this->serviceUrl = rtrim((string) (getenv('CHAT2VIZ_SERVICE_URL') ?: ''), '/');
+        $this->apiKey = (string) (getenv('CHAT2VIZ_API_KEY') ?: '');
         $this->httpClient = new Client(['timeout' => 60]);
     }
 
@@ -96,6 +97,8 @@ class Chat2VizController extends GyController
         // Persist user message before the stream starts
         $this->persistConversationMessage($conversationId, $payload, 'user');
 
+        $wantsChat2viz = $this->wantsChat2vizFormat();
+
         try {
             $transport = $this->createSocketTransport();
             $requestFrame = [
@@ -104,7 +107,27 @@ class Chat2VizController extends GyController
                 'params' => $payload,
                 'auth'   => ['api_key' => $this->apiKey],
             ];
-            SseProxy::socket($transport, $requestFrame);
+            if ($wantsChat2viz) {
+                $transformer = new Nl2sqlEventTransformer();
+                SseProxy::socket($transport, $requestFrame, function (array $frame) use ($transformer): ?SseEvent {
+                    $type = $frame['type'] ?? 'message';
+                    if ($type === 'ping' || $type === 'pong') {
+                        return null;
+                    }
+                    $input = new SseEvent(
+                        type: $type,
+                        data: $frame['data'] ?? [],
+                        raw: '',
+                    );
+                    if ($input->isComment()) {
+                        return $input;
+                    }
+                    $outputs = $transformer->transform($input);
+                    return $outputs[0] ?? null;
+                });
+            } else {
+                SseProxy::socket($transport, $requestFrame);
+            }
             // Stream completed — persist assistant message
             $this->persistConversationMessage($conversationId, $payload, 'assistant');
         } catch (\Throwable $e) {
@@ -117,7 +140,7 @@ class Chat2VizController extends GyController
                 $writer->sendError('socket_fallback_failed', '分析服务连接失败');
                 return;
             }
-            $streamCompleted = $this->fallbackGuzzleStream($payload);
+            $streamCompleted = $this->fallbackGuzzleStream($payload, $wantsChat2viz);
             if ($streamCompleted) {
                 $this->persistConversationMessage($conversationId, $payload, 'assistant');
             }
@@ -154,17 +177,17 @@ class Chat2VizController extends GyController
     private function createSocketTransport(): SocketTransport
     {
         return new SocketTransport([
-            'socket_path' => env('CHAT2VIZ_SOCKET_PATH', '/run/chat2viz.sock'),
-            'host'        => env('CHAT2VIZ_SOCKET_HOST'),
-            'port'        => (int) env('CHAT2VIZ_SOCKET_PORT', 9501),
-            'timeout'     => (int) env('CHAT2VIZ_SSE_TIMEOUT', 180),
+            'socket_path' => getenv('CHAT2VIZ_SOCKET_PATH') ?: '/run/chat2viz.sock',
+            'host'        => getenv('CHAT2VIZ_SOCKET_HOST') ?: null,
+            'port'        => (int) (getenv('CHAT2VIZ_SOCKET_PORT') ?: 9501),
+            'timeout'     => (int) (getenv('CHAT2VIZ_SSE_TIMEOUT') ?: 180),
         ]);
     }
 
-    private function fallbackGuzzleStream(array $payload): bool
+    private function fallbackGuzzleStream(array $payload, bool $wantsChat2viz = false): bool
     {
         $headers = $this->buildHeaders();
-        $timeout = (int) env('CHAT2VIZ_SSE_TIMEOUT', 180);
+        $timeout = (int) (getenv('CHAT2VIZ_SSE_TIMEOUT') ?: 180);
 
         try {
             $response = $this->httpClient->post(
@@ -201,40 +224,78 @@ class Chat2VizController extends GyController
         SseWriter::applyExecutionGuards();
 
         $writer = new SseWriter(autoStart: false);
-        $passthrough = new SsePassthrough($writer);
 
-        $handler = new class($passthrough, $writer) implements SseEventHandler {
-            public function __construct(
-                private SsePassthrough $passthrough,
-                private SseWriter $writer,
-            ) {}
+        if ($wantsChat2viz) {
+            $transformer = new Nl2sqlEventTransformer();
+            $handler = new class($transformer, $writer) implements SseEventHandler {
+                public function __construct(
+                    private Nl2sqlEventTransformer $transformer,
+                    private SseWriter $writer,
+                ) {}
 
-            public function onEvent(SseEvent $event): void
-            {
-                if (connection_aborted()) {
-                    return;
+                public function onEvent(SseEvent $event): void
+                {
+                    if (connection_aborted()) {
+                        return;
+                    }
+                    foreach ($this->transformer->transform($event) as $mapped) {
+                        $this->writer->sendEvent($mapped);
+                    }
                 }
-                $this->passthrough->onEvent($event);
-            }
 
-            public function onError(SseError $error): void
-            {
-                $errorEvent = SseEvent::fromRaw(
-                    "event: error\ndata: " . json_encode([
-                        'type' => 'upstream_disconnected',
-                        'info' => "分析服务连接中断",
-                    ], JSON_UNESCAPED_UNICODE)
-                );
-                if ($errorEvent !== null) {
-                    $this->writer->sendEvent($errorEvent);
+                public function onError(SseError $error): void
+                {
+                    $errorEvent = SseEvent::fromRaw(
+                        "event: error\ndata: " . json_encode([
+                            'type' => 'upstream_disconnected',
+                            'info' => "分析服务连接中断",
+                        ], JSON_UNESCAPED_UNICODE)
+                    );
+                    if ($errorEvent !== null) {
+                        $this->writer->sendEvent($errorEvent);
+                    }
                 }
-            }
 
-            public function onComplete(): void
-            {
-                // No-op: do not emit any completion event to the browser.
-            }
-        };
+                public function onComplete(): void
+                {
+                    // No-op: do not emit any completion event to the browser.
+                }
+            };
+        } else {
+            $passthrough = new SsePassthrough($writer);
+            $handler = new class($passthrough, $writer) implements SseEventHandler {
+                public function __construct(
+                    private SsePassthrough $passthrough,
+                    private SseWriter $writer,
+                ) {}
+
+                public function onEvent(SseEvent $event): void
+                {
+                    if (connection_aborted()) {
+                        return;
+                    }
+                    $this->passthrough->onEvent($event);
+                }
+
+                public function onError(SseError $error): void
+                {
+                    $errorEvent = SseEvent::fromRaw(
+                        "event: error\ndata: " . json_encode([
+                            'type' => 'upstream_disconnected',
+                            'info' => "分析服务连接中断",
+                        ], JSON_UNESCAPED_UNICODE)
+                    );
+                    if ($errorEvent !== null) {
+                        $this->writer->sendEvent($errorEvent);
+                    }
+                }
+
+                public function onComplete(): void
+                {
+                    // No-op: do not emit any completion event to the browser.
+                }
+            };
+        }
 
         $body = $response->getBody();
         (new SseReader($body))->consume($handler);
@@ -331,6 +392,12 @@ class Chat2VizController extends GyController
         } catch (\Throwable $e) {
             $this->logError('persist message failed', $e->getMessage());
         }
+    }
+
+    private function wantsChat2vizFormat(): bool
+    {
+        return isset($_SERVER['HTTP_X_EVENT_FORMAT'])
+            && $_SERVER['HTTP_X_EVENT_FORMAT'] === 'chat2viz';
     }
 
     private function logError(string $tag, string $detail): void

@@ -104,7 +104,7 @@ export default function WidgetCard({ widget, onTitleChange, onRemove, onRefresh 
         {hasSpec && widget.g2_spec && (
           <LazyG2Renderer
             spec={widget.g2_spec as Record<string, unknown>}
-            data={widget.data ? (Object.values(widget.data) as Record<string, unknown>[]) : undefined}
+            data={Array.isArray(widget.data) ? widget.data : []}
           />
         )}
       </div>

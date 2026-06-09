@@ -344,6 +344,68 @@ class DashboardController extends GyController
     // -------------------------------------------------------
 
     /**
+     * Draft widget data query — reads SQL from current_schema (edit page).
+     * URL: GET /extends/Chat2VizDashboard/api_draft_widget_data?uid={uid}&widgetId={id}
+     */
+    public function api_draft_widget_data()
+    {
+        if (!$this->requireMethod('GET')) return;
+
+        $uid = (string) ($_GET['uid'] ?? '');
+        $widgetId = (string) ($_GET['widgetId'] ?? '');
+
+        if ($uid === '' || $widgetId === '') {
+            $this->ajaxReturn(['status' => 0, 'info' => '缺少必要参数']);
+            return;
+        }
+        if (!$this->validateUid($uid)) {
+            $this->ajaxReturn(['status' => 0, 'info' => '无效的仪表盘ID']);
+            return;
+        }
+
+        $dashboard = $this->repo->findByUid($uid);
+        if ($dashboard === null) {
+            $this->ajaxReturn(['status' => 0, 'info' => '仪表盘不存在']);
+            return;
+        }
+
+        $schemaRaw = $dashboard['current_schema'] ?? null;
+        $schema = is_string($schemaRaw) ? json_decode($schemaRaw, true) : $schemaRaw;
+        if (!is_array($schema)) {
+            $this->ajaxReturn(['status' => 0, 'info' => '仪表盘数据异常']);
+            return;
+        }
+
+        $sql = $this->extractWidgetSql($schema, $widgetId);
+        if ($sql === null) {
+            $this->ajaxReturn(['status' => 0, 'info' => '组件不存在或未配置数据查询']);
+            return;
+        }
+
+        try {
+            SqlValidator::validateSelectOnly($sql);
+            $sql = SqlValidator::enforceLimit($sql, 1000);
+        } catch (\InvalidArgumentException $e) {
+            $this->ajaxReturn(['status' => 0, 'info' => $e->getMessage()]);
+            return;
+        }
+
+        try {
+            $this->setExecutionTimeout();
+            $rows = M()->query($sql);
+            if (!is_array($rows)) {
+                $rows = [];
+            }
+            $this->ajaxReturn(['status' => 1, 'data' => $rows]);
+        } catch (\Exception $e) {
+            $this->logError('api_draft_widget_data failed', sprintf(
+                'uid=%s widget=%s err=%s', $uid, $widgetId, $e->getMessage()
+            ));
+            $this->ajaxReturn(['status' => 0, 'info' => '数据查询失败']);
+        }
+    }
+
+    /**
      * Public widget data query endpoint.
      *
      * Flow:
