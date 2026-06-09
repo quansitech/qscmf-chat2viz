@@ -16,6 +16,7 @@ use Qscmf\SseCore\SseProxy;
 use Qscmf\SseCore\SseReader;
 use Qscmf\SseCore\SseWriter;
 use Qscmf\SseCore\SocketTransport;
+use Qscmf\Chat2Viz\Adapter\AdapterFactory;
 use Qscmf\Chat2Viz\Traits\JsonInputTrait;
 
 class Chat2VizController extends GyController
@@ -90,6 +91,10 @@ class Chat2VizController extends GyController
         }
 
         $payload = $this->buildPayloadFromParsed($input);
+        $conversationId = $payload['conversation_id'] ?? bin2hex(random_bytes(16));
+
+        // Persist user message before the stream starts
+        $this->persistConversationMessage($conversationId, $payload, 'user');
 
         try {
             $transport = $this->createSocketTransport();
@@ -100,6 +105,8 @@ class Chat2VizController extends GyController
                 'auth'   => ['api_key' => $this->apiKey],
             ];
             SseProxy::socket($transport, $requestFrame);
+            // Stream completed — persist assistant message
+            $this->persistConversationMessage($conversationId, $payload, 'assistant');
         } catch (\Throwable $e) {
             $this->logError('socket failed, falling back to http', $e->getMessage());
 
@@ -110,7 +117,10 @@ class Chat2VizController extends GyController
                 $writer->sendError('socket_fallback_failed', '分析服务连接失败');
                 return;
             }
-            $this->fallbackGuzzleStream($payload);
+            $streamCompleted = $this->fallbackGuzzleStream($payload);
+            if ($streamCompleted) {
+                $this->persistConversationMessage($conversationId, $payload, 'assistant');
+            }
         }
     }
 
@@ -151,7 +161,7 @@ class Chat2VizController extends GyController
         ]);
     }
 
-    private function fallbackGuzzleStream(array $payload): void
+    private function fallbackGuzzleStream(array $payload): bool
     {
         $headers = $this->buildHeaders();
         $timeout = (int) env('CHAT2VIZ_SSE_TIMEOUT', 180);
@@ -169,21 +179,21 @@ class Chat2VizController extends GyController
         } catch (ConnectException $e) {
             $this->logError('stream connect failed', 'ConnectException');
             $this->ajaxReturn(['status' => 0, 'info' => '分析服务不可用']);
-            return;
+            return false;
         } catch (RequestException $e) {
             $this->logError('stream request failed', 'RequestException');
             $this->ajaxReturn(['status' => 0, 'info' => '分析服务请求失败']);
-            return;
+            return false;
         } catch (GuzzleException $e) {
             $this->logError('stream guzzle error', 'GuzzleException');
             $this->ajaxReturn(['status' => 0, 'info' => '分析服务请求失败']);
-            return;
+            return false;
         }
 
         if ($response->getStatusCode() !== 200) {
             $this->logError('stream non-200', sprintf('status=%d', $response->getStatusCode()));
             $this->ajaxReturn(['status' => 0, 'info' => '分析服务请求失败']);
-            return;
+            return false;
         }
 
         SseWriter::sendHeaders();
@@ -228,6 +238,7 @@ class Chat2VizController extends GyController
 
         $body = $response->getBody();
         (new SseReader($body))->consume($handler);
+        return true;
     }
 
     private function validateParsedInput(?array $input): ?array
@@ -307,6 +318,19 @@ class Chat2VizController extends GyController
             'status' => 0,
             'info'   => $raw['error'] ?? '分析服务请求失败',
         ];
+    }
+
+    private function persistConversationMessage(string $conversationId, array $payload, string $role): void
+    {
+        try {
+            $dashboardUid = $payload['dashboard_context']['dashboard_uid'] ?? '';
+            $content = $role === 'user' ? ($payload['question'] ?? '') : '';
+
+            $repo = AdapterFactory::createConversationRepository();
+            $repo->createMessage($conversationId, $dashboardUid, $role, $content);
+        } catch (\Throwable $e) {
+            $this->logError('persist message failed', $e->getMessage());
+        }
     }
 
     private function logError(string $tag, string $detail): void
