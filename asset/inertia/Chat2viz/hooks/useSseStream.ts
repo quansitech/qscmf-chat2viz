@@ -104,7 +104,7 @@ export function useSseStream() {
         attempt++;
 
         if (attempt > MAX_RETRIES) {
-          const message = err instanceof Error ? err.message : 'Stream failed';
+          const message = err instanceof Error ? err.message : '流式请求失败';
           useDashboardStore.getState().setError(message);
           return;
         }
@@ -221,7 +221,7 @@ function dispatchEvent(event: SseEvent | null): void {
     }
 
     case 'error': {
-      store.setError(str(event.data.info) || str(event.data.message) || 'Unknown error');
+      store.setError(str(event.data.info) || str(event.data.message) || '未知错误');
       break;
     }
 

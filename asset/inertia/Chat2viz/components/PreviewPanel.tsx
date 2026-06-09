@@ -93,7 +93,7 @@ export default function PreviewPanel() {
           image={<LayoutOutlined style={{ fontSize: 48, color: '#bfbfbf' }} />}
           description={
             <Typography.Text type="secondary">
-              Start a conversation to generate charts
+              开始对话以生成图表
             </Typography.Text>
           }
         />

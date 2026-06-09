@@ -108,11 +108,11 @@ export function useDashboardDraft(): UseDashboardDraftReturn {
           // Optimistic lock conflict — ask user whether to overwrite
           handleConflict(currentUid);
         } else {
-          message.error(result.info || 'Save failed');
+          message.error(result.info || '保存失败');
         }
       } catch (err) {
         if (controller.signal.aborted) return;
-        message.error(err instanceof Error ? err.message : 'Network error, save failed');
+        message.error(err instanceof Error ? err.message : '网络错误，保存失败');
       } finally {
         if (abortRef.current === controller) {
           abortRef.current = null;
@@ -133,10 +133,10 @@ export function useDashboardDraft(): UseDashboardDraftReturn {
       if (conflictModalRef.current) return;
 
       conflictModalRef.current = Modal.confirm({
-        title: 'Content Conflict',
-        content: 'This dashboard has been modified by another session. Do you want to overwrite with your changes?',
-        okText: 'Overwrite',
-        cancelText: 'Discard my changes',
+        title: '内容冲突',
+        content: '该仪表盘已被其他会话修改，是否用当前更改覆盖？',
+        okText: '覆盖',
+        cancelText: '放弃我的更改',
         onOk: async () => {
           conflictModalRef.current = null;
           // Force overwrite
@@ -167,12 +167,12 @@ export function useDashboardDraft(): UseDashboardDraftReturn {
                 isDirty: false,
                 lastSavedAt: new Date().toISOString(),
               });
-              message.success('Saved with overwrite');
+              message.success('已覆盖保存');
             } else {
-              message.error(result.info || 'Overwrite failed');
+              message.error(result.info || '覆盖失败');
             }
           } catch {
-            message.error('Network error');
+            message.error('网络错误');
           } finally {
             setSaving(false);
           }

@@ -29,7 +29,7 @@ export default function PublishDialog({ uid, title, visible, onClose }: PublishD
 
   const handlePublish = useCallback(async () => {
     if (!uid) {
-      message.error('Dashboard not saved yet');
+      message.error('仪表盘尚未保存');
       return;
     }
     setPublishing(true);
@@ -47,13 +47,13 @@ export default function PublishDialog({ uid, title, visible, onClose }: PublishD
       const result = await resp.json();
 
       if (result.status === 1) {
-        message.success('Dashboard published successfully');
+        message.success('仪表盘发布成功');
         navigate(`/extends/Chat2VizDashboard/view/uid/${uid}`);
       } else {
-        message.error(result.info || 'Publish failed');
+        message.error(result.info || '发布失败');
       }
     } catch {
-      message.error('Network error, please try again');
+      message.error('网络错误，请重试');
     } finally {
       setPublishing(false);
     }
@@ -61,13 +61,13 @@ export default function PublishDialog({ uid, title, visible, onClose }: PublishD
 
   return (
     <Modal
-      title="Publish Dashboard"
+      title="发布仪表盘"
       open={visible}
       onCancel={onClose}
       destroyOnClose
       footer={[
         <Button key="cancel" onClick={onClose}>
-          Cancel
+          取消
         </Button>,
         <Button
           key="publish"
@@ -76,20 +76,20 @@ export default function PublishDialog({ uid, title, visible, onClose }: PublishD
           loading={publishing}
           onClick={handlePublish}
         >
-          Publish
+          发布
         </Button>,
       ]}
     >
       <div style={styles.body}>
-        <label style={styles.label}>Dashboard Title</label>
+        <label style={styles.label}>仪表盘标题</label>
         <Input
           value={titleValue}
           onChange={(e) => setTitleValue(e.target.value)}
-          placeholder="Enter dashboard title"
+          placeholder="输入仪表盘标题"
           maxLength={255}
         />
         <p style={styles.hint}>
-          Published dashboards can be viewed publicly via a shared link.
+          发布后可通过分享链接公开查看仪表盘。
         </p>
       </div>
     </Modal>

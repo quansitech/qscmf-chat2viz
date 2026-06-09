@@ -384,11 +384,11 @@ export async function saveDashboardDraft(): Promise<void> {
         return next;
       });
     } else {
-      useDashboardStore.setState({ error: result.info || 'Save failed' });
+      useDashboardStore.setState({ error: result.info || '保存失败' });
     }
   } catch (e) {
     useDashboardStore.setState({
-      error: e instanceof Error ? e.message : 'Save failed',
+      error: e instanceof Error ? e.message : '保存失败',
     });
   }
 }

@@ -10,9 +10,9 @@ import type { ChatMessage } from '../store/dashboardStore';
 // ---------------------------------------------------------------------------
 
 const EXAMPLE_QUESTIONS = [
-  'Show me monthly sales trends',
-  'Compare revenue by product category',
-  'What are the top 10 customers by order value?',
+  '查看月度销售趋势',
+  '按产品类别对比收入',
+  '订单金额排名前10的客户有哪些？',
 ];
 
 // ---------------------------------------------------------------------------
@@ -73,7 +73,7 @@ export default function ChatPanel() {
               image={<QuestionCircleOutlined style={{ fontSize: 36, color: '#bfbfbf' }} />}
               description={
                 <div>
-                  <Typography.Text type="secondary">Ask a question about your data</Typography.Text>
+                  <Typography.Text type="secondary">向数据提问</Typography.Text>
                   <div style={styles.examples}>
                     {EXAMPLE_QUESTIONS.map((q) => (
                       <button key={q} onClick={() => handleExampleClick(q)} style={styles.exampleBtn}>
@@ -95,7 +95,7 @@ export default function ChatPanel() {
           <div style={styles.loadingIndicator}>
             <Spin size="small" />
             <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
-              Analyzing...
+              分析中...
             </Typography.Text>
           </div>
         )}
@@ -115,7 +115,7 @@ export default function ChatPanel() {
           value={inputValue}
           onChange={(e) => setInputValue(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Ask about your data... (Enter to send, Shift+Enter for newline)"
+          placeholder="输入你的问题...（回车发送，Shift+回车换行）"
           autoSize={{ minRows: 1, maxRows: 4 }}
           disabled={isLoading}
           style={styles.textArea}
@@ -127,7 +127,7 @@ export default function ChatPanel() {
           danger={isLoading}
           style={styles.sendBtn}
         >
-          {isLoading ? 'Stop' : 'Send'}
+          {isLoading ? '停止' : '发送'}
         </Button>
       </div>
     </div>
@@ -167,7 +167,7 @@ function MessageBubble({ message }: MessageBubbleProps) {
             items={[
               {
                 key: 'sql',
-                label: <Typography.Text type="secondary" style={{ fontSize: 11 }}>SQL</Typography.Text>,
+                label: <Typography.Text type="secondary" style={{ fontSize: 11 }}>查询语句</Typography.Text>,
                 children: (
                   <pre style={styles.sqlBlock}>{message.metadata.sql}</pre>
                 ),

@@ -82,7 +82,7 @@ function ViewWidgetCard({ uid, widget }: ViewWidgetCardProps) {
       );
       const result = await resp.json();
       if (result.status !== 1) {
-        throw new Error(result.info || 'Failed to load widget data');
+        throw new Error(result.info || '加载图表数据失败');
       }
       return result.data as Record<string, unknown>[];
     },
@@ -103,7 +103,7 @@ function ViewWidgetCard({ uid, widget }: ViewWidgetCardProps) {
     <div style={styles.widgetCard}>
       {/* Header */}
       <div style={styles.widgetHeader}>
-        <Typography.Text strong>{widget.title || 'Untitled Widget'}</Typography.Text>
+        <Typography.Text strong>{widget.title || '未命名图表'}</Typography.Text>
       </div>
 
       {/* Chart Area */}
@@ -111,14 +111,14 @@ function ViewWidgetCard({ uid, widget }: ViewWidgetCardProps) {
         {isError && (
           <Alert
             type="error"
-            message={error instanceof Error ? error.message : 'Data load error'}
+            message={error instanceof Error ? error.message : '数据加载错误'}
             showIcon
             style={{ margin: 12 }}
           />
         )}
         {!isError && isLoading && (
           <div style={styles.loading}>
-            <Spin tip="Loading..." />
+            <Spin tip="加载中..." />
           </div>
         )}
         {!isError && !isLoading && hasSpec && widget.g2_spec && (
@@ -129,7 +129,7 @@ function ViewWidgetCard({ uid, widget }: ViewWidgetCardProps) {
         )}
         {!isError && !isLoading && !hasSpec && (
           <div style={styles.emptyChart}>
-            <Empty description="No chart specification" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+            <Empty description="暂无图表规格" image={Empty.PRESENTED_IMAGE_SIMPLE} />
           </div>
         )}
       </div>
@@ -138,7 +138,7 @@ function ViewWidgetCard({ uid, widget }: ViewWidgetCardProps) {
       {widget.sql && (
         <div style={styles.footer}>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            SQL: {widget.sql.length > 80 ? widget.sql.slice(0, 80) + '...' : widget.sql}
+            查询: {widget.sql.length > 80 ? widget.sql.slice(0, 80) + '...' : widget.sql}
           </Typography.Text>
         </div>
       )}
@@ -181,7 +181,7 @@ function DashboardViewInner() {
             onClick={() => navigate('/extends/Chat2VizDashboard/index')}
           />
           <Typography.Title level={3} style={{ margin: 0 }}>
-            {dashboard?.title || 'Dashboard'}
+            {dashboard?.title || '仪表盘'}
           </Typography.Title>
         </div>
       </div>
@@ -208,7 +208,7 @@ function DashboardViewInner() {
           </div>
         ) : (
           <div style={styles.empty}>
-            <Empty description="This dashboard has no widgets." />
+            <Empty description="该仪表盘暂无图表" />
           </div>
         )}
       </div>

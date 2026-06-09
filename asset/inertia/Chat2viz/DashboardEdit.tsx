@@ -72,7 +72,7 @@ export default function DashboardEdit() {
         if (w.id) {
           widgetsMap[w.id] = {
             id: w.id,
-            title: w.title || 'Untitled',
+            title: w.title || '未命名',
             g2_spec: w.g2_spec || {},
             data: w.data || {},
             sql: w.sql,
@@ -134,10 +134,10 @@ export default function DashboardEdit() {
 
   // ---- Save status indicator ----
   const saveStatusText = isDirty
-    ? 'Unsaved changes'
+    ? '未保存'
     : lastSavedAt
-      ? `Saved at ${new Date(lastSavedAt).toLocaleTimeString()}`
-      : 'No changes';
+      ? `已保存于 ${new Date(lastSavedAt).toLocaleTimeString()}`
+      : '无变更';
 
   const SaveIcon = isDirty ? CloudSyncOutlined : CloudOutlined;
 
@@ -146,7 +146,7 @@ export default function DashboardEdit() {
       {/* ---- Top Bar ---- */}
       <div style={styles.topBar}>
         <div style={styles.topBarLeft}>
-          <Tooltip title="Back to list">
+          <Tooltip title="返回列表">
             <Button
               type="text"
               icon={<ArrowLeftOutlined />}
@@ -156,7 +156,7 @@ export default function DashboardEdit() {
           <Input
             value={title}
             onChange={handleTitleChange}
-            placeholder="Dashboard title"
+            placeholder="仪表盘标题"
             bordered={false}
             style={styles.titleInput}
           />
@@ -169,7 +169,7 @@ export default function DashboardEdit() {
           </Tooltip>
           {error && <Tag color="error">{error}</Tag>}
           <Button type="primary" icon={<CloudUploadOutlined />} onClick={() => setPublishVisible(true)}>
-            Publish
+            发布
           </Button>
         </div>
       </div>

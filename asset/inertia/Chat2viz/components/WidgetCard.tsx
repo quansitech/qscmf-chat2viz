@@ -71,7 +71,7 @@ export default function WidgetCard({ widget, onTitleChange, onRemove, onRefresh 
               onDoubleClick={handleTitleDoubleClick}
               style={{ cursor: 'pointer', flex: 1 }}
             >
-              {widget.title || 'Untitled Widget'}
+              {widget.title || '未命名图表'}
               <EditOutlined style={{ marginLeft: 6, fontSize: 11, opacity: 0.5 }} />
             </Typography.Text>
           )}
@@ -84,10 +84,10 @@ export default function WidgetCard({ widget, onTitleChange, onRemove, onRefresh 
             />
           )}
           <Popconfirm
-            title="Remove this widget?"
+            title="确定移除该图表？"
             onConfirm={() => onRemove(widget.id)}
-            okText="Remove"
-            cancelText="Cancel"
+            okText="移除"
+            cancelText="取消"
           >
             <DeleteOutlined style={styles.iconBtn} />
           </Popconfirm>
@@ -98,7 +98,7 @@ export default function WidgetCard({ widget, onTitleChange, onRemove, onRefresh 
       <div style={styles.chartArea}>
         {!hasSpec && (
           <div style={styles.emptyChart}>
-            <Spin tip="Loading chart..." />
+            <Spin tip="加载图表中..." />
           </div>
         )}
         {hasSpec && widget.g2_spec && (
@@ -120,7 +120,7 @@ export default function WidgetCard({ widget, onTitleChange, onRemove, onRefresh 
                 key: 'sql',
                 label: (
                   <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    SQL Query
+                    查询语句
                   </Typography.Text>
                 ),
                 children: (
@@ -131,7 +131,7 @@ export default function WidgetCard({ widget, onTitleChange, onRemove, onRefresh 
           />
         ) : (
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            Data source
+            数据源
           </Typography.Text>
         )}
       </div>

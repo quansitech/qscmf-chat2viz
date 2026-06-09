@@ -46,26 +46,26 @@ export default function DashboardList() {
   // ---- Columns ----
   const columns: ColumnsType<DashboardItem> = [
     {
-      title: 'Title',
+      title: '标题',
       dataIndex: 'title',
       key: 'title',
       ellipsis: true,
     },
     {
-      title: 'Status',
+      title: '状态',
       dataIndex: 'status',
       key: 'status',
       width: 120,
       render: (status: string) => statusTag(status),
     },
     {
-      title: 'Created',
+      title: '创建时间',
       dataIndex: 'created_at',
       key: 'created_at',
       width: 180,
     },
     {
-      title: 'Actions',
+      title: '操作',
       key: 'actions',
       width: 160,
       render: (_: unknown, record: DashboardItem) => (
@@ -74,14 +74,14 @@ export default function DashboardList() {
             size="small"
             onClick={() => navigate(`/extends/Chat2VizDashboard/view/uid/${record.uid}`)}
           >
-            View
+            查看
           </Button>
           <Button
             size="small"
             type="primary"
             onClick={() => navigate(`/extends/Chat2VizDashboard/edit/uid/${record.uid}`)}
           >
-            Edit
+            编辑
           </Button>
         </div>
       ),
@@ -95,7 +95,7 @@ export default function DashboardList() {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: 'Untitled Dashboard' }),
+        body: JSON.stringify({ title: '未命名仪表盘' }),
       });
       if (!resp.ok) {
         throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
@@ -105,16 +105,16 @@ export default function DashboardList() {
         navigate(`/extends/Chat2VizDashboard/edit/uid/${result.data.uid}`);
       }
     } catch {
-      message.error('Failed to create dashboard. Please try again.');
+      message.error('创建仪表盘失败，请重试');
     }
   }, []);
 
   return (
     <div style={styles.container}>
       <div style={styles.header}>
-        <h2 style={styles.heading}>Dashboards</h2>
+        <h2 style={styles.heading}>仪表盘</h2>
         <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>
-          New Dashboard
+          新建仪表盘
         </Button>
       </div>
 
@@ -124,7 +124,7 @@ export default function DashboardList() {
         rowKey="uid"
         locale={{
           emptyText: (
-            <Empty description="No dashboards yet. Create one to get started." />
+            <Empty description="暂无仪表盘，点击上方按钮创建" />
           ),
         }}
         pagination={{
