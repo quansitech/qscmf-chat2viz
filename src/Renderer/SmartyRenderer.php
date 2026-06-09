@@ -28,6 +28,7 @@ class SmartyRenderer implements PageRendererInterface
 
     public function renderList(array $dashboards, int $total, int $page, int $perPage): mixed
     {
+        // NOTE: display() uses action name as template name (index→index.html, edit→edit.html)
         $this->callProtected('assign', 'meta_title', '仪表盘管理');
         $this->callProtected('assign', 'dashboards', $dashboards);
         $this->callProtected('assign', 'total', $total);
@@ -39,6 +40,7 @@ class SmartyRenderer implements PageRendererInterface
 
     public function renderEdit(?array $dashboard = null): mixed
     {
+        // NOTE: display() uses action name as template name (index→index.html, edit→edit.html)
         $this->callProtected('assign', 'meta_title', $dashboard ? '编辑仪表盘' : '新建仪表盘');
         $this->callProtected('assign', 'dashboard', $dashboard);
         $this->callProtected('display');
@@ -50,7 +52,7 @@ class SmartyRenderer implements PageRendererInterface
         $this->callProtected('assign', 'meta_title', $dashboard['title'] ?? '仪表盘');
         $this->callProtected('assign', 'dashboard', $dashboard);
         $this->callProtected('assign', 'schema', $schema);
-        $this->callProtected('display');
+        $this->callProtected('display'); // resolves to view.html (action=view)
         return null;
     }
 }

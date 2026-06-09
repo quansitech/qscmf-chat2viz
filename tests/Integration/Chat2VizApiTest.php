@@ -78,7 +78,7 @@ class Chat2VizApiTest extends TestCase
 
     public function testQuestionExceedingMaxLengthRejected(): void
     {
-        $input = ['question' => str_repeat('很长的电影名称', 100)]; // > 1000 chars
+        $input = ['question' => str_repeat('很长的电影名称', 200)]; // 1400 chars > 1000
         $result = $this->validateSocketInput($input);
         $this->assertNotNull($result);
         $this->assertStringContainsString('1000', $result['info']);

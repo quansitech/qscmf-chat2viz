@@ -113,13 +113,13 @@ export default function G2Renderer({ spec, data, width, height, className }: G2R
         // Level 2: Config/style changed -> re-apply options
         if (chartRef.current) {
           try {
-            chartRef.current.options(spec).render();
+            chartRef.current.options({ ...spec, ...(data ? { data } : {}) }).render();
           } catch {
             // Fallback: destroy and recreate
             chartRef.current.destroy();
             chartRef.current = null;
             const chart = new G2.Chart({ container, autoFit: true });
-            chart.options(spec).render();
+            chart.options({ ...spec, ...(data ? { data } : {}) }).render();
             chartRef.current = chart;
           }
         }
@@ -138,7 +138,7 @@ export default function G2Renderer({ spec, data, width, height, className }: G2R
           chartRef.current = null;
         }
         const chart = new G2.Chart({ container, autoFit: true });
-        chart.options(spec).render();
+        chart.options({ ...spec, ...(data ? { data } : {}) }).render();
         chartRef.current = chart;
         break;
       }

@@ -522,7 +522,7 @@ class DashboardController extends GyController
             'time' => date('Y-m-d H:i:s'),
         ], JSON_UNESCAPED_UNICODE);
 
-        \Think\Log::write($entry, 'INFO', 'dashboard_audit');
+        \Think\Log::write($entry, 'INFO');
     }
 
     /**

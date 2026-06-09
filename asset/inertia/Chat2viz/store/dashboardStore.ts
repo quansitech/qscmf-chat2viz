@@ -6,6 +6,24 @@ import type { Draft } from 'immer';
 import { buildSchema } from '../utils/buildSchema';
 
 // ---------------------------------------------------------------------------
+// Utility — safe UUID generation with fallback for non-secure contexts
+// ---------------------------------------------------------------------------
+
+function generateId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    try {
+      return crypto.randomUUID();
+    } catch {
+      // fallback below
+    }
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = Math.random() * 16 | 0;
+    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
@@ -152,13 +170,13 @@ const _store = _create()(
             state.isLoading = true;
             state.error = '';
             state.messages.push({
-              id: crypto.randomUUID(),
+              id: generateId(),
               role: 'user',
               content: question,
               timestamp: new Date().toISOString(),
             });
             state.messages.push({
-              id: crypto.randomUUID(),
+              id: generateId(),
               role: 'assistant',
               content: '',
               timestamp: new Date().toISOString(),

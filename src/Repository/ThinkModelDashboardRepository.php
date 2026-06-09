@@ -22,20 +22,25 @@ class ThinkModelDashboardRepository implements DashboardRepositoryInterface
      */
     public function list(int $page, int $perPage, array $filters = []): array
     {
-        $model = M(self::TABLE_DASHBOARDS);
         $safeFilters = $this->filterWhitelist($filters);
 
+        $where = [];
         foreach ($safeFilters as $key => $value) {
-            $model = $model->where([$key => $value]);
+            $where[$key] = $value;
         }
 
-        $total = (int)$model->count();
-        $offset = ($page - 1) * $perPage;
+        $countModel = M(self::TABLE_DASHBOARDS);
+        if (!empty($where)) {
+            $countModel->where($where);
+        }
+        $total = (int)$countModel->count();
 
-        $items = $model
-            ->order('id DESC')
-            ->limit($offset . ',' . $perPage)
-            ->select();
+        $offset = ($page - 1) * $perPage;
+        $listModel = M(self::TABLE_DASHBOARDS);
+        if (!empty($where)) {
+            $listModel->where($where);
+        }
+        $items = $listModel->order('id DESC')->limit($offset . ',' . $perPage)->select();
 
         if (!is_array($items)) {
             $items = [];
@@ -245,15 +250,16 @@ class ThinkModelDashboardRepository implements DashboardRepositoryInterface
         }
 
         $dashboardId = (int)$dashboard['id'];
-        $model = M(self::TABLE_VERSIONS)->where(['dashboard_id' => $dashboardId]);
+        $where = ['dashboard_id' => $dashboardId];
 
-        $total = (int)$model->count();
+        $countModel = M(self::TABLE_VERSIONS);
+        $countModel->where($where);
+        $total = (int)$countModel->count();
+
         $offset = ($page - 1) * $perPage;
-
-        $items = $model
-            ->order('version DESC')
-            ->limit($offset . ',' . $perPage)
-            ->select();
+        $listModel = M(self::TABLE_VERSIONS);
+        $listModel->where($where);
+        $items = $listModel->order('version DESC')->limit($offset . ',' . $perPage)->select();
 
         if (!is_array($items)) {
             $items = [];
