@@ -31,8 +31,8 @@ class Chat2VizController extends GyController
     {
         parent::_initialize();
 
-        $this->serviceUrl = rtrim((string) (getenv('CHAT2VIZ_SERVICE_URL') ?: ''), '/');
-        $this->apiKey = (string) (getenv('CHAT2VIZ_API_KEY') ?: '');
+        $this->serviceUrl = rtrim((string) env('CHAT2VIZ_SERVICE_URL', ''), '/');
+        $this->apiKey = (string) env('CHAT2VIZ_API_KEY', '');
         $this->httpClient = new Client(['timeout' => 60]);
     }
 
@@ -99,6 +99,17 @@ class Chat2VizController extends GyController
 
         $wantsChat2viz = $this->wantsChat2vizFormat();
 
+        // DEBUG: trace env loading and socket config
+        $debugSocketPath = env('CHAT2VIZ_SOCKET_PATH', '/run/chat2viz.sock');
+        $debugApiKey = env('CHAT2VIZ_API_KEY', '');
+        $debugServiceUrl = env('CHAT2VIZ_SERVICE_URL', '');
+        $debugSocketExists = file_exists($debugSocketPath);
+        $this->logError('DEBUG_ENV', sprintf(
+            'socket_path=%s exists=%s api_key_len=%d service_url=%s wants_chat2viz=%s conv_id=%s',
+            $debugSocketPath, $debugSocketExists ? 'Y' : 'N', strlen($debugApiKey), $debugServiceUrl,
+            $wantsChat2viz ? 'Y' : 'N', $conversationId
+        ));
+
         try {
             $transport = $this->createSocketTransport();
             $requestFrame = [
@@ -131,7 +142,10 @@ class Chat2VizController extends GyController
             // Stream completed — persist assistant message
             $this->persistConversationMessage($conversationId, $payload, 'assistant');
         } catch (\Throwable $e) {
-            $this->logError('socket failed, falling back to http', $e->getMessage());
+            $this->logError('socket failed, falling back to http', sprintf(
+                'class=%s msg=%s file=%s:%d',
+                get_class($e), $e->getMessage(), basename($e->getFile()), $e->getLine()
+            ));
 
             // H10: SseProxy::socket() has already called sendHeaders().
             // If headers were sent, we cannot fall back to Guzzle SSE (it also calls sendHeaders).
@@ -177,17 +191,17 @@ class Chat2VizController extends GyController
     private function createSocketTransport(): SocketTransport
     {
         return new SocketTransport([
-            'socket_path' => getenv('CHAT2VIZ_SOCKET_PATH') ?: '/run/chat2viz.sock',
-            'host'        => getenv('CHAT2VIZ_SOCKET_HOST') ?: null,
-            'port'        => (int) (getenv('CHAT2VIZ_SOCKET_PORT') ?: 9501),
-            'timeout'     => (int) (getenv('CHAT2VIZ_SSE_TIMEOUT') ?: 180),
+            'socket_path' => env('CHAT2VIZ_SOCKET_PATH', '/run/chat2viz.sock'),
+            'host'        => env('CHAT2VIZ_SOCKET_HOST'),
+            'port'        => (int) env('CHAT2VIZ_SOCKET_PORT', 9501),
+            'timeout'     => (int) env('CHAT2VIZ_SSE_TIMEOUT', 180),
         ]);
     }
 
     private function fallbackGuzzleStream(array $payload, bool $wantsChat2viz = false): bool
     {
         $headers = $this->buildHeaders();
-        $timeout = (int) (getenv('CHAT2VIZ_SSE_TIMEOUT') ?: 180);
+        $timeout = (int) env('CHAT2VIZ_SSE_TIMEOUT', 180);
 
         try {
             $response = $this->httpClient->post(
