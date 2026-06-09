@@ -41,6 +41,12 @@ class SmartyRenderer implements PageRendererInterface
     public function renderEdit(?array $dashboard = null): mixed
     {
         // NOTE: display() uses action name as template name (index→index.html, edit→edit.html)
+        // Parse current_schema so json_encode in the template does not double-encode it
+        if ($dashboard !== null && isset($dashboard['current_schema']) && is_string($dashboard['current_schema'])) {
+            $parsed = json_decode($dashboard['current_schema'], true);
+            $dashboard['current_schema'] = is_array($parsed) ? $parsed : [];
+        }
+
         $this->callProtected('assign', 'meta_title', $dashboard ? '编辑仪表盘' : '新建仪表盘');
         $this->callProtected('assign', 'dashboard', $dashboard);
         $this->callProtected('display');

@@ -337,4 +337,67 @@ class Chat2VizController extends GyController
     {
         \Think\Log::write(sprintf('[chat2viz] %s | %s', $tag, $detail), \Think\Log::ERR);
     }
+
+    /**
+     * Get conversation history for a dashboard.
+     * Proxies to the Python service, falls back to MySQL on failure.
+     * URL: GET /extends/Chat2Viz/api_conversation_history?uid={uid}
+     */
+    public function api_conversation_history()
+    {
+        if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
+            $this->ajaxReturn(['status' => 0, 'info' => '请求方法不允许']);
+            return;
+        }
+
+        $uid = (string) ($_GET['uid'] ?? '');
+        if ($uid === '') {
+            $this->ajaxReturn(['status' => 0, 'info' => '缺少仪表盘ID']);
+            return;
+        }
+
+        // Look up dashboard to find conversation_id
+        $repo = AdapterFactory::createRepository();
+        $dashboard = $repo->findByUid($uid);
+        if ($dashboard === null) {
+            $this->ajaxReturn(['status' => 0, 'info' => '仪表盘不存在']);
+            return;
+        }
+
+        $conversationId = $dashboard['conversation_id'] ?? '';
+        if ($conversationId === '') {
+            $this->ajaxReturn(['status' => 1, 'data' => ['messages' => []]]);
+            return;
+        }
+
+        // Try Python service first (has full message content)
+        if ($this->serviceUrl !== '') {
+            try {
+                $response = $this->httpClient->get(
+                    $this->serviceUrl . '/api/v1/conversation/' . urlencode($conversationId),
+                    [
+                        'headers' => $this->buildHeaders(),
+                        'timeout' => 5,
+                    ]
+                );
+                $data = json_decode((string) $response->getBody(), true);
+                if (is_array($data) && isset($data['messages'])) {
+                    $this->ajaxReturn(['status' => 1, 'data' => $data]);
+                    return;
+                }
+            } catch (\Throwable $e) {
+                $this->logError('conversation history upstream failed', $e->getMessage());
+            }
+        }
+
+        // Fallback: MySQL (assistant content may be empty)
+        try {
+            $convRepo = AdapterFactory::createConversationRepository();
+            $messages = $convRepo->getMessages($conversationId);
+            $this->ajaxReturn(['status' => 1, 'data' => ['messages' => $messages]]);
+        } catch (\Throwable $e) {
+            $this->logError('conversation history db failed', $e->getMessage());
+            $this->ajaxReturn(['status' => 0, 'info' => '获取对话历史失败']);
+        }
+    }
 }

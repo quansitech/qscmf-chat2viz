@@ -3,6 +3,7 @@ import { Button, Input, Tag, Tooltip } from 'antd';
 import { ArrowLeftOutlined, CloudOutlined, CloudSyncOutlined, CloudUploadOutlined } from '@ant-design/icons';
 import { getPageProps, navigate } from './adapters';
 import { useDashboardStore } from './store/dashboardStore';
+import type { ChatMessage } from './store/dashboardStore';
 import { useDashboardDraft } from './hooks/useDashboardDraft';
 import ChatPanel from './components/ChatPanel';
 import PreviewPanel from './components/PreviewPanel';
@@ -65,8 +66,14 @@ export default function DashboardEdit() {
     });
 
     // Hydrate widgets from current_schema if present
-    const schema = dashboard.current_schema as { widgets?: any[] } | null;
-    if (schema?.widgets && Array.isArray(schema.widgets)) {
+    // NOTE: ThinkPHP M()->find() returns current_schema as a JSON string.
+    // The server-side renderer (SmartyRenderer) should parse it, but we add
+    // a client-side fallback for robustness.
+    let schema = dashboard.current_schema as { widgets?: any[] } | string | null;
+    if (typeof schema === 'string') {
+      try { schema = JSON.parse(schema); } catch { schema = null; }
+    }
+    if (schema && typeof schema === 'object' && Array.isArray(schema.widgets)) {
       const widgetsMap: Record<string, any> = {};
       for (const w of schema.widgets) {
         if (w.id) {
@@ -83,6 +90,42 @@ export default function DashboardEdit() {
       }
       useDashboardStore.setState({ widgets: widgetsMap });
     }
+  }, [dashboard?.uid]);
+
+  // ---- Load conversation history from server ----
+  useEffect(() => {
+    if (!dashboard?.uid) return;
+
+    const store = useDashboardStore.getState();
+    // Skip if messages already loaded for this conversation
+    if (store.conversationId && store.messages.length > 0) return;
+
+    fetch(`/extends/Chat2Viz/api_conversation_history?uid=${encodeURIComponent(dashboard.uid)}`, {
+      credentials: 'same-origin',
+    })
+      .then((r) => r.json())
+      .then((result) => {
+        if (result.status !== 1 || !result.data?.messages?.length) return;
+        const msgs: ChatMessage[] = result.data.messages
+          .filter((m: any) => m.role === 'user' || m.role === 'assistant')
+          .map((m: any) => ({
+            id: String(m.id ?? Math.random().toString(36).slice(2)),
+            role: m.role,
+            content: m.content || '',
+            timestamp: m.created_at || new Date().toISOString(),
+            metadata: m.metadata
+              ? typeof m.metadata === 'string'
+                ? JSON.parse(m.metadata)
+                : m.metadata
+              : undefined,
+          }));
+        if (msgs.length > 0) {
+          useDashboardStore.setState({ messages: msgs });
+        }
+      })
+      .catch(() => {
+        // Non-critical: conversation history is best-effort
+      });
   }, [dashboard?.uid]);
 
   // ---- Draft auto-save hook ----
