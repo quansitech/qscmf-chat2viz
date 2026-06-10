@@ -2,6 +2,7 @@
 
 namespace Qscmf\Chat2Viz\Repository;
 
+use Qscmf\Chat2Viz\Exception\DashboardException;
 use Qscmf\Chat2Viz\Model\ConversationMessage;
 use Illuminate\Support\Facades\DB;
 
@@ -17,7 +18,7 @@ class EloquentConversationRepository implements ConversationRepositoryInterface
         ?array $metadata = null
     ): array {
         if (!in_array($role, self::VALID_ROLES, true)) {
-            throw new \InvalidArgumentException('Invalid message role: ' . $role);
+            throw new DashboardException('Invalid message role: ' . $role);
         }
 
         $message = ConversationMessage::create([
