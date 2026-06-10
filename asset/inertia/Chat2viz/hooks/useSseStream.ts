@@ -148,7 +148,8 @@ async function consumeStream(body: ReadableStream<Uint8Array>, signal: AbortSign
       const { done, value } = await reader.read();
       if (done) break;
 
-      buffer += decoder.decode(value, { stream: true });
+      const chunk = decoder.decode(value, { stream: true });
+      buffer += chunk;
 
       // SSE frames are separated by double newlines.
       const frames = buffer.split('\n\n');
@@ -157,13 +158,15 @@ async function consumeStream(body: ReadableStream<Uint8Array>, signal: AbortSign
 
       for (const frame of frames) {
         if (!frame.trim()) continue;
-        dispatchEvent(parseSseEvent(frame));
+        const event = parseSseEvent(frame);
+        dispatchEvent(event);
       }
     }
 
     // Process any remaining data in the buffer
     if (buffer.trim()) {
-      dispatchEvent(parseSseEvent(buffer));
+      const event = parseSseEvent(buffer);
+      dispatchEvent(event);
     }
   } finally {
     reader.releaseLock();
@@ -285,22 +288,22 @@ function applyPatches(patches: DashboardPatch[]): void {
 }
 
 function applyActionResult(result: ActionCallResult): void {
-  // Use the immer-enabled setState to record the action result on the
-  // last assistant message.
-  const state = useDashboardStore.getState();
-  const messages = [...state.messages];
-  const lastAssistant = [...messages]
-    .reverse()
-    .find((m) => m.role === 'assistant');
-  if (lastAssistant) {
-    const metadata = {
-      ...(lastAssistant.metadata ?? {}),
-    };
-    const actionResults = [...(metadata.actionResults ?? []), result];
-    metadata.actionResults = actionResults;
-    lastAssistant.metadata = metadata;
-    useDashboardStore.setState({ messages });
-  }
+  // Must use immer's draft context — the frozen state objects cannot be
+  // mutated directly outside setState().
+  useDashboardStore.setState((state) => {
+    const lastAssistant = [...state.messages]
+      .reverse()
+      .find((m) => m.role === 'assistant');
+    if (lastAssistant) {
+      if (!lastAssistant.metadata) {
+        lastAssistant.metadata = {};
+      }
+      if (!lastAssistant.metadata.actionResults) {
+        lastAssistant.metadata.actionResults = [];
+      }
+      lastAssistant.metadata.actionResults.push(result);
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------

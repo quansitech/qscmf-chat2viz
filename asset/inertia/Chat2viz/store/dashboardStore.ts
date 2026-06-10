@@ -298,16 +298,20 @@ const _store = _create()(
 
         getDashboardContext: () => {
           const { widgets, conversationId, uid } = get();
-          const widgetList = Object.values(widgets) as Widget[];
-          return {
-            dashboard_uid: uid,
-            conversation_id: conversationId,
-            widgets: widgetList.map((w) => ({
+          // Python NL2SQL service expects widgets as a dict keyed by id, not an array.
+          const widgetDict: Record<string, unknown> = {};
+          for (const w of Object.values(widgets) as Widget[]) {
+            widgetDict[w.id] = {
               id: w.id,
               title: w.title,
               sql: w.sql ?? null,
               layout: w.layout,
-            })),
+            };
+          }
+          return {
+            dashboard_uid: uid,
+            conversation_id: conversationId,
+            widgets: widgetDict,
           };
         },
       };

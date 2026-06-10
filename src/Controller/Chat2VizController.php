@@ -95,20 +95,10 @@ class Chat2VizController extends GyController
         $conversationId = $payload['conversation_id'] ?? bin2hex(random_bytes(16));
 
         // Persist user message before the stream starts
-        $this->persistConversationMessage($conversationId, $payload, 'user');
+        // TODO: re-enable after creating database tables
+        // $this->persistConversationMessage($conversationId, $payload, 'user');
 
         $wantsChat2viz = $this->wantsChat2vizFormat();
-
-        // DEBUG: trace env loading and socket config
-        $debugSocketPath = env('CHAT2VIZ_SOCKET_PATH', '/run/chat2viz.sock');
-        $debugApiKey = env('CHAT2VIZ_API_KEY', '');
-        $debugServiceUrl = env('CHAT2VIZ_SERVICE_URL', '');
-        $debugSocketExists = file_exists($debugSocketPath);
-        $this->logError('DEBUG_ENV', sprintf(
-            'socket_path=%s exists=%s api_key_len=%d service_url=%s wants_chat2viz=%s conv_id=%s',
-            $debugSocketPath, $debugSocketExists ? 'Y' : 'N', strlen($debugApiKey), $debugServiceUrl,
-            $wantsChat2viz ? 'Y' : 'N', $conversationId
-        ));
 
         try {
             $transport = $this->createSocketTransport();
@@ -142,10 +132,7 @@ class Chat2VizController extends GyController
             // Stream completed — persist assistant message
             $this->persistConversationMessage($conversationId, $payload, 'assistant');
         } catch (\Throwable $e) {
-            $this->logError('socket failed, falling back to http', sprintf(
-                'class=%s msg=%s file=%s:%d',
-                get_class($e), $e->getMessage(), basename($e->getFile()), $e->getLine()
-            ));
+            $this->logError('socket failed, falling back to http', $e->getMessage());
 
             // H10: SseProxy::socket() has already called sendHeaders().
             // If headers were sent, we cannot fall back to Guzzle SSE (it also calls sendHeaders).
@@ -359,7 +346,14 @@ class Chat2VizController extends GyController
 
         // Forward dashboard context for dashboard-aware conversations
         if (!empty($input['dashboard_context'])) {
-            $payload['dashboard_context'] = $input['dashboard_context'];
+            $ctx = $input['dashboard_context'];
+            // PHP json_decode(true) turns empty JSON {} into [] which json_encode
+            // then serialises as a JSON array [].  The Python NL2SQL service
+            // requires widgets to be a dict/object, so force stdClass for empty arrays.
+            if (isset($ctx['widgets']) && is_array($ctx['widgets']) && empty($ctx['widgets'])) {
+                $ctx['widgets'] = new \stdClass();
+            }
+            $payload['dashboard_context'] = $ctx;
         }
 
         return $payload;
