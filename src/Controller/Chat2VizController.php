@@ -92,7 +92,10 @@ class Chat2VizController extends GyController
         }
 
         $payload = $this->buildPayloadFromParsed($input);
-        $conversationId = $payload['conversation_id'] ?? bin2hex(random_bytes(16));
+        $conversationId = $payload['conversation_id'] ?? '';
+        if (!preg_match('/^[a-f0-9\-]{1,64}$/i', $conversationId)) {
+            $conversationId = bin2hex(random_bytes(16));
+        }
 
         // Persist user message before the stream starts
         // TODO: re-enable after creating database tables
@@ -104,7 +107,7 @@ class Chat2VizController extends GyController
         // real Python service.  Enabled via CHAT2VIZ_MOCK_MODE=true in .env.
         // This allows E2E tests to pass when the NL2SQL backend is offline.
         if ($this->isMockMode()) {
-            $this->emitMockStream($payload, $wantsChat2viz);
+            $this->emitMockStream($payload, $wantsChat2viz, $conversationId);
             $this->persistConversationMessage($conversationId, $payload, 'assistant');
             return;
         }
@@ -170,14 +173,13 @@ class Chat2VizController extends GyController
      * Emit a deterministic SSE stream with a canned chart widget.
      * Used in mock mode / E2E tests when the real Python NL2SQL service is offline.
      */
-    private function emitMockStream(array $payload, bool $wantsChat2viz): void
+    private function emitMockStream(array $payload, bool $wantsChat2viz, string $conversationId): void
     {
         SseWriter::sendHeaders();
         SseWriter::clearOutputBuffers();
         SseWriter::applyExecutionGuards();
         $writer = new SseWriter(autoStart: false);
 
-        $conversationId = $payload['conversation_id'] ?? bin2hex(random_bytes(16));
         $question = $payload['question'] ?? '';
 
         // conversation_id
@@ -280,7 +282,7 @@ class Chat2VizController extends GyController
         ]);
     }
 
-    private function fallbackGuzzleStream(array $payload, bool $wantsChat2viz = false, string $conversationId = ''): bool
+    private function fallbackGuzzleStream(array $payload, bool $wantsChat2viz = false, string $conversationId): bool
     {
         $headers = $this->buildHeaders();
         $timeout = (int) env('CHAT2VIZ_SSE_TIMEOUT', 180);

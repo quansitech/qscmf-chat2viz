@@ -6,7 +6,7 @@ use Illuminate\Database\Eloquent\Model;
 
 class DashboardVersion extends Model
 {
-    protected $table = 'qs_chat2viz_dashboard_versions';
+    protected $table = 'chat2viz_dashboard_versions';
 
     protected $fillable = [
         'dashboard_id',

@@ -24,7 +24,7 @@ class DashboardController extends GyController
      *
      * @var string[]
      */
-    protected array $publicActions = ['show', 'api_widget_data'];
+    protected array $publicActions = ['view', 'api_widget_data'];
 
     protected function _initialize()
     {
@@ -88,9 +88,9 @@ class DashboardController extends GyController
 
     /**
      * Published dashboard view page (public).
-     * URL: GET /extends/Chat2VizDashboard/show?uid={uid}
+     * URL: GET /extends/Chat2VizDashboard/view?uid={uid}
      */
-    public function show()
+    public function view()
     {
         $uid = (string) ($_GET['uid'] ?? '');
         if ($uid === '') {
@@ -114,7 +114,7 @@ class DashboardController extends GyController
         } catch (DashboardNotFoundException $e) {
             $this->error('仪表盘不存在');
         } catch (DashboardException $e) {
-            $this->logError('show failed', $e->getMessage());
+            $this->logError('view failed', $e->getMessage());
             $this->error('加载仪表盘失败');
         }
     }
@@ -176,6 +176,7 @@ class DashboardController extends GyController
             $dashboard = $this->repo->create([
                 'title' => $title,
                 'current_schema' => $currentSchema,
+                'created_by' => $this->getCurrentUserId(),
             ]);
             $this->ajaxReturn(['status' => 1, 'data' => $dashboard]);
         } catch (\Exception $e) {
@@ -753,26 +754,35 @@ class DashboardController extends GyController
         } else {
             // APCu unavailable fallback: still enforce limit and signal via header
             header('X-Cache: UNAVAILABLE');
-            // Use a simple file-based counter as fallback
+            // Use a file-based counter with flock(LOCK_EX) for atomic read-modify-write
             $tmpDir = sys_get_temp_dir();
             $counterFile = $tmpDir . '/chat2viz_rl_' . md5($ip);
             $now = time();
 
-            if (file_exists($counterFile)) {
-                $data = @json_decode(file_get_contents($counterFile), true);
-                if (is_array($data) && ($now - ($data['start'] ?? 0)) < $window) {
-                    if (($data['count'] ?? 0) >= $maxRequests) {
-                        $this->ajaxReturn(['status' => 0, 'info' => '请求过于频繁，请稍后再试']);
-                        return false;
-                    }
-                    $data['count']++;
-                } else {
-                    $data = ['count' => 1, 'start' => $now];
-                }
-            } else {
-                $data = ['count' => 1, 'start' => $now];
+            $fp = @fopen($counterFile, 'c+');
+            if ($fp === false) {
+                // Cannot open counter file — allow request (fail-open)
+                return true;
             }
-            @file_put_contents($counterFile, json_encode($data));
+            flock($fp, LOCK_EX);
+            $raw = stream_get_contents($fp);
+            $data = @json_decode($raw, true);
+            if (!is_array($data) || ($now - ($data['start'] ?? 0)) >= $window) {
+                $data = ['count' => 1, 'start' => $now];
+            } else {
+                if (($data['count'] ?? 0) >= $maxRequests) {
+                    flock($fp, LOCK_UN);
+                    fclose($fp);
+                    $this->ajaxReturn(['status' => 0, 'info' => '请求过于频繁，请稍后再试']);
+                    return false;
+                }
+                $data['count']++;
+            }
+            ftruncate($fp, 0);
+            rewind($fp);
+            fwrite($fp, json_encode($data));
+            flock($fp, LOCK_UN);
+            fclose($fp);
         }
 
         return true;

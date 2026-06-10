@@ -6,7 +6,7 @@ use Illuminate\Database\Eloquent\Model;
 
 class ConversationMessage extends Model
 {
-    protected $table = 'qs_chat2viz_conversation_messages';
+    protected $table = 'chat2viz_conversation_messages';
 
     public $timestamps = false;
 

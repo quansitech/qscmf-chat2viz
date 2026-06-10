@@ -8,11 +8,14 @@ namespace Qscmf\Chat2Viz\Traits;
 trait SchemaStripTrait
 {
     /**
-     * Recursively strip g2_spec.data from all widgets in the schema.
+     * Strip g2_spec.data from all widgets in the schema.
      *
      * Pure function: returns a new array without modifying the input.
-     * Walks through schema.widgets array and removes the 'data' key
-     * from every widget's g2_spec object (if it exists).
+     * Each widget is explicitly copied before any modification, ensuring
+     * the original $schema remains untouched regardless of PHP internals.
+     *
+     * @param array $schema Dashboard schema containing a 'widgets' key
+     * @return array New schema with g2_spec.data stripped from every widget
      */
     private function stripG2SpecData(array $schema): array
     {
@@ -20,18 +23,19 @@ trait SchemaStripTrait
             return $schema;
         }
 
-        $widgets = $schema['widgets'];
-        foreach ($widgets as $i => $widget) {
-            if (!is_array($widget)) {
-                continue;
+        $newWidgets = [];
+        foreach ($schema['widgets'] as $widget) {
+            $newWidget = $widget; // explicit copy — never mutate the original
+
+            if (isset($newWidget['g2_spec']['data'])) {
+                $strippedSpec = $newWidget['g2_spec'];
+                unset($strippedSpec['data']);
+                $newWidget['g2_spec'] = $strippedSpec;
             }
-            if (isset($widget['g2_spec']) && is_array($widget['g2_spec'])) {
-                unset($widget['g2_spec']['data']);
-                $widgets[$i] = $widget;
-            }
+
+            $newWidgets[] = $newWidget;
         }
 
-        $schema['widgets'] = $widgets;
-        return $schema;
+        return ['widgets' => $newWidgets] + $schema;
     }
 }

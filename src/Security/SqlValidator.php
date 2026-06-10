@@ -24,7 +24,13 @@ class SqlValidator
         // 1. Globally strip ALL block comments (/* ... */) and line comments (-- ...)
         //    before any keyword analysis. This prevents bypass via UN/**/ION or
         //    IN/**/TO OUTFILE injection patterns.
-        $stripped = preg_replace('#/\*.*?\*/#s', '', $sql);
+        //    Loop to handle nested block comments (e.g. /* outer /* inner */ still */).
+        do {
+            $prev = $sql;
+            $stripped = preg_replace('#/\*.*?\*/#s', '', $sql);
+            $sql = $stripped ?? $sql;
+        } while ($sql !== $prev);
+        $stripped = $sql;
         $stripped = preg_replace('/--[^\n]*\n?/', ' ', $stripped ?? $sql);
 
         $normalized = preg_replace('/\s+/', ' ', strtoupper(trim($stripped ?? $sql)));
@@ -50,7 +56,7 @@ class SqlValidator
         }
 
         // 6. Reject dangerous MySQL functions that can be used for data exfiltration or DoS
-        if (preg_match('/\b(LOAD_FILE|BENCHMARK|SLEEP|EXTRACTVALUE|UPDATEXML)\s*\(/i', $normalized)) {
+        if (preg_match('/\b(LOAD\s+DATA|GET_LOCK|RELEASE_LOCK|IS_FREE_LOCK|IS_USED_LOCK|LOAD_FILE|BENCHMARK|SLEEP|EXTRACTVALUE|UPDATEXML)\s*\(/i', $normalized)) {
             throw new \InvalidArgumentException('Disallowed function in query');
         }
     }

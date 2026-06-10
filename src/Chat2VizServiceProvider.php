@@ -58,7 +58,10 @@ class Chat2VizServiceProvider implements Provider, LaravelProvider
                     $inertiaPath = $candidate;
                 }
             } catch (\Throwable $e) {
-                // Not in a Laravel context — skip silently
+                $this->logWarning(sprintf(
+                    '[chat2viz:sp] inertia path detection failed: %s',
+                    $e->getMessage()
+                ));
             }
         }
         if ($inertiaPath !== false) {

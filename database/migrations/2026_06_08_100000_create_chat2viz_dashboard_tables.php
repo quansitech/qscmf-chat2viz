@@ -9,16 +9,16 @@ class CreateChat2vizDashboardTables extends Migration
     /**
      * Schema fidelity notes (Layer 6 audit):
      *
-     * 1. qs_chat2viz_dashboard_versions.updated_at
+     * 1. chat2viz_dashboard_versions.updated_at
      *    - Defined by $table->timestamps(), maps to timestamp NULL in MySQL.
      *    - Verified: actual DB column matches migration definition.
      *
-     * 2. qs_chat2viz_conversation_messages.content
+     * 2. chat2viz_conversation_messages.content
      *    - Defined as TEXT NOT NULL with no default.
      *    - Application layer must always provide content; empty string is valid.
      *    - Verified: actual DB column matches migration definition.
      *
-     * 3. Legacy conversation_id=NULL records in qs_chat2viz_dashboards
+     * 3. Legacy conversation_id=NULL records in chat2viz_dashboards
      *    - The dashboards table allows conversation_id to be NULL (nullable column).
      *    - Old dashboards created before the conversation linkage feature may have
      *      conversation_id=NULL. These records cannot be retroactively linked to
@@ -43,7 +43,7 @@ class CreateChat2vizDashboardTables extends Migration
      */
     public function up()
     {
-        Schema::create('qs_chat2viz_dashboards', function (Blueprint $table) {
+        Schema::create('chat2viz_dashboards', function (Blueprint $table) {
             $table->bigIncrements('id');
             $table->string('uid', 36)->unique()->comment('UUID v4, URL friendly short identifier');
             $table->string('title', 255)->default('');
@@ -61,7 +61,7 @@ class CreateChat2vizDashboardTables extends Migration
             $table->collation = 'utf8mb4_general_ci';
         });
 
-        Schema::create('qs_chat2viz_dashboard_versions', function (Blueprint $table) {
+        Schema::create('chat2viz_dashboard_versions', function (Blueprint $table) {
             $table->bigIncrements('id');
             $table->unsignedBigInteger('dashboard_id');
             $table->integer('version')->default(1);
@@ -72,7 +72,7 @@ class CreateChat2vizDashboardTables extends Migration
 
             $table->foreign('dashboard_id')
                 ->references('id')
-                ->on('qs_chat2viz_dashboards')
+                ->on('chat2viz_dashboards')
                 ->onDelete('cascade');
 
             $table->unique(['dashboard_id', 'version'], 'uk_dashboard_version');
@@ -82,7 +82,7 @@ class CreateChat2vizDashboardTables extends Migration
             $table->collation = 'utf8mb4_general_ci';
         });
 
-        Schema::create('qs_chat2viz_conversation_messages', function (Blueprint $table) {
+        Schema::create('chat2viz_conversation_messages', function (Blueprint $table) {
             $table->bigIncrements('id');
             $table->string('conversation_id', 64);
             $table->string('dashboard_uid', 64);
@@ -106,9 +106,9 @@ class CreateChat2vizDashboardTables extends Migration
      */
     public function down()
     {
-        Schema::dropIfExists('qs_chat2viz_conversation_messages');
-        Schema::dropIfExists('qs_chat2viz_dashboard_versions');
-        Schema::dropIfExists('qs_chat2viz_dashboards');
+        Schema::dropIfExists('chat2viz_conversation_messages');
+        Schema::dropIfExists('chat2viz_dashboard_versions');
+        Schema::dropIfExists('chat2viz_dashboards');
     }
 
     public function afterCmmUp()

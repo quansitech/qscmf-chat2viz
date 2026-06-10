@@ -18,19 +18,46 @@ class ThinkModelDashboardRepository implements DashboardRepositoryInterface
     private const TABLE_MESSAGES = 'chat2viz_conversation_messages';
 
     /**
-     * Build a where-condition array from whitelisted filters.
+     * Create a fresh ThinkModel with where conditions applied.
      *
+     * Uses the whitelist to build safe conditions and returns a new model
+     * instance each time, preventing cross-query state leakage.
+     *
+     * @param string $table Table constant (self::TABLE_DASHBOARDS or self::TABLE_VERSIONS)
      * @param array $filters Raw filter input
-     * @return array<string, mixed> Condition map suitable for ThinkModel::where()
+     * @return \Think\Model Model with where() already applied (or raw model if no filters)
      */
-    private function buildWhereConditions(array $filters): array
+    private function buildFilteredQuery(string $table, array $filters): \Think\Model
     {
-        $safeFilters = $this->filterWhitelist($filters);
         $where = [];
+        $safeFilters = $this->filterWhitelist($filters);
         foreach ($safeFilters as $key => $value) {
             $where[$key] = $value;
         }
-        return $where;
+
+        $model = M($table);
+        if (!empty($where)) {
+            $model->where($where);
+        }
+        return $model;
+    }
+
+    /**
+     * Create a fresh ThinkModel with explicit where conditions (no whitelist filtering).
+     *
+     * Used for internal queries with known-safe conditions (e.g. dashboard_id from a UID lookup).
+     *
+     * @param string $table Table constant
+     * @param array<string, mixed> $where Pre-built where conditions
+     * @return \Think\Model Model with where() already applied
+     */
+    private function buildWhereQuery(string $table, array $where): \Think\Model
+    {
+        $model = M($table);
+        if (!empty($where)) {
+            $model->where($where);
+        }
+        return $model;
     }
 
     /**
@@ -39,20 +66,13 @@ class ThinkModelDashboardRepository implements DashboardRepositoryInterface
      */
     public function list(int $page, int $perPage, array $filters = []): array
     {
-        $where = $this->buildWhereConditions($filters);
-
-        $countModel = M(self::TABLE_DASHBOARDS);
-        if (!empty($where)) {
-            $countModel->where($where);
-        }
-        $total = (int)$countModel->count();
+        $total = (int)$this->buildFilteredQuery(self::TABLE_DASHBOARDS, $filters)->count();
 
         $offset = ($page - 1) * $perPage;
-        $listModel = M(self::TABLE_DASHBOARDS);
-        if (!empty($where)) {
-            $listModel->where($where);
-        }
-        $items = $listModel->order('id DESC')->limit($offset, $perPage)->select();
+        $items = $this->buildFilteredQuery(self::TABLE_DASHBOARDS, $filters)
+            ->order('id DESC')
+            ->limit($offset, $perPage)
+            ->select();
 
         if (!is_array($items)) {
             $items = [];
@@ -178,10 +198,11 @@ class ThinkModelDashboardRepository implements DashboardRepositoryInterface
         $dashboardId = (int)$dashboard['id'];
         $effectivePublishedBy = $publishedBy ?? (isset($dashboard['created_by']) ? (int)$dashboard['created_by'] : null);
 
-        M()->startTrans();
+        $transModel = M(self::TABLE_DASHBOARDS);
+        $transModel->startTrans();
         try {
             // Pessimistic lock to prevent concurrent publish race
-            $locked = M(self::TABLE_DASHBOARDS)
+            $locked = $transModel
                 ->where(['id' => $dashboardId])
                 ->lock(true)
                 ->find();
@@ -212,22 +233,22 @@ class ThinkModelDashboardRepository implements DashboardRepositoryInterface
                 throw new DashboardException('Failed to create dashboard version');
             }
 
-            M(self::TABLE_DASHBOARDS)
+            $transModel
                 ->where(['uid' => $uid])
                 ->save([
                     'published_version_id' => $versionId,
                     'status' => 'published',
                 ]);
 
-            M()->commit();
+            $transModel->commit();
         } catch (DashboardException $e) {
-            M()->rollback();
+            $transModel->rollback();
             throw $e;
         } catch (\Think\Exception $e) {
-            M()->rollback();
+            $transModel->rollback();
             throw new DashboardException($e->getMessage(), 0, $e);
         } catch (\Exception $e) {
-            M()->rollback();
+            $transModel->rollback();
             throw new DashboardException($e->getMessage(), 0, $e);
         }
 
@@ -270,14 +291,13 @@ class ThinkModelDashboardRepository implements DashboardRepositoryInterface
 
         $where = ['dashboard_id' => (int)$dashboard['id']];
 
-        $countModel = M(self::TABLE_VERSIONS);
-        $countModel->where($where);
-        $total = (int)$countModel->count();
+        $total = (int)$this->buildWhereQuery(self::TABLE_VERSIONS, $where)->count();
 
         $offset = ($page - 1) * $perPage;
-        $listModel = M(self::TABLE_VERSIONS);
-        $listModel->where($where);
-        $items = $listModel->order('version DESC')->limit($offset, $perPage)->select();
+        $items = $this->buildWhereQuery(self::TABLE_VERSIONS, $where)
+            ->order('version DESC')
+            ->limit($offset, $perPage)
+            ->select();
 
         if (!is_array($items)) {
             $items = [];

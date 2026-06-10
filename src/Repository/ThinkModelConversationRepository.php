@@ -2,7 +2,7 @@
 
 namespace Qscmf\Chat2Viz\Repository;
 
-use Think\Exception;
+use Qscmf\Chat2Viz\Exception\DashboardException;
 
 class ThinkModelConversationRepository implements ConversationRepositoryInterface
 {
@@ -18,7 +18,7 @@ class ThinkModelConversationRepository implements ConversationRepositoryInterfac
         ?array $metadata = null
     ): array {
         if (!in_array($role, self::VALID_ROLES, true)) {
-            throw new Exception('Invalid message role: ' . $role);
+            throw new DashboardException('Invalid message role: ' . $role);
         }
 
         $insertData = [
@@ -35,13 +35,13 @@ class ThinkModelConversationRepository implements ConversationRepositoryInterfac
         $id = M(self::TABLE)->add($insertData);
 
         if (!$id) {
-            throw new Exception('Failed to create conversation message');
+            throw new DashboardException('Failed to create conversation message');
         }
 
         $row = M(self::TABLE)->find($id);
 
         if (!is_array($row) || empty($row)) {
-            throw new Exception('Failed to retrieve created message');
+            throw new DashboardException('Failed to retrieve created message');
         }
 
         return $row;
@@ -55,7 +55,7 @@ class ThinkModelConversationRepository implements ConversationRepositoryInterfac
         $rows = M(self::TABLE)
             ->where(['conversation_id' => $conversationId])
             ->order('created_at ASC')
-            ->limit("{$offset},{$limit}")
+            ->limit($offset, $limit)
             ->select();
 
         return is_array($rows) ? $rows : [];

@@ -58,7 +58,8 @@ class SmartyRenderer implements PageRendererInterface
         $this->callProtected('assign', 'meta_title', $dashboard['title'] ?? '仪表盘');
         $this->callProtected('assign', 'dashboard', $dashboard);
         $this->callProtected('assign', 'schema', $schema);
-        // Explicitly target view.html — action is now 'show', not 'view'
+        // Explicitly target view.html template
+        // NOTE: Must pass 'view' because display() defaults to ACTION_NAME which is 'view'
         $this->callProtected('display', 'view');
         return null;
     }

@@ -9,8 +9,20 @@ use Gy_Library\GyController;
 
 class SseTestController extends GyController
 {
+    private function checkLocalAccess(): void
+    {
+        $ip = $_SERVER['REMOTE_ADDR'] ?? '';
+        if (!in_array($ip, ['127.0.0.1', '::1'], true)) {
+            http_response_code(403);
+            echo json_encode(['error' => 'Access denied']);
+            exit;
+        }
+    }
+
     public function index()
     {
+        $this->checkLocalAccess();
+
         // Environment guard: only available in debug mode
         if (env('APP_DEBUG') !== true) {
             http_response_code(404);
