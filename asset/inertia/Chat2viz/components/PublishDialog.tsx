@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
-import { Button, Input, Modal, message } from 'antd';
+import { Button, Input, Modal, Typography, message } from 'antd';
 import { CloudUploadOutlined } from '@ant-design/icons';
 import { navigate } from '../adapters';
 
@@ -21,6 +21,8 @@ export interface PublishDialogProps {
 export default function PublishDialog({ uid, title, visible, onClose }: PublishDialogProps) {
   const [titleValue, setTitleValue] = useState(title);
   const [publishing, setPublishing] = useState(false);
+  const [shareMode, setShareMode] = useState(false);
+  const [shareUrl, setShareUrl] = useState('');
 
   // Sync local title when prop changes (e.g. store updates)
   useEffect(() => {
@@ -48,7 +50,9 @@ export default function PublishDialog({ uid, title, visible, onClose }: PublishD
 
       if (result.status === 1) {
         message.success('仪表盘发布成功');
-        navigate(`/extends/Chat2VizDashboard/view/uid/${uid}`);
+        const publishedUid = result.data?.uid || uid;
+        setShareUrl(window.location.origin + '/extends/Chat2VizDashboard/view/uid/' + publishedUid);
+        setShareMode(true);
       } else {
         message.error(result.info || '发布失败');
       }
@@ -59,39 +63,80 @@ export default function PublishDialog({ uid, title, visible, onClose }: PublishD
     }
   }, [uid, titleValue]);
 
+  const handleClose = useCallback(() => {
+    setShareMode(false);
+    setShareUrl('');
+    onClose();
+  }, [onClose]);
+
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      message.success('链接已复制');
+    } catch {
+      message.error('复制失败，请手动复制');
+    }
+  }, [shareUrl]);
+
+  const handleGoToView = useCallback(() => {
+    window.location.href = shareUrl;
+  }, [shareUrl]);
+
   return (
     <Modal
       title="发布仪表盘"
       open={visible}
-      onCancel={onClose}
+      onCancel={handleClose}
       destroyOnClose
-      footer={[
-        <Button key="cancel" onClick={onClose}>
-          取消
-        </Button>,
-        <Button
-          key="publish"
-          type="primary"
-          icon={<CloudUploadOutlined />}
-          loading={publishing}
-          onClick={handlePublish}
-        >
-          发布
-        </Button>,
-      ]}
+      footer={
+        shareMode
+          ? [
+              <Button key="continue" onClick={handleClose}>
+                继续编辑
+              </Button>,
+              <Button key="view" type="primary" onClick={handleGoToView}>
+                前往查看
+              </Button>,
+            ]
+          : [
+              <Button key="cancel" onClick={handleClose}>
+                取消
+              </Button>,
+              <Button
+                key="publish"
+                type="primary"
+                icon={<CloudUploadOutlined />}
+                loading={publishing}
+                onClick={handlePublish}
+              >
+                发布
+              </Button>,
+            ]
+      }
     >
-      <div style={styles.body}>
-        <label style={styles.label}>仪表盘标题</label>
-        <Input
-          value={titleValue}
-          onChange={(e) => setTitleValue(e.target.value)}
-          placeholder="输入仪表盘标题"
-          maxLength={255}
-        />
-        <p style={styles.hint}>
-          发布后可通过分享链接公开查看仪表盘。
-        </p>
-      </div>
+      {shareMode ? (
+        <div style={styles.body}>
+          <Typography.Paragraph copyable={{ text: shareUrl }} style={{ margin: 0, wordBreak: 'break-all' }}>
+            {shareUrl}
+          </Typography.Paragraph>
+          <Button type="link" onClick={handleCopy} style={{ padding: 0, marginTop: 8 }}>
+            复制链接
+          </Button>
+        </div>
+      ) : (
+        <div style={styles.body}>
+          <label style={styles.label}>仪表盘标题</label>
+          <Input
+            value={titleValue}
+            onChange={(e) => setTitleValue(e.target.value)}
+            placeholder="输入仪表盘标题"
+            maxLength={255}
+          />
+          <p style={styles.hint}>
+            发布后可通过分享链接公开查看仪表盘。
+          </p>
+        </div>
+      )}
     </Modal>
   );
 }

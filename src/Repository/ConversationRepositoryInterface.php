@@ -25,9 +25,12 @@ interface ConversationRepositoryInterface
     /**
      * Load messages for a conversation, oldest first.
      *
+     * @param string $conversationId
+     * @param int    $limit   Max 200, default 50
+     * @param int    $offset  Number of messages to skip (for pagination)
      * @return array<int, array> List of message rows
      */
-    public function getMessages(string $conversationId, int $limit = 50): array;
+    public function getMessages(string $conversationId, int $limit = 50, int $offset = 0): array;
 
     /**
      * Get distinct conversation IDs for a dashboard, most recent first.

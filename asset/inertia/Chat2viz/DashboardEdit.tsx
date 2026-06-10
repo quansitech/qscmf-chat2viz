@@ -51,6 +51,7 @@ export default function DashboardEdit() {
   const isDirty = useDashboardStore((s) => s.isDirty);
   const lastSavedAt = useDashboardStore((s) => s.lastSavedAt);
   const error = useDashboardStore((s) => s.error);
+  const streamingState = useDashboardStore((s) => s.streamingState);
 
   // Initialize store from server props — re-hydrate when navigating to a
   // different dashboard (Inertia client-side navigation in v14/v15) or on
@@ -146,7 +147,7 @@ export default function DashboardEdit() {
   }, [dashboard?.uid]);
 
   // ---- Draft auto-save hook ----
-  useDashboardDraft();
+  const { saveNow, isSaving, isDirty: draftIsDirty, lastSavedAt: draftLastSavedAt } = useDashboardDraft();
 
   // ---- Undo/Redo keyboard shortcuts (T25) ----
   const throttledUndo = useThrottledAction(() => {
@@ -228,6 +229,14 @@ export default function DashboardEdit() {
             </Tag>
           </Tooltip>
           {error && <Tag color="error">{error}</Tag>}
+          <Button
+            onClick={saveNow}
+            loading={isSaving}
+            disabled={!isDirty}
+            style={{ marginRight: 8 }}
+          >
+            保存
+          </Button>
           <Button type="primary" icon={<CloudUploadOutlined />} onClick={() => setPublishVisible(true)}>
             发布
           </Button>
@@ -251,6 +260,24 @@ export default function DashboardEdit() {
         visible={publishVisible}
         onClose={() => setPublishVisible(false)}
       />
+
+      {/* ---- Status Bar ---- */}
+      <div style={{
+        padding: '4px 16px',
+        borderTop: '1px solid #f0f0f0',
+        background: '#fafafa',
+        fontSize: 12,
+        color: '#999',
+        display: 'flex',
+        justifyContent: 'space-between',
+      }}>
+        <span>
+          {streamingState === 'streaming' ? 'AI 正在处理...' :
+           isDirty ? '有未保存的更改 (Ctrl+S 保存)' :
+           lastSavedAt ? '已保存于 ' + new Date(lastSavedAt).toLocaleTimeString() :
+           '就绪'}
+        </span>
+      </div>
 
       {/* ---- Responsive layout: stack vertically on narrow screens ---- */}
       <style>{responsiveCss}</style>

@@ -4,6 +4,8 @@ namespace Qscmf\Chat2Viz\Controller;
 
 use Gy_Library\GyController;
 use Qscmf\Chat2Viz\Adapter\AdapterFactory;
+use Qscmf\Chat2Viz\Exception\DashboardException;
+use Qscmf\Chat2Viz\Exception\DashboardNotFoundException;
 use Qscmf\Chat2Viz\Repository\DashboardRepositoryInterface;
 use Qscmf\Chat2Viz\Renderer\PageRendererInterface;
 use Qscmf\Chat2Viz\Security\SqlValidator;
@@ -22,18 +24,26 @@ class DashboardController extends GyController
      *
      * @var string[]
      */
-    protected array $publicActions = ['view', 'api_widget_data'];
+    protected array $publicActions = ['show', 'api_widget_data'];
 
     protected function _initialize()
     {
         if (in_array(ACTION_NAME, $this->publicActions, true)) {
             // Skip parent auth — initialize adapters only
-            $this->repo = AdapterFactory::createRepository();
-            $this->renderer = AdapterFactory::createRenderer($this);
+            $this->initAdapters();
             return;
         }
 
         parent::_initialize();
+        $this->initAdapters();
+    }
+
+    /**
+     * Initialize adapter dependencies (repository + renderer).
+     * Extracted to avoid duplication between public and authenticated branches.
+     */
+    private function initAdapters(): void
+    {
         $this->repo = AdapterFactory::createRepository();
         $this->renderer = AdapterFactory::createRenderer($this);
     }
@@ -78,9 +88,9 @@ class DashboardController extends GyController
 
     /**
      * Published dashboard view page (public).
-     * URL: GET /extends/Chat2VizDashboard/view?uid={uid}
+     * URL: GET /extends/Chat2VizDashboard/show?uid={uid}
      */
-    public function view()
+    public function show()
     {
         $uid = (string) ($_GET['uid'] ?? '');
         if ($uid === '') {
@@ -92,14 +102,21 @@ class DashboardController extends GyController
             return;
         }
 
-        $dashboard = $this->repo->findByUid($uid);
-        if (!$dashboard || ($dashboard['status'] ?? '') !== 'published') {
-            $this->error('仪表盘不存在或未发布');
-            return;
-        }
+        try {
+            $dashboard = $this->repo->findByUid($uid);
+            if (!$dashboard || ($dashboard['status'] ?? '') !== 'published') {
+                $this->error('仪表盘不存在或未发布');
+                return;
+            }
 
-        $schema = $this->repo->getPublishedSchema($uid);
-        $this->renderer->renderShow($dashboard, $schema ?? []);
+            $schema = $this->repo->getPublishedSchema($uid);
+            $this->renderer->renderShow($dashboard, $schema ?? []);
+        } catch (DashboardNotFoundException $e) {
+            $this->error('仪表盘不存在');
+        } catch (DashboardException $e) {
+            $this->logError('show failed', $e->getMessage());
+            $this->error('加载仪表盘失败');
+        }
     }
 
     // -------------------------------------------------------
@@ -169,6 +186,10 @@ class DashboardController extends GyController
 
     /**
      * Read a single dashboard by UID.
+     *
+     * Product decision: no ownership check on api_read — read access is not
+     * restricted in the current version. Revisit if business requirements change.
+     *
      * URL: GET /extends/Chat2VizDashboard/api_read?uid={uid}
      */
     public function api_read()
@@ -192,6 +213,11 @@ class DashboardController extends GyController
                 return;
             }
             $this->ajaxReturn(['status' => 1, 'data' => $dashboard]);
+        } catch (DashboardNotFoundException $e) {
+            $this->ajaxReturn(['status' => 0, 'info' => '仪表盘不存在']);
+        } catch (DashboardException $e) {
+            $this->logError('api_read failed', $e->getMessage());
+            $this->ajaxReturn(['status' => 0, 'info' => '获取详情失败']);
         } catch (\Exception $e) {
             $this->logError('api_read failed', $e->getMessage());
             $this->ajaxReturn(['status' => 0, 'info' => '获取详情失败']);
@@ -227,10 +253,20 @@ class DashboardController extends GyController
             $updateData['title'] = trim((string) $input['title']);
         }
         if (isset($input['current_schema'])) {
+            $schemaSize = strlen(json_encode($input['current_schema'], JSON_UNESCAPED_UNICODE));
+            if ($schemaSize > 65535) {
+                $this->ajaxReturn(['status' => 0, 'info' => '仪表盘数据过大']);
+                return;
+            }
             $updateData['current_schema'] = $input['current_schema'];
         }
         if (isset($input['conversation_id'])) {
-            $updateData['conversation_id'] = $input['conversation_id'];
+            $convId = (string) $input['conversation_id'];
+            if (!preg_match('/^[a-f0-9\-]{1,64}$/i', $convId)) {
+                $this->ajaxReturn(['status' => 0, 'info' => '无效的会话ID']);
+                return;
+            }
+            $updateData['conversation_id'] = $convId;
         }
 
         if (empty($updateData)) {
@@ -239,8 +275,20 @@ class DashboardController extends GyController
         }
 
         try {
+            $existing = $this->repo->findByUid($uid);
+            if ($existing === null) {
+                $this->ajaxReturn(['status' => 0, 'info' => '仪表盘不存在']);
+                return;
+            }
+            if (!$this->requireOwnership($existing)) return;
+
             $dashboard = $this->repo->update($uid, $updateData);
             $this->ajaxReturn(['status' => 1, 'data' => $dashboard]);
+        } catch (DashboardNotFoundException $e) {
+            $this->ajaxReturn(['status' => 0, 'info' => '仪表盘不存在']);
+        } catch (DashboardException $e) {
+            $this->logError('api_update failed', $e->getMessage());
+            $this->ajaxReturn(['status' => 0, 'info' => '更新失败']);
         } catch (\Exception $e) {
             $this->logError('api_update failed', $e->getMessage());
             $this->ajaxReturn(['status' => 0, 'info' => '更新失败']);
@@ -266,12 +314,24 @@ class DashboardController extends GyController
         }
 
         try {
+            $existing = $this->repo->findByUid($uid);
+            if ($existing === null) {
+                $this->ajaxReturn(['status' => 0, 'info' => '仪表盘不存在']);
+                return;
+            }
+            if (!$this->requireOwnership($existing)) return;
+
             $result = $this->repo->archive($uid);
             if (!$result) {
                 $this->ajaxReturn(['status' => 0, 'info' => '仪表盘不存在或已归档']);
                 return;
             }
             $this->ajaxReturn(['status' => 1, 'data' => ['uid' => $uid]]);
+        } catch (DashboardNotFoundException $e) {
+            $this->ajaxReturn(['status' => 0, 'info' => '仪表盘不存在']);
+        } catch (DashboardException $e) {
+            $this->logError('api_archive failed', $e->getMessage());
+            $this->ajaxReturn(['status' => 0, 'info' => '归档失败']);
         } catch (\Exception $e) {
             $this->logError('api_archive failed', $e->getMessage());
             $this->ajaxReturn(['status' => 0, 'info' => '归档失败']);
@@ -301,8 +361,20 @@ class DashboardController extends GyController
         }
 
         try {
+            $existing = $this->repo->findByUid($uid);
+            if ($existing === null) {
+                $this->ajaxReturn(['status' => 0, 'info' => '仪表盘不存在']);
+                return;
+            }
+            if (!$this->requireOwnership($existing)) return;
+
             $version = $this->repo->publish($uid);
             $this->ajaxReturn(['status' => 1, 'data' => $version]);
+        } catch (DashboardNotFoundException $e) {
+            $this->ajaxReturn(['status' => 0, 'info' => '仪表盘不存在']);
+        } catch (DashboardException $e) {
+            $this->logError('api_publish failed', $e->getMessage());
+            $this->ajaxReturn(['status' => 0, 'info' => '发布失败']);
         } catch (\Exception $e) {
             $this->logError('api_publish failed', $e->getMessage());
             $this->ajaxReturn(['status' => 0, 'info' => '发布失败']);
@@ -333,6 +405,11 @@ class DashboardController extends GyController
         try {
             $result = $this->repo->getVersions($uid, $page, $perPage);
             $this->ajaxReturn(['status' => 1, 'data' => $result]);
+        } catch (DashboardNotFoundException $e) {
+            $this->ajaxReturn(['status' => 0, 'info' => '仪表盘不存在']);
+        } catch (DashboardException $e) {
+            $this->logError('api_versions failed', $e->getMessage());
+            $this->ajaxReturn(['status' => 0, 'info' => '获取版本历史失败']);
         } catch (\Exception $e) {
             $this->logError('api_versions failed', $e->getMessage());
             $this->ajaxReturn(['status' => 0, 'info' => '获取版本历史失败']);
@@ -363,40 +440,49 @@ class DashboardController extends GyController
             return;
         }
 
-        $dashboard = $this->repo->findByUid($uid);
-        if ($dashboard === null) {
-            $this->ajaxReturn(['status' => 0, 'info' => '仪表盘不存在']);
-            return;
-        }
-
-        $schemaRaw = $dashboard['current_schema'] ?? null;
-        $schema = is_string($schemaRaw) ? json_decode($schemaRaw, true) : $schemaRaw;
-        if (!is_array($schema)) {
-            $this->ajaxReturn(['status' => 0, 'info' => '仪表盘数据异常']);
-            return;
-        }
-
-        $sql = $this->extractWidgetSql($schema, $widgetId);
-        if ($sql === null) {
-            $this->ajaxReturn(['status' => 0, 'info' => '组件不存在或未配置数据查询']);
-            return;
-        }
-
         try {
-            SqlValidator::validateSelectOnly($sql);
-            $sql = SqlValidator::enforceLimit($sql, 1000);
-        } catch (\InvalidArgumentException $e) {
-            $this->ajaxReturn(['status' => 0, 'info' => $e->getMessage()]);
-            return;
-        }
+            $dashboard = $this->repo->findByUid($uid);
+            if ($dashboard === null) {
+                $this->ajaxReturn(['status' => 0, 'info' => '仪表盘不存在']);
+                return;
+            }
 
-        try {
+            if (!$this->requireOwnership($dashboard)) return;
+
+            $schemaRaw = $dashboard['current_schema'] ?? null;
+            $schema = is_string($schemaRaw) ? json_decode($schemaRaw, true) : $schemaRaw;
+            if (!is_array($schema)) {
+                $this->ajaxReturn(['status' => 0, 'info' => '仪表盘数据异常']);
+                return;
+            }
+
+            $sql = $this->extractWidgetSql($schema, $widgetId);
+            if ($sql === null) {
+                $this->ajaxReturn(['status' => 0, 'info' => '组件不存在或未配置数据查询']);
+                return;
+            }
+
+            try {
+                SqlValidator::validateSelectOnly($sql);
+                $sql = SqlValidator::enforceLimit($sql, 1000);
+            } catch (\InvalidArgumentException $e) {
+                $this->ajaxReturn(['status' => 0, 'info' => $e->getMessage()]);
+                return;
+            }
+
             $this->setExecutionTimeout();
             $rows = M()->query($sql);
             if (!is_array($rows)) {
                 $rows = [];
             }
             $this->ajaxReturn(['status' => 1, 'data' => $rows]);
+        } catch (DashboardNotFoundException $e) {
+            $this->ajaxReturn(['status' => 0, 'info' => '仪表盘不存在']);
+        } catch (DashboardException $e) {
+            $this->logError('api_draft_widget_data failed', sprintf(
+                'uid=%s widget=%s err=%s', $uid, $widgetId, $e->getMessage()
+            ));
+            $this->ajaxReturn(['status' => 0, 'info' => '数据查询失败']);
         } catch (\Exception $e) {
             $this->logError('api_draft_widget_data failed', sprintf(
                 'uid=%s widget=%s err=%s', $uid, $widgetId, $e->getMessage()
@@ -408,7 +494,13 @@ class DashboardController extends GyController
     /**
      * Public widget data query endpoint.
      *
+     * Rate limiting:
+     *   - APCu available:  60 requests/minute per IP (APCu counter)
+     *   - APCu unavailable: 30 requests/minute per IP (file-based counter)
+     *   - APCu unavailable sets X-Cache: UNAVAILABLE response header
+     *
      * Flow:
+     * 0. Rate limit check (IP-based)
      * 1. Look up published schema for the dashboard
      * 2. Extract the widget's SQL from schema
      * 3. Validate SELECT-only via SqlValidator
@@ -426,6 +518,10 @@ class DashboardController extends GyController
     {
         if (!$this->requireMethod('GET')) return;
 
+        // Rate limiting: APCu IP-based counter when available,
+        // simpler counter when APCu is unavailable.
+        if (!$this->checkRateLimit()) return;
+
         $uid = (string) ($_GET['uid'] ?? '');
         $widgetId = (string) ($_GET['widgetId'] ?? '');
 
@@ -438,49 +534,50 @@ class DashboardController extends GyController
             return;
         }
 
-        // 1. Get dashboard and published schema in one pass
-        $dashboard = $this->repo->findByUid($uid);
-        if ($dashboard === null) {
-            $this->ajaxReturn(['status' => 0, 'info' => '仪表盘不存在']);
-            return;
-        }
-
-        $schema = $this->repo->getPublishedSchema($uid);
-        if ($schema === null) {
-            $this->ajaxReturn(['status' => 0, 'info' => '仪表盘未发布']);
-            return;
-        }
-
-        // 2. Find the widget and extract its SQL
-        $sql = $this->extractWidgetSql($schema, $widgetId);
-        if ($sql === null) {
-            $this->ajaxReturn(['status' => 0, 'info' => '组件不存在或未配置数据查询']);
-            return;
-        }
-
-        // 3-4. Validate and enforce SQL rules
         try {
-            SqlValidator::validateSelectOnly($sql);
-            $sql = SqlValidator::enforceLimit($sql, 1000);
-        } catch (\InvalidArgumentException $e) {
-            $this->ajaxReturn(['status' => 0, 'info' => $e->getMessage()]);
-            return;
-        }
-
-        // 5-6. Cache check — include versionId so cache invalidates on re-publish
-        $versionId = $dashboard['published_version_id'] ?? 'none';
-        $cacheKey = 'chat2viz:widget:' . md5($uid . ':' . $versionId . ':' . $widgetId . ':' . $sql);
-
-        if (function_exists('apcu_fetch')) {
-            $cached = apcu_fetch($cacheKey);
-            if ($cached !== false) {
-                $this->ajaxReturn(['status' => 1, 'data' => $cached, 'cache' => 'HIT']);
+            // 1. Get dashboard and published schema in one pass
+            $dashboard = $this->repo->findByUid($uid);
+            if ($dashboard === null) {
+                $this->ajaxReturn(['status' => 0, 'info' => '仪表盘不存在']);
                 return;
             }
-        }
 
-        // 7. Execute query with safety constraints
-        try {
+            $schema = $this->repo->getPublishedSchema($uid);
+            if ($schema === null) {
+                $this->ajaxReturn(['status' => 0, 'info' => '仪表盘未发布']);
+                return;
+            }
+
+            // 2. Find the widget and extract its SQL
+            $sql = $this->extractWidgetSql($schema, $widgetId);
+            if ($sql === null) {
+                $this->ajaxReturn(['status' => 0, 'info' => '组件不存在或未配置数据查询']);
+                return;
+            }
+
+            // 3-4. Validate and enforce SQL rules
+            try {
+                SqlValidator::validateSelectOnly($sql);
+                $sql = SqlValidator::enforceLimit($sql, 1000);
+            } catch (\InvalidArgumentException $e) {
+                $this->ajaxReturn(['status' => 0, 'info' => $e->getMessage()]);
+                return;
+            }
+
+            // 5-6. Cache check - include versionId so cache invalidates on re-publish
+            $versionId = $dashboard['published_version_id'] ?? 'none';
+            $cacheKey = 'chat2viz:widget:' . md5($uid . ':' . $versionId . ':' . $widgetId . ':' . $sql);
+
+            if (function_exists('apcu_fetch')) {
+                $cached = apcu_fetch($cacheKey);
+                if ($cached !== false) {
+                    $this->auditWidgetQuery($uid, $widgetId, $sql, count($cached));
+                    $this->ajaxReturn(['status' => 1, 'data' => $cached, 'cache' => 'HIT']);
+                    return;
+                }
+            }
+
+            // 7. Execute query with safety constraints
             $this->setExecutionTimeout();
 
             $rows = M()->query($sql);
@@ -499,6 +596,16 @@ class DashboardController extends GyController
             // 10. Return data
             $this->ajaxReturn(['status' => 1, 'data' => $rows, 'cache' => 'MISS']);
 
+        } catch (DashboardNotFoundException $e) {
+            $this->ajaxReturn(['status' => 0, 'info' => '仪表盘不存在']);
+        } catch (DashboardException $e) {
+            $this->logError('api_widget_data query failed', sprintf(
+                'uid=%s widget=%s err=%s',
+                $uid,
+                $widgetId,
+                $e->getMessage()
+            ));
+            $this->ajaxReturn(['status' => 0, 'info' => '数据查询失败']);
         } catch (\Exception $e) {
             $this->logError('api_widget_data query failed', sprintf(
                 'uid=%s widget=%s err=%s',
@@ -524,6 +631,34 @@ class DashboardController extends GyController
             $this->ajaxReturn(['status' => 0, 'info' => '请求方法不允许']);
             return false;
         }
+        return true;
+    }
+
+    /**
+     * Get the currently authenticated user ID from session.
+     * Returns null if not logged in (e.g. public action context).
+     */
+    private function getCurrentUserId(): ?int
+    {
+        $authId = session(C('USER_AUTH_KEY'));
+        return is_numeric($authId) ? (int) $authId : null;
+    }
+
+    /**
+     * Verify that the current user owns the given dashboard.
+     * Compares dashboard's created_by with the session user ID.
+     * Sends a JSON error response and returns false if ownership mismatch.
+     */
+    private function requireOwnership(array $dashboard): bool
+    {
+        $currentUserId = $this->getCurrentUserId();
+        $ownerId = $dashboard['created_by'] ?? null;
+
+        if ($currentUserId === null || $ownerId === null || (int) $ownerId !== $currentUserId) {
+            $this->ajaxReturn(['status' => 0, 'info' => '无权操作']);
+            return false;
+        }
+
         return true;
     }
 
@@ -585,6 +720,62 @@ class DashboardController extends GyController
         ], JSON_UNESCAPED_UNICODE);
 
         \Think\Log::write($entry, 'INFO');
+    }
+
+    /**
+     * Check IP-based rate limit for public endpoints.
+     *
+     * When APCu is available: 60 requests/minute per IP.
+     * When APCu is unavailable: 30 requests/minute per IP with X-Cache: UNAVAILABLE header.
+     *
+     * @return bool true if the request is allowed, false if rate limited (response already sent)
+     */
+    private function checkRateLimit(): bool
+    {
+        $ip = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+        $apcuAvailable = function_exists('apcu_fetch') && function_exists('apcu_store');
+        $maxRequests = $apcuAvailable ? 60 : 30;
+        $window = 60; // seconds
+
+        if ($apcuAvailable) {
+            $key = 'chat2viz:ratelimit:' . md5($ip);
+            $count = (int) apcu_fetch($key);
+            if ($count >= $maxRequests) {
+                $this->ajaxReturn(['status' => 0, 'info' => '请求过于频繁，请稍后再试']);
+                return false;
+            }
+            // Increment counter: use apcu_inc if key exists, otherwise initialize
+            if ($count > 0) {
+                apcu_inc($key, 1);
+            } else {
+                apcu_store($key, 1, $window);
+            }
+        } else {
+            // APCu unavailable fallback: still enforce limit and signal via header
+            header('X-Cache: UNAVAILABLE');
+            // Use a simple file-based counter as fallback
+            $tmpDir = sys_get_temp_dir();
+            $counterFile = $tmpDir . '/chat2viz_rl_' . md5($ip);
+            $now = time();
+
+            if (file_exists($counterFile)) {
+                $data = @json_decode(file_get_contents($counterFile), true);
+                if (is_array($data) && ($now - ($data['start'] ?? 0)) < $window) {
+                    if (($data['count'] ?? 0) >= $maxRequests) {
+                        $this->ajaxReturn(['status' => 0, 'info' => '请求过于频繁，请稍后再试']);
+                        return false;
+                    }
+                    $data['count']++;
+                } else {
+                    $data = ['count' => 1, 'start' => $now];
+                }
+            } else {
+                $data = ['count' => 1, 'start' => $now];
+            }
+            @file_put_contents($counterFile, json_encode($data));
+        }
+
+        return true;
     }
 
     /**

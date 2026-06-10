@@ -1,12 +1,14 @@
 import { useRef, useCallback } from 'react';
-import { useDashboardStore } from '../store/dashboardStore';
+import { useDashboardStore, generateId } from '../store/dashboardStore';
 import type {
   Widget,
   ActionCall,
   ActionCallResult,
   DashboardPatch,
+  AiStep,
 } from '../store/dashboardStore';
 import { parseSseEvent, type SseEvent } from '../sse-parser';
+import { computeNextSlot } from '../utils/layout';
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -88,6 +90,21 @@ export function useSseStream() {
 
         if (!response.body) {
           throw new Error('Response body is null; streaming not supported');
+        }
+
+        // Validate Content-Type — backend may return JSON error instead of SSE
+        const contentType = response.headers.get('Content-Type') ?? '';
+        if (!contentType.includes('text/event-stream')) {
+          // Attempt to extract error message from JSON body
+          const text = await response.text();
+          let message = `意外的响应格式 (${contentType || 'unknown'})`;
+          try {
+            const json = JSON.parse(text) as Record<string, unknown>;
+            message = String(json.info || json.message || json.error || message);
+          } catch {
+            // Not JSON — use the generic message above
+          }
+          throw new Error(message);
         }
 
         // Consume the SSE stream
@@ -188,7 +205,18 @@ function dispatchEvent(event: SseEvent | null): void {
         // Silently skip invalid chart data to prevent UI disruption
         break;
       }
-      store.addPanel(event.data as unknown as Widget);
+      const widget = event.data as unknown as Widget;
+      if (!widget.layout) {
+        widget.layout = computeNextSlot(store.widgets);
+      }
+      store.addPanel(widget);
+      store.addAiStep({
+        id: generateStepId(),
+        type: 'chart_ready',
+        label: '图表已生成',
+        timestamp: generateId(),
+        completed: true,
+      });
       break;
     }
 
@@ -198,6 +226,14 @@ function dispatchEvent(event: SseEvent | null): void {
         params: obj<Record<string, unknown>>(event.data.params),
       };
       store.executeAction(action);
+      const toolLabel = getToolLabel(action.action_type);
+      store.addAiStep({
+        id: generateStepId(),
+        type: 'tool_start',
+        label: toolLabel,
+        timestamp: generateId(),
+        completed: false,
+      });
       break;
     }
 
@@ -227,7 +263,54 @@ function dispatchEvent(event: SseEvent | null): void {
     }
 
     case 'error': {
-      store.setError(str(event.data.info) || str(event.data.message) || '未知错误');
+      {
+        // Support multiple error formats:
+        // 1. Nl2sqlEventTransformer: {info: '...'}
+        // 2. SseWriter::sendError: {type:'error', error:{code:'...', message:'...'}}
+        // 3. Simple: {message: '...'}
+        const info = str(event.data.info);
+        const message = str(event.data.message);
+        const nestedError = obj<{ message?: string }>(event.data.error);
+        const nestedMsg = str(nestedError.message);
+        store.setError(info || message || nestedMsg || '未知错误');
+      }
+      break;
+    }
+
+    case 'done': {
+      store.clearAiSteps();
+      break;
+    }
+
+    case 'sql_generated': {
+      store.addAiStep({
+        id: generateStepId(),
+        type: 'sql_ready',
+        label: 'SQL 已生成',
+        timestamp: generateId(),
+        completed: true,
+      });
+      const sql = str(event.data.sql);
+      if (sql) {
+        useDashboardStore.setState((state) => {
+          const lastAssistant = [...state.messages].reverse().find(m => m.role === 'assistant');
+          if (lastAssistant) {
+            if (!lastAssistant.metadata) lastAssistant.metadata = {};
+            lastAssistant.metadata.sql = sql;
+          }
+        });
+      }
+      break;
+    }
+
+    case 'data_preview': {
+      store.addAiStep({
+        id: generateStepId(),
+        type: 'data_ready',
+        label: '数据已加载',
+        timestamp: generateId(),
+        completed: true,
+      });
       break;
     }
 
@@ -245,7 +328,12 @@ function dispatchEvent(event: SseEvent | null): void {
 function validateWidget(data: unknown): data is Widget {
   if (typeof data !== 'object' || data === null) return false;
   const d = data as Record<string, unknown>;
-  return typeof d.id === 'string' && d.id.length > 0;
+  return (
+    typeof d.id === 'string' &&
+    d.id.length > 0 &&
+    typeof d.g2_spec === 'object' &&
+    d.g2_spec !== null
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -274,6 +362,7 @@ function applyPatches(patches: DashboardPatch[]): void {
           if (patch.op === 'replace' && patch.value) {
             store.updateWidget(widgetId, patch.value as unknown as Partial<Widget>);
           } else if (patch.op === 'add' && patch.value) {
+            if (!validateWidget(patch.value)) continue;
             store.addPanel(patch.value as unknown as Widget);
           }
         } else {
@@ -322,4 +411,19 @@ function delay(ms: number, signal: AbortSignal): Promise<void> {
       { once: true },
     );
   });
+}
+
+function generateStepId(): string {
+  return 'step-' + crypto.randomUUID().slice(0, 8);
+}
+
+const TOOL_LABELS: Record<string, string> = {
+  execute_sql: '执行查询...',
+  search_objects: '搜索相关表...',
+  list_tables: '获取表列表...',
+  describe_table: '分析表结构...',
+};
+
+function getToolLabel(actionType: string): string {
+  return TOOL_LABELS[actionType] || '执行操作...';
 }

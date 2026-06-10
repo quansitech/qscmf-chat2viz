@@ -32,11 +32,15 @@ class EloquentConversationRepository implements ConversationRepositoryInterface
         return $message->toArray();
     }
 
-    public function getMessages(string $conversationId, int $limit = 50): array
+    public function getMessages(string $conversationId, int $limit = 50, int $offset = 0): array
     {
+        $limit = min(max(1, $limit), 200);
+        $offset = max(0, $offset);
+
         return ConversationMessage::where('conversation_id', $conversationId)
             ->orderBy('created_at', 'asc')
-            ->limit($limit)
+            ->skip($offset)
+            ->take($limit)
             ->get()
             ->toArray();
     }

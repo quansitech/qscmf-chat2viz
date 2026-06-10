@@ -1,5 +1,5 @@
 import { useCallback, useMemo } from 'react';
-import { Empty, Typography } from 'antd';
+import { Empty, Spin, Typography } from 'antd';
 import { LayoutOutlined } from '@ant-design/icons';
 import RGL, { WidthProvider, Layout } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
@@ -31,6 +31,7 @@ export default function PreviewPanel() {
   const updateWidget = useDashboardStore((s) => s.updateWidget);
   const updateLayout = useDashboardStore((s) => s.updateLayout);
   const removePanel = useDashboardStore((s) => s.removePanel);
+  const streamingState = useDashboardStore((s) => s.streamingState);
 
   const widgetList = useMemo(() => Object.values(widgets) as Widget[], [widgets]);
   const hasWidgets = widgetList.length > 0;
@@ -38,15 +39,18 @@ export default function PreviewPanel() {
   // ---- Build react-grid-layout layout array from store widgets ----
   const layout: Layout[] = useMemo(
     () =>
-      widgetList.map((w) => ({
-        i: w.id,
-        x: w.layout.x,
-        y: w.layout.y,
-        w: w.layout.w,
-        h: w.layout.h,
-        minW: 4,
-        minH: 3,
-      })),
+      widgetList.map((w) => {
+        const l = w.layout || { x: 0, y: 0, w: 12, h: 6 };
+        return {
+          i: w.id,
+          x: l.x,
+          y: l.y,
+          w: l.w,
+          h: l.h,
+          minW: 4,
+          minH: 3,
+        };
+      }),
     [widgetList],
   );
 
@@ -126,6 +130,20 @@ export default function PreviewPanel() {
           </div>
         ))}
       </ResponsiveGridLayout>
+      {streamingState !== 'idle' && hasWidgets && (
+        <div style={{
+          position: 'absolute',
+          top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(255, 255, 255, 0.6)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          pointerEvents: 'none',
+          zIndex: 10,
+        }}>
+          <Spin tip="AI 正在生成图表..." />
+        </div>
+      )}
       <style>{widgetFadeInCss}</style>
     </div>
   );
@@ -148,6 +166,7 @@ const widgetFadeInCss = `
 
 const styles: Record<string, React.CSSProperties> = {
   container: {
+    position: 'relative',
     height: '100%',
     overflow: 'auto',
     padding: 12,

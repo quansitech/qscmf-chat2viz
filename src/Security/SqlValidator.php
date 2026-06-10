@@ -21,28 +21,37 @@ class SqlValidator
      */
     public static function validateSelectOnly(string $sql): void
     {
-        $normalized = preg_replace('/\s+/', ' ', strtoupper(trim($sql)));
+        // 1. Globally strip ALL block comments (/* ... */) and line comments (-- ...)
+        //    before any keyword analysis. This prevents bypass via UN/**/ION or
+        //    IN/**/TO OUTFILE injection patterns.
+        $stripped = preg_replace('#/\*.*?\*/#s', '', $sql);
+        $stripped = preg_replace('/--[^\n]*\n?/', ' ', $stripped ?? $sql);
 
-        // Strip leading block comments and line comments before checking statement type
-        $normalized = preg_replace('#^(/\*.*?\*/|--[^\n]*\n|\s)*#s', '', $normalized);
+        $normalized = preg_replace('/\s+/', ' ', strtoupper(trim($stripped ?? $sql)));
 
+        // 2. Verify SELECT-only (after comment removal)
         if (!str_starts_with($normalized, 'SELECT')) {
             throw new \InvalidArgumentException('Only SELECT queries are allowed');
         }
 
-        // Reject multi-statement input (e.g. "SELECT 1; DELETE FROM users")
+        // 3. Reject multi-statement input (e.g. "SELECT 1; DELETE FROM users")
         if (strpos($normalized, ';') !== false) {
             throw new \InvalidArgumentException('Multi-statement queries are not allowed');
         }
 
-        // Reject UNION-based data exfiltration
+        // 4. Reject UNION-based data exfiltration
         if (preg_match('/\bUNION\b/i', $normalized)) {
             throw new \InvalidArgumentException('UNION queries are not allowed');
         }
 
-        // Reject dangerous SELECT variants: INTO OUTFILE/DUMPFILE, FOR UPDATE, LOCK IN SHARE MODE
+        // 5. Reject dangerous SELECT variants: INTO OUTFILE/DUMPFILE, FOR UPDATE, LOCK IN SHARE MODE
         if (preg_match('/\b(INTO\s+(OUTFILE|DUMPFILE)|FOR\s+UPDATE|LOCK\s+IN\s+SHARE\s+MODE)\b/i', $normalized)) {
             throw new \InvalidArgumentException('Disallowed keyword in query');
+        }
+
+        // 6. Reject dangerous MySQL functions that can be used for data exfiltration or DoS
+        if (preg_match('/\b(LOAD_FILE|BENCHMARK|SLEEP|EXTRACTVALUE|UPDATEXML)\s*\(/i', $normalized)) {
+            throw new \InvalidArgumentException('Disallowed function in query');
         }
     }
 

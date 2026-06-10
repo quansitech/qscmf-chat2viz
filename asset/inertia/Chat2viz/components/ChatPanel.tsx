@@ -1,5 +1,5 @@
-import { useRef, useEffect, useState, useCallback } from 'react';
-import { Button, Collapse, Empty, Input, Spin, Typography } from 'antd';
+import { useRef, useEffect, useState, useCallback, useMemo } from 'react';
+import { Badge, Button, Collapse, Empty, Input, Spin, Typography } from 'antd';
 import { SendOutlined, QuestionCircleOutlined } from '@ant-design/icons';
 import { useDashboardStore } from '../store/dashboardStore';
 import { useSseStream } from '../hooks/useSseStream';
@@ -15,6 +15,52 @@ const EXAMPLE_QUESTIONS = [
   '订单金额排名前10的客户有哪些？',
 ];
 
+// Static keyframe CSS for the typing cursor — defined once at module level
+// to avoid re-injecting a <style> element on every render.
+const TYPING_CURSOR_CSS = `@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} } .typing-cursor { animation: blink 1s step-end infinite; display: inline; } .typing-cursor::after { content: '|'; }`;
+
+/** Selector: does the last assistant message have content? */
+function selectLastAssistantHasContent(s: { messages: ChatMessage[] }): boolean {
+  const msgs = s.messages;
+  const last = [...msgs].reverse().find((m) => m.role === 'assistant');
+  return !!last?.content;
+}
+
+// ---------------------------------------------------------------------------
+// AiStepsIndicator — renders progress badges from store.aiSteps
+// ---------------------------------------------------------------------------
+
+function AiStepsIndicator() {
+  const aiSteps = useDashboardStore((s) => s.aiSteps);
+  const streamingState = useDashboardStore((s) => s.streamingState);
+
+  if (streamingState === 'idle' || aiSteps.length === 0) {
+    if (streamingState !== 'idle') {
+      return (
+        <div style={styles.loadingIndicator}>
+          <Spin size="small" />
+          <Typography.Text type="secondary" style={{ marginLeft: 8 }}>分析中...</Typography.Text>
+        </div>
+      );
+    }
+    return null;
+  }
+
+  return (
+    <div style={styles.aiStepsContainer}>
+      {aiSteps.map((step, i) => (
+        <div key={step.id} style={styles.aiStep}>
+          <Badge status={step.completed ? 'success' : 'processing'} />
+          <Typography.Text type={step.completed ? 'secondary' : undefined} style={{ fontSize: 12 }}>
+            {step.label}
+          </Typography.Text>
+          {i === aiSteps.length - 1 && !step.completed && <Spin size="small" style={{ marginLeft: 4 }} />}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -22,8 +68,10 @@ const EXAMPLE_QUESTIONS = [
 export default function ChatPanel() {
   const messages = useDashboardStore((s) => s.messages);
   const isLoading = useDashboardStore((s) => s.isLoading);
+  const streamingState = useDashboardStore((s) => s.streamingState);
   const error = useDashboardStore((s) => s.error);
   const { sendQuestion, cancel } = useSseStream();
+  const lastAssistantHasContent = useDashboardStore(selectLastAssistantHasContent);
 
   const [inputValue, setInputValue] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -91,14 +139,7 @@ export default function ChatPanel() {
           <MessageBubble key={msg.id} message={msg} />
         ))}
 
-        {isLoading && (
-          <div style={styles.loadingIndicator}>
-            <Spin size="small" />
-            <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
-              分析中...
-            </Typography.Text>
-          </div>
-        )}
+        <AiStepsIndicator />
 
         {error && (
           <div style={styles.errorBlock}>
@@ -107,6 +148,9 @@ export default function ChatPanel() {
         )}
 
         <div ref={messagesEndRef} />
+        {streamingState !== 'idle' && lastAssistantHasContent && (
+          <style>{TYPING_CURSOR_CSS}</style>
+        )}
       </div>
 
       {/* ---- Input Bar ---- */}
@@ -117,17 +161,16 @@ export default function ChatPanel() {
           onKeyDown={handleKeyDown}
           placeholder="输入你的问题...（回车发送，Shift+回车换行）"
           autoSize={{ minRows: 1, maxRows: 4 }}
-          disabled={isLoading}
           style={styles.textArea}
         />
         <Button
-          type="primary"
+          type={streamingState === 'idle' ? 'primary' : 'default'}
           icon={<SendOutlined />}
-          onClick={isLoading ? cancel : handleSend}
-          danger={isLoading}
+          onClick={streamingState !== 'idle' ? cancel : handleSend}
+          danger={streamingState !== 'idle'}
           style={styles.sendBtn}
         >
-          {isLoading ? '停止' : '发送'}
+          {streamingState !== 'idle' ? '停止' : '发送'}
         </Button>
       </div>
     </div>
@@ -146,6 +189,12 @@ function MessageBubble({ message }: MessageBubbleProps) {
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
 
+  const streamingState = useDashboardStore((s) => s.streamingState);
+  const messages = useDashboardStore((s) => s.messages);
+  const isLastAssistant = message.role === 'assistant' &&
+    messages[messages.length - 1]?.id === message.id;
+  const showCursor = isLastAssistant && streamingState !== 'idle';
+
   if (isSystem) return null;
 
   return (
@@ -155,7 +204,10 @@ function MessageBubble({ message }: MessageBubbleProps) {
             dangerouslySetInnerHTML for markdown rendering, MUST sanitize
             with DOMPurify first. */}
         {message.content && (
-          <div style={styles.bubbleContent}>{message.content}</div>
+          <div style={styles.bubbleContent}>
+            {message.content}
+            {showCursor && <span className="typing-cursor" />}
+          </div>
         )}
 
         {/* SQL collapse */}
@@ -224,6 +276,15 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     padding: '8px 0',
+  },
+  aiStepsContainer: {
+    padding: '8px 0',
+  },
+  aiStep: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 4,
   },
   errorBlock: {
     padding: '8px 12px',

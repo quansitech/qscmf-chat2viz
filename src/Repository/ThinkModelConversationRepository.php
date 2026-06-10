@@ -47,12 +47,15 @@ class ThinkModelConversationRepository implements ConversationRepositoryInterfac
         return $row;
     }
 
-    public function getMessages(string $conversationId, int $limit = 50): array
+    public function getMessages(string $conversationId, int $limit = 50, int $offset = 0): array
     {
+        $limit = min(max(1, $limit), 200);
+        $offset = max(0, $offset);
+
         $rows = M(self::TABLE)
             ->where(['conversation_id' => $conversationId])
             ->order('created_at ASC')
-            ->limit($limit)
+            ->limit("{$offset},{$limit}")
             ->select();
 
         return is_array($rows) ? $rows : [];

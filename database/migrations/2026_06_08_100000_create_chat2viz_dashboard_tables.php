@@ -6,6 +6,26 @@ use Illuminate\Database\Migrations\Migration;
 
 class CreateChat2vizDashboardTables extends Migration
 {
+    /**
+     * Schema fidelity notes (Layer 6 audit):
+     *
+     * 1. qs_chat2viz_dashboard_versions.updated_at
+     *    - Defined by $table->timestamps(), maps to timestamp NULL in MySQL.
+     *    - Verified: actual DB column matches migration definition.
+     *
+     * 2. qs_chat2viz_conversation_messages.content
+     *    - Defined as TEXT NOT NULL with no default.
+     *    - Application layer must always provide content; empty string is valid.
+     *    - Verified: actual DB column matches migration definition.
+     *
+     * 3. Legacy conversation_id=NULL records in qs_chat2viz_dashboards
+     *    - The dashboards table allows conversation_id to be NULL (nullable column).
+     *    - Old dashboards created before the conversation linkage feature may have
+     *      conversation_id=NULL. These records cannot be retroactively linked to
+     *      conversations because the original conversation data no longer exists.
+     *    - This is an accepted historical artifact; no data recovery is needed.
+     */
+
     public function beforeCmmUp()
     {
         //

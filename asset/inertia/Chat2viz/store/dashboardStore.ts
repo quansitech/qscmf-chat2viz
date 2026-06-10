@@ -9,7 +9,7 @@ import { buildSchema } from '../utils/buildSchema';
 // Utility — safe UUID generation with fallback for non-secure contexts
 // ---------------------------------------------------------------------------
 
-function generateId(): string {
+export function generateId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     try {
       return crypto.randomUUID();
@@ -76,6 +76,16 @@ export interface ChatMessage {
   };
 }
 
+export type StreamingState = 'idle' | 'streaming' | 'error';
+
+export interface AiStep {
+  id: string;
+  type: 'tool_start' | 'sql_ready' | 'data_ready' | 'thinking' | 'chart_ready';
+  label: string;
+  timestamp: string;
+  completed: boolean;
+}
+
 export interface DashboardState {
   uid: string;
   title: string;
@@ -83,6 +93,8 @@ export interface DashboardState {
   conversationId: string;
   messages: ChatMessage[];
   isLoading: boolean;
+  streamingState: StreamingState;
+  aiSteps: AiStep[];
   error: string;
   autoSaveEnabled: boolean;
   isDirty: boolean;
@@ -108,6 +120,9 @@ export interface DashboardActions {
   setConversationId: (id: string) => void;
   toggleAutoSave: () => void;
   getDashboardContext: () => object;
+  addAiStep: (step: AiStep) => void;
+  completeAiStep: (stepId: string) => void;
+  clearAiSteps: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -127,6 +142,8 @@ const initialState: DashboardState = {
   conversationId: '',
   messages: [],
   isLoading: false,
+  streamingState: 'idle' as StreamingState,
+  aiSteps: [] as AiStep[],
   error: '',
   autoSaveEnabled: true,
   isDirty: false,
@@ -168,6 +185,8 @@ const _store = _create()(
         startConversation: (question: string) => {
           set((state) => {
             state.isLoading = true;
+            state.streamingState = 'streaming';
+            state.aiSteps = [];
             state.error = '';
             state.messages.push({
               id: generateId(),
@@ -199,6 +218,8 @@ const _store = _create()(
         completeConversation: () => {
           set((state) => {
             state.isLoading = false;
+            state.streamingState = 'idle';
+            state.aiSteps = [];
           });
         },
 
@@ -206,7 +227,10 @@ const _store = _create()(
 
         addPanel: (widget: Widget) => {
           set((state) => {
-            state.widgets[widget.id] = widget;
+            state.widgets[widget.id] = {
+              ...widget,
+              layout: widget.layout || { x: 0, y: 0, w: 12, h: 6 },
+            };
             state.isDirty = true;
           });
         },
@@ -271,6 +295,8 @@ const _store = _create()(
           set((state) => {
             state.error = error;
             state.isLoading = false;
+            state.streamingState = 'error';
+            state.aiSteps = [];
           });
         },
 
@@ -313,6 +339,27 @@ const _store = _create()(
             conversation_id: conversationId,
             widgets: widgetDict,
           };
+        },
+
+        // ------- AI Steps -------
+
+        addAiStep: (step: AiStep) => {
+          set((state) => {
+            state.aiSteps.push(step);
+          });
+        },
+
+        completeAiStep: (stepId: string) => {
+          set((state) => {
+            const step = state.aiSteps.find((s) => s.id === stepId);
+            if (step) step.completed = true;
+          });
+        },
+
+        clearAiSteps: () => {
+          set((state) => {
+            state.aiSteps = [];
+          });
         },
       };
     }),

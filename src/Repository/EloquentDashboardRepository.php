@@ -2,8 +2,11 @@
 
 namespace Qscmf\Chat2Viz\Repository;
 
+use Qscmf\Chat2Viz\Exception\DashboardException;
+use Qscmf\Chat2Viz\Exception\DashboardNotFoundException;
 use Qscmf\Chat2Viz\Model\Dashboard;
 use Qscmf\Chat2Viz\Model\DashboardVersion;
+use Qscmf\Chat2Viz\Traits\DashboardFilterTrait;
 use Qscmf\Chat2Viz\Traits\UuidTrait;
 use Qscmf\Chat2Viz\Traits\SchemaStripTrait;
 use Illuminate\Support\Facades\DB;
@@ -12,7 +15,7 @@ class EloquentDashboardRepository implements DashboardRepositoryInterface
 {
     use UuidTrait;
     use SchemaStripTrait;
-    private const FILTER_WHITELIST = ['status', 'created_by'];
+    use DashboardFilterTrait;
 
     /**
      * @param array $filters Whitelist keys: status, created_by
@@ -27,7 +30,7 @@ class EloquentDashboardRepository implements DashboardRepositoryInterface
             $query->where($key, $value);
         }
 
-        $total = $query->count();
+        $total = (clone $query)->count();
         $items = $query
             ->orderBy('id', 'desc')
             ->offset(($page - 1) * $perPage)
@@ -75,7 +78,7 @@ class EloquentDashboardRepository implements DashboardRepositoryInterface
     {
         $dashboard = Dashboard::where('uid', $uid)->first();
         if ($dashboard === null) {
-            throw new \RuntimeException('Dashboard not found: ' . $uid);
+            throw new DashboardNotFoundException($uid);
         }
 
         $updateData = [];
@@ -110,11 +113,11 @@ class EloquentDashboardRepository implements DashboardRepositoryInterface
         return $dashboard->update(['status' => 'archived']);
     }
 
-    public function publish(string $uid): array
+    public function publish(string $uid, ?int $publishedBy = null): array
     {
         $dashboard = Dashboard::where('uid', $uid)->first();
         if ($dashboard === null) {
-            throw new \RuntimeException('Dashboard not found: ' . $uid);
+            throw new DashboardNotFoundException($uid);
         }
 
         // 1. Deep copy current_schema
@@ -127,14 +130,16 @@ class EloquentDashboardRepository implements DashboardRepositoryInterface
         $schema = $this->stripG2SpecData($schema);
 
         // 3-5. Transaction: lock, compute version, insert, update
-        $versionArray = DB::transaction(function () use ($dashboard, $schema) {
+        $effectivePublishedBy = $publishedBy ?? $dashboard->created_by;
+
+        $versionArray = DB::transaction(function () use ($dashboard, $schema, $effectivePublishedBy) {
             // Pessimistic lock to prevent concurrent publish race
             $locked = Dashboard::where('id', $dashboard->id)
                 ->lockForUpdate()
                 ->first();
 
             if ($locked === null) {
-                throw new \RuntimeException('Dashboard not found during lock: ' . $dashboard->uid);
+                throw new DashboardNotFoundException($dashboard->uid);
             }
 
             $maxVersion = DashboardVersion::where('dashboard_id', $dashboard->id)
@@ -146,7 +151,7 @@ class EloquentDashboardRepository implements DashboardRepositoryInterface
                 'version' => $newVersion,
                 'schema' => $schema,
                 'published_at' => now(),
-                'published_by' => $dashboard->created_by,
+                'published_by' => $effectivePublishedBy,
             ]);
 
             $locked->update([
@@ -188,7 +193,7 @@ class EloquentDashboardRepository implements DashboardRepositoryInterface
         }
 
         $query = DashboardVersion::where('dashboard_id', $dashboard->id);
-        $total = $query->count();
+        $total = (clone $query)->count();
 
         $items = $query
             ->orderBy('version', 'desc')
@@ -203,24 +208,5 @@ class EloquentDashboardRepository implements DashboardRepositoryInterface
             'page' => $page,
             'perPage' => $perPage,
         ];
-    }
-
-    /**
-     * Filter input array against the whitelist of allowed filter keys,
-     * with value validation for enum and numeric fields.
-     */
-    private function filterWhitelist(array $filters): array
-    {
-        $safe = [];
-        $validStatuses = ['draft', 'published', 'archived'];
-
-        if (isset($filters['status']) && in_array($filters['status'], $validStatuses, true)) {
-            $safe['status'] = $filters['status'];
-        }
-        if (isset($filters['created_by']) && is_numeric($filters['created_by'])) {
-            $safe['created_by'] = (int) $filters['created_by'];
-        }
-
-        return $safe;
     }
 }

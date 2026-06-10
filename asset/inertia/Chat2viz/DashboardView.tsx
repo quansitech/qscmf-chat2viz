@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { Button, Empty, Alert, Spin, Typography } from 'antd';
+import { Button, Empty, Alert, Spin, Typography, Collapse } from 'antd';
 import { ArrowLeftOutlined } from '@ant-design/icons';
 import { useQuery, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import RGL, { WidthProvider, Layout } from 'react-grid-layout';
@@ -57,7 +57,7 @@ interface DashboardViewPageProps {
 // Constants
 // ---------------------------------------------------------------------------
 
-const COLS = 12;
+const COLS = 24;
 const ROW_HEIGHT = 60;
 
 // ---------------------------------------------------------------------------
@@ -137,9 +137,19 @@ function ViewWidgetCard({ uid, widget }: ViewWidgetCardProps) {
       {/* Footer */}
       {widget.sql && (
         <div style={styles.footer}>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            查询: {widget.sql.length > 80 ? widget.sql.slice(0, 80) + '...' : widget.sql}
-          </Typography.Text>
+          <Collapse
+            ghost
+            size="small"
+            items={[{
+              key: 'sql',
+              label: <Typography.Text type="secondary" style={{ fontSize: 11 }}>查询语句</Typography.Text>,
+              children: (
+                <pre style={{ background: '#fff', padding: 6, borderRadius: 4, fontSize: 11, overflow: 'auto', margin: 0, maxHeight: 120 }}>
+                  {widget.sql}
+                </pre>
+              ),
+            }]}
+          />
         </div>
       )}
     </div>
@@ -163,7 +173,7 @@ function DashboardViewInner() {
         i: w.id,
         x: w.layout?.x ?? 0,
         y: w.layout?.y ?? 0,
-        w: w.layout?.w ?? 6,
+        w: w.layout?.w ?? 12,
         h: w.layout?.h ?? 6,
         static: true,
       })),

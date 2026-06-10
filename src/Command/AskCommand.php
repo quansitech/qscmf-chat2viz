@@ -15,6 +15,28 @@ class AskCommand extends \Illuminate\Console\Command
 
     public function handle()
     {
+        $apiKey = env('CHAT2VIZ_API_KEY');
+        if (empty($apiKey) || !is_string($apiKey) || trim($apiKey) === '') {
+            $this->error('CHAT2VIZ_API_KEY 未配置。请在 .env 中设置有效的 API Key。');
+            return 1;
+        }
+
+        $question = $this->argument('question');
+        if (!is_string($question) || trim($question) === '') {
+            $this->error('问题不能为空。');
+            return 1;
+        }
+        if (mb_strlen($question) > 1000) {
+            $this->error('问题长度不能超过1000字。');
+            return 1;
+        }
+
+        $conversationId = $this->option('conversation-id');
+        if ($conversationId !== null && !preg_match('/^[a-f0-9\-]{1,64}$/i', (string) $conversationId)) {
+            $this->error('无效的会话ID格式。');
+            return 1;
+        }
+
         try {
             $transport = new SocketTransport([
                 'socket_path' => env('CHAT2VIZ_SOCKET_PATH', '/run/chat2viz.sock'),
@@ -26,17 +48,17 @@ class AskCommand extends \Illuminate\Console\Command
                 'id'     => bin2hex(random_bytes(16)),
                 'method' => 'ask_stream',
                 'params' => [
-                    'question'        => $this->argument('question'),
-                    'conversation_id' => $this->option('conversation-id'),
+                    'question'        => $question,
+                    'conversation_id' => $conversationId,
                 ],
-                'auth' => ['api_key' => env('CHAT2VIZ_API_KEY')],
+                'auth' => ['api_key' => $apiKey],
             ]) as $frame) {
                 if (($frame['type'] ?? '') === 'chart_ready') {
                     $results[] = $frame['data'];
                 }
             }
-        } catch (\RuntimeException $e) {
-            $this->error('Socket 服务不可用: ' . $e->getMessage());
+        } catch (\Throwable $e) {
+            $this->error('执行失败: ' . $e->getMessage());
             $this->line('请检查 CHAT2VIZ_SOCKET_PATH 配置或确认 Python Agent 已启动。');
             return 1;
         }

@@ -42,9 +42,11 @@ interface DashboardRepositoryInterface
     /**
      * Publish a dashboard: snapshot current_schema (strip g2_spec.data) as a version.
      *
+     * @param string $uid Dashboard UID
+     * @param int|null $publishedBy User ID of the publisher (falls back to created_by)
      * @return array The created version record as plain array
      */
-    public function publish(string $uid): array;
+    public function publish(string $uid, ?int $publishedBy = null): array;
 
     /**
      * Get the published schema for a dashboard.

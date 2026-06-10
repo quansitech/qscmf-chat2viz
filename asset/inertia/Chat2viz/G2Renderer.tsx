@@ -74,6 +74,15 @@ function hasChartSpec(spec: Record<string, unknown>): boolean {
   return false;
 }
 
+/**
+ * Sanitize chart data for G2 consumption.
+ * Returns undefined if data is empty/invalid (G2 will use spec-embedded data).
+ */
+function sanitizeChartData(data: Record<string, unknown>[] | undefined): Record<string, unknown>[] | undefined {
+  if (!data || !Array.isArray(data) || data.length === 0) return undefined;
+  return data;
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -95,15 +104,23 @@ export default function G2Renderer({ spec, data, width, height, className }: G2R
     if (!G2 || typeof G2.Chart !== 'function') return;
     const level = determineUpdateLevel(prevSpecRef.current, spec, prevDataRef.current, data);
 
+    const safeData = sanitizeChartData(data);
+
     switch (level) {
       case 'changeData': {
         // Level 1: Only data changed -> use changeData() for performance
-        if (chartRef.current && data) {
+        if (chartRef.current && safeData) {
           try {
-            chartRef.current.changeData(data);
+            chartRef.current.changeData(safeData);
           } catch {
             // Fallback to options re-render if changeData fails
-            chartRef.current.options(spec).render();
+            try {
+              chartRef.current.options(spec).render();
+            } catch {
+              // Both changeData and options failed — destroy and recreate next cycle
+              try { chartRef.current.destroy(); } catch { /* ignore */ }
+              chartRef.current = null;
+            }
           }
         }
         break;
@@ -113,14 +130,18 @@ export default function G2Renderer({ spec, data, width, height, className }: G2R
         // Level 2: Config/style changed -> re-apply options
         if (chartRef.current) {
           try {
-            chartRef.current.options({ ...spec, ...(data ? { data } : {}) }).render();
+            chartRef.current.options({ ...spec, ...(safeData ? { data: safeData } : {}) }).render();
           } catch {
             // Fallback: destroy and recreate
-            chartRef.current.destroy();
+            try { chartRef.current.destroy(); } catch { /* ignore */ }
             chartRef.current = null;
-            const chart = new G2.Chart({ container, autoFit: true });
-            chart.options({ ...spec, ...(data ? { data } : {}) }).render();
-            chartRef.current = chart;
+            try {
+              const chart = new G2.Chart({ container, autoFit: true });
+              chart.options({ ...spec, ...(safeData ? { data: safeData } : {}) }).render();
+              chartRef.current = chart;
+            } catch {
+              // Recreation also failed — leave chartRef null
+            }
           }
         }
         break;
@@ -137,9 +158,17 @@ export default function G2Renderer({ spec, data, width, height, className }: G2R
           }
           chartRef.current = null;
         }
-        const chart = new G2.Chart({ container, autoFit: true });
-        chart.options({ ...spec, ...(data ? { data } : {}) }).render();
-        chartRef.current = chart;
+        try {
+          const chart = new G2.Chart({ container, autoFit: true });
+          chart.options({ ...spec, ...(safeData ? { data: safeData } : {}) }).render();
+          chartRef.current = chart;
+        } catch (renderErr) {
+          // G2 render failed (malformed spec, null data, etc.) — do not crash the component tree
+          if (chartRef.current) {
+            try { chartRef.current.destroy(); } catch { /* ignore */ }
+            chartRef.current = null;
+          }
+        }
         break;
       }
     }

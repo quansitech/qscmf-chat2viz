@@ -20,12 +20,12 @@ class Chat2VizServiceProvider implements Provider, LaravelProvider
             Chat2VizController::class
         );
 
-        RegisterContainer::registerSymLink(
+        $this->safeRegisterSymLink(
             WWW_DIR . '/Public/chat2viz',
             __DIR__ . '/../asset/chat2viz'
         );
 
-        RegisterContainer::registerSymLink(
+        $this->safeRegisterSymLink(
             APP_PATH . 'Extends/View/default/Chat2Viz',
             __DIR__ . '/../view/default/Chat2Viz'
         );
@@ -38,13 +38,13 @@ class Chat2VizServiceProvider implements Provider, LaravelProvider
         );
 
         // v13 Smarty templates
-        RegisterContainer::registerSymLink(
+        $this->safeRegisterSymLink(
             APP_PATH . 'Extends/View/default/Chat2VizDashboard',
             __DIR__ . '/../view/default/Chat2VizDashboard'
         );
 
         // v13 compiled bundle
-        RegisterContainer::registerSymLink(
+        $this->safeRegisterSymLink(
             WWW_DIR . '/Public/chat2viz-dashboard',
             __DIR__ . '/../asset/chat2viz-dashboard'
         );
@@ -62,7 +62,7 @@ class Chat2VizServiceProvider implements Provider, LaravelProvider
             }
         }
         if ($inertiaPath !== false) {
-            RegisterContainer::registerSymLink(
+            $this->safeRegisterSymLink(
                 $inertiaPath,
                 __DIR__ . '/../asset/inertia/Chat2viz'
             );
@@ -81,5 +81,34 @@ class Chat2VizServiceProvider implements Provider, LaravelProvider
 
         // Dashboard database migrations
         RegisterContainer::registerMigration(__DIR__ . '/../database/migrations');
+    }
+
+    /**
+     * Register a symlink with error logging on failure.
+     *
+     * Gracefully logs failures instead of crashing the entire application
+     * when a symlink cannot be created (e.g. permissions, path issues).
+     */
+    private function safeRegisterSymLink(string $linkPath, string $targetPath): void
+    {
+        try {
+            RegisterContainer::registerSymLink($linkPath, $targetPath);
+        } catch (\Throwable $e) {
+            $this->logWarning(sprintf(
+                '[chat2viz:sp] symlink failed: link=%s target=%s error=%s',
+                $linkPath,
+                $targetPath,
+                $e->getMessage()
+            ));
+        }
+    }
+
+    private function logWarning(string $message): void
+    {
+        if (class_exists(\Think\Log::class)) {
+            \Think\Log::write($message, \Think\Log::WARN);
+        } elseif (function_exists('logger')) {
+            logger()->warning($message);
+        }
     }
 }

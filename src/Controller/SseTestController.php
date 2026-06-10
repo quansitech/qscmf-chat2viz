@@ -11,6 +11,21 @@ class SseTestController extends GyController
 {
     public function index()
     {
+        // Environment guard: only available in debug mode
+        if (env('APP_DEBUG') !== true) {
+            http_response_code(404);
+            echo json_encode(['status' => 0, 'info' => 'Not Found']);
+            return;
+        }
+
+        // API key from environment — reject if not configured
+        $apiKey = env('CHAT2VIZ_TEST_API_KEY', '');
+        if ($apiKey === '') {
+            http_response_code(403);
+            echo json_encode(['status' => 0, 'info' => 'Test endpoint not configured']);
+            return;
+        }
+
         header('Content-Type: text/event-stream');
         header('Cache-Control: no-cache');
         header('Connection: keep-alive');
@@ -45,7 +60,7 @@ class SseTestController extends GyController
                     'question' => $question,
                     'dashboard_context' => $input['dashboard_context'] ?? null,
                 ],
-                'auth' => ['api_key' => 'local-test-key-not-secure'],
+                'auth' => ['api_key' => $apiKey],
             ]);
 
             $len = pack("N", strlen($frame));

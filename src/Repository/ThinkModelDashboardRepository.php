@@ -2,19 +2,36 @@
 
 namespace Qscmf\Chat2Viz\Repository;
 
+use Qscmf\Chat2Viz\Exception\DashboardException;
+use Qscmf\Chat2Viz\Exception\DashboardNotFoundException;
+use Qscmf\Chat2Viz\Traits\DashboardFilterTrait;
 use Qscmf\Chat2Viz\Traits\UuidTrait;
 use Qscmf\Chat2Viz\Traits\SchemaStripTrait;
-use Think\Exception;
 
 class ThinkModelDashboardRepository implements DashboardRepositoryInterface
 {
     use UuidTrait;
     use SchemaStripTrait;
+    use DashboardFilterTrait;
     private const TABLE_DASHBOARDS = 'chat2viz_dashboards';
     private const TABLE_VERSIONS = 'chat2viz_dashboard_versions';
     private const TABLE_MESSAGES = 'chat2viz_conversation_messages';
 
-    private const FILTER_WHITELIST = ['status', 'created_by'];
+    /**
+     * Build a where-condition array from whitelisted filters.
+     *
+     * @param array $filters Raw filter input
+     * @return array<string, mixed> Condition map suitable for ThinkModel::where()
+     */
+    private function buildWhereConditions(array $filters): array
+    {
+        $safeFilters = $this->filterWhitelist($filters);
+        $where = [];
+        foreach ($safeFilters as $key => $value) {
+            $where[$key] = $value;
+        }
+        return $where;
+    }
 
     /**
      * @param array $filters Whitelist keys: status, created_by
@@ -22,12 +39,7 @@ class ThinkModelDashboardRepository implements DashboardRepositoryInterface
      */
     public function list(int $page, int $perPage, array $filters = []): array
     {
-        $safeFilters = $this->filterWhitelist($filters);
-
-        $where = [];
-        foreach ($safeFilters as $key => $value) {
-            $where[$key] = $value;
-        }
+        $where = $this->buildWhereConditions($filters);
 
         $countModel = M(self::TABLE_DASHBOARDS);
         if (!empty($where)) {
@@ -40,7 +52,7 @@ class ThinkModelDashboardRepository implements DashboardRepositoryInterface
         if (!empty($where)) {
             $listModel->where($where);
         }
-        $items = $listModel->order('id DESC')->limit($offset . ',' . $perPage)->select();
+        $items = $listModel->order('id DESC')->limit($offset, $perPage)->select();
 
         if (!is_array($items)) {
             $items = [];
@@ -88,7 +100,7 @@ class ThinkModelDashboardRepository implements DashboardRepositoryInterface
         $id = $model->add($insertData);
 
         if (!$id) {
-            throw new Exception('Failed to create dashboard');
+            throw new DashboardException('Failed to create dashboard');
         }
 
         return $this->findByUid($uid);
@@ -98,7 +110,7 @@ class ThinkModelDashboardRepository implements DashboardRepositoryInterface
     {
         $dashboard = $this->findByUid($uid);
         if ($dashboard === null) {
-            throw new Exception('Dashboard not found: ' . $uid);
+            throw new DashboardNotFoundException($uid);
         }
 
         $updateData = [];
@@ -142,11 +154,11 @@ class ThinkModelDashboardRepository implements DashboardRepositoryInterface
         return $affected !== false;
     }
 
-    public function publish(string $uid): array
+    public function publish(string $uid, ?int $publishedBy = null): array
     {
         $dashboard = $this->findByUid($uid);
         if ($dashboard === null) {
-            throw new Exception('Dashboard not found: ' . $uid);
+            throw new DashboardNotFoundException($uid);
         }
 
         // 1. Deep copy current_schema
@@ -164,6 +176,7 @@ class ThinkModelDashboardRepository implements DashboardRepositoryInterface
 
         // 3-5. Transaction: lock dashboard row, compute version, insert, update
         $dashboardId = (int)$dashboard['id'];
+        $effectivePublishedBy = $publishedBy ?? (isset($dashboard['created_by']) ? (int)$dashboard['created_by'] : null);
 
         M()->startTrans();
         try {
@@ -174,7 +187,7 @@ class ThinkModelDashboardRepository implements DashboardRepositoryInterface
                 ->find();
 
             if (!is_array($locked) || empty($locked)) {
-                throw new Exception('Dashboard not found during lock: ' . $uid);
+                throw new DashboardNotFoundException($uid);
             }
 
             $maxVersion = M(self::TABLE_VERSIONS)
@@ -190,13 +203,13 @@ class ThinkModelDashboardRepository implements DashboardRepositoryInterface
                 'version' => $newVersion,
                 'schema' => json_encode($schema, JSON_UNESCAPED_UNICODE),
                 'published_at' => date('Y-m-d H:i:s'),
-                'published_by' => $dashboard['created_by'] ?? null,
+                'published_by' => $effectivePublishedBy,
             ];
 
             $versionId = M(self::TABLE_VERSIONS)->add($versionData);
 
             if (!$versionId) {
-                throw new Exception('Failed to create dashboard version');
+                throw new DashboardException('Failed to create dashboard version');
             }
 
             M(self::TABLE_DASHBOARDS)
@@ -207,9 +220,15 @@ class ThinkModelDashboardRepository implements DashboardRepositoryInterface
                 ]);
 
             M()->commit();
-        } catch (\Exception $e) {
+        } catch (DashboardException $e) {
             M()->rollback();
             throw $e;
+        } catch (\Think\Exception $e) {
+            M()->rollback();
+            throw new DashboardException($e->getMessage(), 0, $e);
+        } catch (\Exception $e) {
+            M()->rollback();
+            throw new DashboardException($e->getMessage(), 0, $e);
         }
 
         // 6. Return assembled version snapshot (no extra query needed)
@@ -249,8 +268,7 @@ class ThinkModelDashboardRepository implements DashboardRepositoryInterface
             return ['items' => [], 'total' => 0, 'page' => $page, 'perPage' => $perPage];
         }
 
-        $dashboardId = (int)$dashboard['id'];
-        $where = ['dashboard_id' => $dashboardId];
+        $where = ['dashboard_id' => (int)$dashboard['id']];
 
         $countModel = M(self::TABLE_VERSIONS);
         $countModel->where($where);
@@ -259,7 +277,7 @@ class ThinkModelDashboardRepository implements DashboardRepositoryInterface
         $offset = ($page - 1) * $perPage;
         $listModel = M(self::TABLE_VERSIONS);
         $listModel->where($where);
-        $items = $listModel->order('version DESC')->limit($offset . ',' . $perPage)->select();
+        $items = $listModel->order('version DESC')->limit($offset, $perPage)->select();
 
         if (!is_array($items)) {
             $items = [];
@@ -271,24 +289,5 @@ class ThinkModelDashboardRepository implements DashboardRepositoryInterface
             'page' => $page,
             'perPage' => $perPage,
         ];
-    }
-
-    /**
-     * Filter input array against the whitelist of allowed filter keys,
-     * with value validation for enum and numeric fields.
-     */
-    private function filterWhitelist(array $filters): array
-    {
-        $safe = [];
-        $validStatuses = ['draft', 'published', 'archived'];
-
-        if (isset($filters['status']) && in_array($filters['status'], $validStatuses, true)) {
-            $safe['status'] = $filters['status'];
-        }
-        if (isset($filters['created_by']) && is_numeric($filters['created_by'])) {
-            $safe['created_by'] = (int) $filters['created_by'];
-        }
-
-        return $safe;
     }
 }

@@ -6,6 +6,8 @@ use Qscmf\SseCore\SseEvent;
 
 class Nl2sqlEventTransformer
 {
+    public function __construct(private string $phpConversationId) {}
+
     /**
      * Transform a Python NL2SQL SSE event into chat2viz format events.
      * All mappings are strictly 1:1 or 1:0 (skip).
@@ -29,6 +31,7 @@ class Nl2sqlEventTransformer
             'sql_ready' => [new SseEvent(type: 'sql_generated', data: ['sql' => $event->data['sql'] ?? ''], raw: '')],
             'data_ready' => [new SseEvent(type: 'data_preview', data: $event->data, raw: '')],
             'error' => $this->mapError($event),
+            'dashboard_patch' => [new SseEvent(type: 'dashboard_patch', data: $event->data, raw: '')],
             // Skip these events (return empty array)
             'content_block_start', 'content_block_stop', 'message_delta' => [],
             // Unknown event types are silently dropped
@@ -36,11 +39,11 @@ class Nl2sqlEventTransformer
         };
     }
 
-    // message_start → conversation_id (only if conversation_id exists in data)
+    // message_start → conversation_id — PHP is the sole authority; Python's ID is silently discarded
     private function mapMessageStart(SseEvent $event): array
     {
-        $cid = $event->data['conversation_id'] ?? null;
-        if ($cid === null || $cid === '') {
+        $cid = $this->phpConversationId;
+        if ($cid === '') {
             return [];
         }
         return [new SseEvent(type: 'conversation_id', data: ['conversation_id' => $cid], raw: '')];
@@ -56,24 +59,29 @@ class Nl2sqlEventTransformer
         return [new SseEvent(type: 'answer', data: ['text' => $text], raw: '')];
     }
 
-    // chart_ready → chart_ready (passthrough + auto-generate id if missing)
+    // chart_ready → chart_ready (passthrough + id resolution: id > widget_id > random)
     private function mapChartReady(SseEvent $event): array
     {
         $data = $event->data;
-        if (!isset($data['id']) || $data['id'] === '') {
+        // Priority: id > widget_id > random fallback
+        if (isset($data['id']) && $data['id'] !== '') {
+            // Keep existing id
+        } elseif (isset($data['widget_id']) && $data['widget_id'] !== '') {
+            $data['id'] = $data['widget_id'];
+        } else {
             $data['id'] = bin2hex(random_bytes(8));
         }
         return [new SseEvent(type: 'chart_ready', data: $data, raw: '')];
     }
 
-    // tool_start → action_call (tool→action_type, args→params)
+    // tool_start → action_call (tool_name→action_type, tool_args→params)
     private function mapToolStart(SseEvent $event): array
     {
         return [new SseEvent(
             type: 'action_call',
             data: [
-                'action_type' => $event->data['tool'] ?? '',
-                'params' => $event->data['args'] ?? [],
+                'action_type' => $event->data['tool_name'] ?? '',
+                'params' => $event->data['tool_args'] ?? [],
             ],
             raw: '',
         )];

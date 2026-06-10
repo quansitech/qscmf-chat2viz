@@ -100,6 +100,15 @@ class Chat2VizController extends GyController
 
         $wantsChat2viz = $this->wantsChat2vizFormat();
 
+        // Mock mode: return a deterministic chart widget without calling the
+        // real Python service.  Enabled via CHAT2VIZ_MOCK_MODE=true in .env.
+        // This allows E2E tests to pass when the NL2SQL backend is offline.
+        if ($this->isMockMode()) {
+            $this->emitMockStream($payload, $wantsChat2viz);
+            $this->persistConversationMessage($conversationId, $payload, 'assistant');
+            return;
+        }
+
         try {
             $transport = $this->createSocketTransport();
             $requestFrame = [
@@ -109,7 +118,7 @@ class Chat2VizController extends GyController
                 'auth'   => ['api_key' => $this->apiKey],
             ];
             if ($wantsChat2viz) {
-                $transformer = new Nl2sqlEventTransformer();
+                $transformer = new Nl2sqlEventTransformer($conversationId);
                 SseProxy::socket($transport, $requestFrame, function (array $frame) use ($transformer): ?SseEvent {
                     $type = $frame['type'] ?? 'message';
                     if ($type === 'ping' || $type === 'pong') {
@@ -134,18 +143,104 @@ class Chat2VizController extends GyController
         } catch (\Throwable $e) {
             $this->logError('socket failed, falling back to http', $e->getMessage());
 
-            // H10: SseProxy::socket() has already called sendHeaders().
-            // If headers were sent, we cannot fall back to Guzzle SSE (it also calls sendHeaders).
+            // SseProxy::socket() already called sendHeaders() via SseWriter::sendHeaders(),
+            // so Content-Type is already text/event-stream.  headers_sent() only tracks
+            // whether body output started — it is false even after header() calls.
+            // Therefore we must NOT fall through to ajaxReturn() (which sets application/json).
             if (headers_sent()) {
+                // Body output already started — send inline SSE error.
                 $writer = new SseWriter(autoStart: false);
                 $writer->sendError('socket_fallback_failed', '分析服务连接失败');
                 return;
             }
-            $streamCompleted = $this->fallbackGuzzleStream($payload, $wantsChat2viz);
+            $streamCompleted = $this->fallbackGuzzleStream($payload, $wantsChat2viz, $conversationId);
             if ($streamCompleted) {
                 $this->persistConversationMessage($conversationId, $payload, 'assistant');
             }
         }
+    }
+
+    private function isMockMode(): bool
+    {
+        $val = (string) env('CHAT2VIZ_MOCK_MODE', 'false');
+        return in_array(strtolower($val), ['true', '1', 'yes', 'on'], true);
+    }
+
+    /**
+     * Emit a deterministic SSE stream with a canned chart widget.
+     * Used in mock mode / E2E tests when the real Python NL2SQL service is offline.
+     */
+    private function emitMockStream(array $payload, bool $wantsChat2viz): void
+    {
+        SseWriter::sendHeaders();
+        SseWriter::clearOutputBuffers();
+        SseWriter::applyExecutionGuards();
+        $writer = new SseWriter(autoStart: false);
+
+        $conversationId = $payload['conversation_id'] ?? bin2hex(random_bytes(16));
+        $question = $payload['question'] ?? '';
+
+        // conversation_id
+        $writer->sendEvent(new SseEvent(
+            type: 'conversation_id',
+            data: ['conversation_id' => $conversationId, 'is_mock' => true],
+            raw: '',
+        ));
+
+        if ($wantsChat2viz) {
+            // thinking → thinking_done
+            $writer->sendEvent(new SseEvent(type: 'answer', data: ['text' => '正在分析'], raw: ''));
+
+            // sql_generated
+            $writer->sendEvent(new SseEvent(
+                type: 'sql_generated',
+                data: ['sql' => 'SELECT category, COUNT(*) AS cnt FROM film GROUP BY category ORDER BY cnt DESC'],
+                raw: '',
+            ));
+
+            // chart_ready — deterministic widget matching the question
+            $widgetId = 'mock-' . substr(md5($question), 0, 8);
+            $writer->sendEvent(new SseEvent(
+                type: 'chart_ready',
+                data: [
+                    'id'         => $widgetId,
+                    'title'      => $this->mockTitleFromQuestion($question),
+                    'chart_type' => 'bar',
+                    'g2_spec'    => [
+                        'type'  => 'interval',
+                        'encode' => ['x' => 'category', 'y' => 'cnt'],
+                    ],
+                    'data' => [
+                        ['category' => '动作', 'cnt' => 64],
+                        ['category' => '喜剧', 'cnt' => 51],
+                        ['category' => '剧情', 'cnt' => 43],
+                        ['category' => '恐怖', 'cnt' => 28],
+                        ['category' => '科幻', 'cnt' => 22],
+                    ],
+                    'sql'    => 'SELECT category, COUNT(*) AS cnt FROM film GROUP BY category ORDER BY cnt DESC',
+                    'layout' => ['x' => 0, 'y' => 0, 'w' => 12, 'h' => 6],
+                ],
+                raw: '',
+            ));
+
+            // done
+            $writer->sendEvent(new SseEvent(type: 'done', data: [], raw: ''));
+        } else {
+            // Plain SSE passthrough — send simple answer + done
+            $writer->sendEvent(new SseEvent(
+                type: 'message',
+                data: ['text' => '[Mock] 查询已完成: ' . $question],
+                raw: '',
+            ));
+        }
+    }
+
+    private function mockTitleFromQuestion(string $question): string
+    {
+        if (mb_strlen($question) > 20) {
+            return mb_substr($question, 0, 20) . '...';
+        }
+        return $question;
     }
 
     private function validateSocketInput(?array $input): ?array
@@ -185,10 +280,18 @@ class Chat2VizController extends GyController
         ]);
     }
 
-    private function fallbackGuzzleStream(array $payload, bool $wantsChat2viz = false): bool
+    private function fallbackGuzzleStream(array $payload, bool $wantsChat2viz = false, string $conversationId = ''): bool
     {
         $headers = $this->buildHeaders();
         $timeout = (int) env('CHAT2VIZ_SSE_TIMEOUT', 180);
+
+        // SSE headers may already be set by SseProxy::socket() or need to be
+        // sent now.  Either way, all error exits from this method must be SSE
+        // events — never ajaxReturn() (which would set application/json).
+        SseWriter::sendHeaders();
+        SseWriter::clearOutputBuffers();
+        SseWriter::applyExecutionGuards();
+        $sseWriter = new SseWriter(autoStart: false);
 
         try {
             $response = $this->httpClient->post(
@@ -202,33 +305,27 @@ class Chat2VizController extends GyController
             );
         } catch (ConnectException $e) {
             $this->logError('stream connect failed', 'ConnectException');
-            $this->ajaxReturn(['status' => 0, 'info' => '分析服务不可用']);
+            $sseWriter->sendError('service_unavailable', '分析服务不可用');
             return false;
         } catch (RequestException $e) {
             $this->logError('stream request failed', 'RequestException');
-            $this->ajaxReturn(['status' => 0, 'info' => '分析服务请求失败']);
+            $sseWriter->sendError('service_error', '分析服务请求失败');
             return false;
         } catch (GuzzleException $e) {
             $this->logError('stream guzzle error', 'GuzzleException');
-            $this->ajaxReturn(['status' => 0, 'info' => '分析服务请求失败']);
+            $sseWriter->sendError('service_error', '分析服务请求失败');
             return false;
         }
 
         if ($response->getStatusCode() !== 200) {
             $this->logError('stream non-200', sprintf('status=%d', $response->getStatusCode()));
-            $this->ajaxReturn(['status' => 0, 'info' => '分析服务请求失败']);
+            $sseWriter->sendError('service_error', '分析服务请求失败');
             return false;
         }
 
-        SseWriter::sendHeaders();
-        SseWriter::clearOutputBuffers();
-        SseWriter::applyExecutionGuards();
-
-        $writer = new SseWriter(autoStart: false);
-
         if ($wantsChat2viz) {
-            $transformer = new Nl2sqlEventTransformer();
-            $handler = new class($transformer, $writer) implements SseEventHandler {
+            $transformer = new Nl2sqlEventTransformer($conversationId);
+            $handler = new class($transformer, $sseWriter) implements SseEventHandler {
                 public function __construct(
                     private Nl2sqlEventTransformer $transformer,
                     private SseWriter $writer,
@@ -263,8 +360,8 @@ class Chat2VizController extends GyController
                 }
             };
         } else {
-            $passthrough = new SsePassthrough($writer);
-            $handler = new class($passthrough, $writer) implements SseEventHandler {
+            $passthrough = new SsePassthrough($sseWriter);
+            $handler = new class($passthrough, $sseWriter) implements SseEventHandler {
                 public function __construct(
                     private SsePassthrough $passthrough,
                     private SseWriter $writer,
@@ -347,6 +444,17 @@ class Chat2VizController extends GyController
         // Forward dashboard context for dashboard-aware conversations
         if (!empty($input['dashboard_context'])) {
             $ctx = $input['dashboard_context'];
+            if (!is_array($ctx)) {
+                return $payload;
+            }
+            // Validate dashboard_context structure: dashboard_uid must be a non-empty string if present
+            if (isset($ctx['dashboard_uid']) && !is_string($ctx['dashboard_uid'])) {
+                return $payload;
+            }
+            // widgets must be array or object if present
+            if (isset($ctx['widgets']) && !is_array($ctx['widgets']) && !($ctx['widgets'] instanceof \stdClass)) {
+                return $payload;
+            }
             // PHP json_decode(true) turns empty JSON {} into [] which json_encode
             // then serialises as a JSON array [].  The Python NL2SQL service
             // requires widgets to be a dict/object, so force stdClass for empty arrays.
