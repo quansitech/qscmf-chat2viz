@@ -49,7 +49,13 @@ module.exports = {
       filename: '[name].css',
     }),
     new webpack.DefinePlugin({
-      'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV || 'production'),
+      // react-draggable (used by react-grid-layout) references `process` directly
+      // at runtime (e.g. in handleDragStart).  Defining the full `process.env`
+      // object ensures all access patterns — process.env.NODE_ENV, process.env,
+      // and indirect references — resolve correctly in the browser.
+      'process.env': {
+        NODE_ENV: JSON.stringify(process.env.NODE_ENV || 'production'),
+      },
     }),
   ],
   // G2 is loaded via CDN (<script src="unpkg.com/@antv/g2@5/...">) — do not bundle it.
