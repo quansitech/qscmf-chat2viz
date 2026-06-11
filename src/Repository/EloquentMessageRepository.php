@@ -136,4 +136,23 @@ class EloquentMessageRepository implements MessageRepositoryInterface
     {
         return (int) ConversationMessage::where('conversation_id', $conversationId)->count();
     }
+
+    public function countByConversationIds(array $conversationIds): array
+    {
+        if (empty($conversationIds)) {
+            return [];
+        }
+
+        $rows = ConversationMessage::whereIn('conversation_id', $conversationIds)
+            ->selectRaw('conversation_id, COUNT(*) AS cnt')
+            ->groupBy('conversation_id')
+            ->get();
+
+        $result = [];
+        foreach ($rows as $row) {
+            $result[(string) $row->conversation_id] = (int) $row->cnt;
+        }
+
+        return $result;
+    }
 }

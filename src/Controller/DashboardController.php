@@ -571,7 +571,7 @@ class DashboardController extends GyController
                 $cached = apcu_fetch($cacheKey);
                 if ($cached !== false) {
                     $this->auditWidgetQuery($uid, $widgetId, $sql, count($cached));
-                    $this->ajaxReturn(['status' => 1, 'data' => $cached, 'cache' => 'HIT']);
+                    $this->ajaxReturn(['status' => 1, 'data' => $cached]);
                     return;
                 }
             }
@@ -593,7 +593,7 @@ class DashboardController extends GyController
             $this->auditWidgetQuery($uid, $widgetId, $sql, count($rows));
 
             // 10. Return data
-            $this->ajaxReturn(['status' => 1, 'data' => $rows, 'cache' => 'MISS']);
+            $this->ajaxReturn(['status' => 1, 'data' => $rows]);
 
         } catch (DashboardNotFoundException $e) {
             $this->ajaxReturn(['status' => 0, 'info' => '仪表盘不存在']);
@@ -743,23 +743,24 @@ class DashboardController extends GyController
 
         if ($apcuAvailable) {
             $key = 'chat2viz:ratelimit:' . md5($ip);
-            $count = (int) apcu_fetch($key);
-            if ($count >= $maxRequests) {
+            // apcu_add: set-if-not-exists (atomic), ensures TTL on cold key
+            apcu_add($key, 0, $window);
+            $count = apcu_inc($key, 1);
+            if ($count === false) {
+                // apcu_inc failed despite apcu_add — safe fallback
+                apcu_store($key, 1, $window);
+                $count = 1;
+            }
+            if ($count > $maxRequests) {
                 $this->ajaxReturn(['status' => 0, 'info' => '请求过于频繁，请稍后再试']);
                 return false;
-            }
-            // Increment counter: use apcu_inc if key exists, otherwise initialize
-            if ($count > 0) {
-                apcu_inc($key, 1);
-            } else {
-                apcu_store($key, 1, $window);
             }
         } else {
             // APCu unavailable fallback: still enforce limit and signal via header
             header('X-Cache: UNAVAILABLE');
             // Use a file-based counter with flock(LOCK_EX) for atomic read-modify-write
             $tmpDir = sys_get_temp_dir();
-            $counterFile = $tmpDir . '/chat2viz_rl_' . md5($ip);
+            $counterFile = $tmpDir . '/chat2viz_rl_' . md5($ip . ':chat2viz:' . __FILE__);
             $now = time();
 
             $fp = @fopen($counterFile, 'c+');

@@ -169,4 +169,26 @@ class ThinkModelMessageRepository implements MessageRepositoryInterface
 
         return (int) $count;
     }
+
+    public function countByConversationIds(array $conversationIds): array
+    {
+        if (empty($conversationIds)) {
+            return [];
+        }
+
+        $rows = M(self::TABLE)
+            ->field('conversation_id, COUNT(*) AS cnt')
+            ->where(['conversation_id' => ['in', $conversationIds]])
+            ->group('conversation_id')
+            ->select();
+
+        $result = [];
+        if (is_array($rows)) {
+            foreach ($rows as $row) {
+                $result[(string) $row['conversation_id']] = (int) $row['cnt'];
+            }
+        }
+
+        return $result;
+    }
 }

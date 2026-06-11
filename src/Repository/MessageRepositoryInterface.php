@@ -109,4 +109,14 @@ interface MessageRepositoryInterface
      * @return int
      */
     public function countByConversationId(string $conversationId): int;
+
+    /**
+     * Batch-count messages for multiple conversations in a single query.
+     *
+     * Returns a map of conversation_id => count.
+     *
+     * @param array<string> $conversationIds
+     * @return array<string, int>
+     */
+    public function countByConversationIds(array $conversationIds): array;
 }

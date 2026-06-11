@@ -17,6 +17,8 @@ use Qscmf\SseCore\SseReader;
 use Qscmf\SseCore\SseWriter;
 use Qscmf\SseCore\SocketTransport;
 use Qscmf\Chat2Viz\Adapter\AdapterFactory;
+use Qscmf\Chat2Viz\Sse\GuzzleStreamFallback;
+use Qscmf\Chat2Viz\Sse\MockStreamEmitter;
 use Qscmf\Chat2Viz\Sse\Nl2sqlEventTransformer;
 use Qscmf\Chat2Viz\Sse\StreamAccumulator;
 use Qscmf\Chat2Viz\Traits\JsonInputTrait;
@@ -27,6 +29,8 @@ class Chat2VizController extends GyController
     protected string $serviceUrl;
     protected string $apiKey;
     protected Client $httpClient;
+    private ?MockStreamEmitter $mockEmitter = null;
+    private ?GuzzleStreamFallback $guzzleFallback = null;
 
     protected function _initialize()
     {
@@ -93,42 +97,60 @@ class Chat2VizController extends GyController
         }
 
         $payload = $this->buildPayloadFromParsed($input);
-        $dashboardUid = $payload['dashboard_context']['dashboard_uid'] ?? '';
+        [$conversationId, $assistantMessageId, $accumulator] = $this->resolveConversation($payload);
 
-        // Resolve or generate conversation_id
+        $wantsChat2viz = $this->wantsChat2vizFormat();
+
+        if ($this->getMockEmitter()->isMockMode()) {
+            $this->getMockEmitter()->emitMockStream($payload, $wantsChat2viz, $conversationId);
+            $this->finalizeStream($accumulator, $conversationId, $assistantMessageId, 'complete');
+            return;
+        }
+
+        $this->dispatchStream($payload, $wantsChat2viz, $conversationId, $accumulator, $assistantMessageId);
+    }
+
+    /**
+     * Resolve or generate conversation ID and set up pre-stream state.
+     *
+     * Returns [conversationId, assistantMessageId, accumulator].
+     */
+    private function resolveConversation(array $payload): array
+    {
+        $dashboardUid = $payload['dashboard_context']['dashboard_uid'] ?? '';
+        if ($dashboardUid !== '' && !$this->validateDashboardUid($dashboardUid)) {
+            $this->ajaxReturn(['status' => 0, 'info' => '仪表盘ID格式无效']);
+            return ['', null, new StreamAccumulator()];
+        }
         $conversationId = $payload['conversation_id'] ?? '';
         if (!preg_match('/^[a-f0-9\-]{1,64}$/i', $conversationId)) {
             $conversationId = bin2hex(random_bytes(16));
         }
 
-        // --- Pre-stream setup: user message, conversation, pre-allocated assistant ---
         $assistantMessageId = null;
         $accumulator = new StreamAccumulator();
 
         try {
-            // Ensure an active conversation exists for this dashboard
             $conversationId = $this->ensureConversation($conversationId, $dashboardUid);
-
-            // Persist user message before the stream starts
             $this->persistConversationMessage($conversationId, $payload, 'user');
-
-            // Pre-allocate assistant message row (message_status='streaming')
             $assistantMessageId = $this->preallocateAssistantMessage($conversationId, $dashboardUid);
         } catch (\Throwable $e) {
             $this->logError('pre-stream setup failed', $e->getMessage());
-            // Continue streaming even if DB setup fails — just won't persist assistant
         }
 
-        $wantsChat2viz = $this->wantsChat2vizFormat();
+        return [$conversationId, $assistantMessageId, $accumulator];
+    }
 
-        // Mock mode: return a deterministic chart widget without calling the
-        // real Python service.  Enabled via CHAT2VIZ_MOCK_MODE=true in .env.
-        if ($this->isMockMode()) {
-            $this->emitMockStream($payload, $wantsChat2viz, $conversationId);
-            $this->finalizeStream($accumulator, $conversationId, $assistantMessageId, 'complete');
-            return;
-        }
-
+    /**
+     * Dispatch the stream via Unix socket with HTTP fallback.
+     */
+    private function dispatchStream(
+        array $payload,
+        bool $wantsChat2viz,
+        string $conversationId,
+        StreamAccumulator $accumulator,
+        ?int $assistantMessageId
+    ): void {
         try {
             $transport = $this->createSocketTransport();
             $requestFrame = [
@@ -139,7 +161,7 @@ class Chat2VizController extends GyController
             ];
             if ($wantsChat2viz) {
                 $transformer = new Nl2sqlEventTransformer($conversationId);
-                SseProxy::socket($transport, $requestFrame, function (array $frame) use ($transformer, $accumulator, $conversationId, $assistantMessageId): ?SseEvent {
+                SseProxy::socket($transport, $requestFrame, function (array $frame) use ($transformer, $accumulator, $conversationId): ?SseEvent {
                     $type = $frame['type'] ?? 'message';
                     if ($type === 'ping' || $type === 'pong') {
                         return null;
@@ -153,28 +175,19 @@ class Chat2VizController extends GyController
                         return $input;
                     }
                     $outputs = $transformer->transform($input);
-
-                    // Route each transformed event to the Redis accumulator
                     foreach ($outputs as $mapped) {
                         $this->routeEventToAccumulator($accumulator, $conversationId, $mapped);
                     }
-
                     return $outputs[0] ?? null;
                 });
             } else {
                 SseProxy::socket($transport, $requestFrame);
             }
-            // Stream completed — flush Redis accumulator to DB
             $this->finalizeStream($accumulator, $conversationId, $assistantMessageId, 'complete');
         } catch (\Throwable $e) {
             $this->logError('socket failed, falling back to http', $e->getMessage());
 
-            // SseProxy::socket() already called sendHeaders() via SseWriter::sendHeaders(),
-            // so Content-Type is already text/event-stream.  headers_sent() only tracks
-            // whether body output started — it is false even after header() calls.
-            // Therefore we must NOT fall through to ajaxReturn() (which sets application/json).
             if (headers_sent()) {
-                // Body output already started — send inline SSE error, mark interrupted
                 $this->finalizeStream($accumulator, $conversationId, $assistantMessageId, 'interrupted');
                 $writer = new SseWriter(autoStart: false);
                 $writer->sendError('socket_fallback_failed', '分析服务连接失败');
@@ -183,325 +196,21 @@ class Chat2VizController extends GyController
             $streamCompleted = $this->fallbackGuzzleStream(
                 $payload, $wantsChat2viz, $conversationId, $accumulator, $assistantMessageId
             );
-            if ($streamCompleted) {
-                $this->finalizeStream($accumulator, $conversationId, $assistantMessageId, 'complete');
-            } else {
-                $this->finalizeStream($accumulator, $conversationId, $assistantMessageId, 'interrupted');
-            }
+            $this->finalizeStream(
+                $accumulator,
+                $conversationId,
+                $assistantMessageId,
+                $streamCompleted ? 'complete' : 'interrupted'
+            );
         }
     }
 
-    private function isMockMode(): bool
+    private function getMockEmitter(): MockStreamEmitter
     {
-        $val = (string) env('CHAT2VIZ_MOCK_MODE', 'false');
-        return in_array(strtolower($val), ['true', '1', 'yes', 'on'], true);
-    }
-
-    /**
-     * Emit a deterministic SSE stream with intent-based mock responses.
-     * Used in mock mode / E2E tests when the real Python NL2SQL service is offline.
-     */
-    private function emitMockStream(array $payload, bool $wantsChat2viz, string $conversationId): void
-    {
-        SseWriter::sendHeaders();
-        SseWriter::clearOutputBuffers();
-        SseWriter::applyExecutionGuards();
-        $writer = new SseWriter(autoStart: false);
-
-        $question = $payload['question'] ?? '';
-
-        // conversation_id
-        $writer->sendEvent(new SseEvent(
-            type: 'conversation_id',
-            data: ['conversation_id' => $conversationId, 'is_mock' => true],
-            raw: '',
-        ));
-
-        if ($wantsChat2viz) {
-            $widgets = $payload['dashboard_context']['widgets'] ?? [];
-            $firstWidgetId = !empty($widgets) ? ($widgets[0]['id'] ?? null) : null;
-            $intent = $this->classifyMockIntent($question);
-
-            switch ($intent) {
-                case 'modify_chart':
-                    $this->emitMockModifyChart($writer, $question, $firstWidgetId);
-                    break;
-                case 'rename':
-                    $this->emitMockRename($writer, $question, $firstWidgetId);
-                    break;
-                case 'delete':
-                    $this->emitMockDelete($writer, $question, $firstWidgetId);
-                    break;
-                case 'add':
-                    $this->emitMockAddChart($writer, $question);
-                    break;
-                default:
-                    $this->emitMockQuery($writer, $question);
-                    break;
-            }
-        } else {
-            // Plain SSE passthrough — send simple answer + done
-            $writer->sendEvent(new SseEvent(
-                type: 'message',
-                data: ['text' => '[Mock] 查询已完成: ' . $question],
-                raw: '',
-            ));
+        if ($this->mockEmitter === null) {
+            $this->mockEmitter = new MockStreamEmitter();
         }
-    }
-
-    // ── Mock intent classification ──────────────────────────────────────
-
-    private function classifyMockIntent(string $question): string
-    {
-        if (preg_match('/换成|换.*图|改.*图|变成.*图|修改.*图/u', $question)) {
-            return 'modify_chart';
-        }
-        if (preg_match('/标题.*改成|改.*标题|改名|重命名/u', $question)) {
-            return 'rename';
-        }
-        if (preg_match('/删|删除|去掉|移除|不要.*图/u', $question)) {
-            return 'delete';
-        }
-        if (preg_match('/再加|新增|加一个|添加|再加一个/u', $question)) {
-            return 'add';
-        }
-        return 'query';
-    }
-
-    private function extractMockChartType(string $question): string
-    {
-        $map = [
-            '/折线|line/u' => 'line',
-            '/饼|pie|占比/u' => 'pie',
-            '/表格|table|列表/u' => 'table',
-            '/柱|bar|柱状/u' => 'bar',
-        ];
-        foreach ($map as $pattern => $type) {
-            if (preg_match($pattern, $question)) {
-                return $type;
-            }
-        }
-        return 'line'; // default fallback for modify_chart
-    }
-
-    private function extractMockNewTitle(string $question): string
-    {
-        // Extract text within quotes (single or double or Chinese quotes)
-        if (preg_match('/[\'"\'"](.*?)[\'"\'"]/u', $question, $m)) {
-            return $m[1];
-        }
-        // Extract text after "改成" or "改为"
-        if (preg_match('/改成|改为|修改为(.+)/u', $question, $m)) {
-            return trim($m[1]);
-        }
-        return '新标题';
-    }
-
-    // ── Mock SSE event emitters per intent ───────────────────────────────
-
-    private function emitMockQuery(SseWriter $writer, string $question): void
-    {
-        $writer->sendEvent(new SseEvent(type: 'answer', data: ['text' => '正在分析'], raw: ''));
-
-        $sql = 'SELECT category, COUNT(*) AS cnt FROM film GROUP BY category ORDER BY cnt DESC';
-        $writer->sendEvent(new SseEvent(type: 'sql_generated', data: ['sql' => $sql], raw: ''));
-
-        $widgetId = 'mock-' . substr(md5($question), 0, 8);
-        $writer->sendEvent(new SseEvent(
-            type: 'chart_ready',
-            data: [
-                'id'         => $widgetId,
-                'title'      => $this->mockTitleFromQuestion($question),
-                'chart_type' => 'bar',
-                'g2_spec'    => [
-                    'type'  => 'interval',
-                    'encode' => ['x' => 'category', 'y' => 'cnt'],
-                ],
-                'data' => $this->mockFilmCategoryData(),
-                'sql'    => $sql,
-                'layout' => ['x' => 0, 'y' => 0, 'w' => 12, 'h' => 6],
-            ],
-            raw: '',
-        ));
-
-        $writer->sendEvent(new SseEvent(type: 'done', data: [], raw: ''));
-    }
-
-    private function emitMockModifyChart(SseWriter $writer, string $question, ?string $widgetId): void
-    {
-        $widgetId = $widgetId ?? 'mock-default';
-        $chartType = $this->extractMockChartType($question);
-
-        $g2SpecMap = [
-            'line'  => ['type' => 'line', 'encode' => ['x' => 'category', 'y' => 'cnt']],
-            'pie'   => ['type' => 'pie', 'encode' => ['color' => 'category', 'y' => 'cnt']],
-            'bar'   => ['type' => 'interval', 'encode' => ['x' => 'category', 'y' => 'cnt']],
-            'table' => ['type' => 'table', 'columns' => ['category', 'cnt']],
-        ];
-        $g2Spec = $g2SpecMap[$chartType] ?? $g2SpecMap['line'];
-
-        // action_call
-        $writer->sendEvent(new SseEvent(
-            type: 'action_call',
-            data: [
-                'action_type' => 'change_chart_type',
-                'params' => ['widget_id' => $widgetId, 'new_type' => $chartType],
-            ],
-            raw: '',
-        ));
-
-        // dashboard_patch — replace g2_spec and chart_type
-        $writer->sendEvent(new SseEvent(
-            type: 'dashboard_patch',
-            data: [
-                'patches' => [
-                    ['op' => 'replace', 'path' => "/widgets/{$widgetId}/g2_spec", 'value' => $g2Spec],
-                    ['op' => 'replace', 'path' => "/widgets/{$widgetId}/chart_type", 'value' => $chartType],
-                ],
-            ],
-            raw: '',
-        ));
-
-        // action_call_result
-        $writer->sendEvent(new SseEvent(
-            type: 'action_call_result',
-            data: ['success' => true, 'result' => ['widget_id' => $widgetId, 'patch_count' => 2]],
-            raw: '',
-        ));
-
-        // answer
-        $typeLabel = ['line' => '折线图', 'pie' => '饼图', 'bar' => '柱状图', 'table' => '表格'][$chartType] ?? $chartType;
-        $writer->sendEvent(new SseEvent(type: 'answer', data: ['text' => "已将图表改为{$typeLabel}"], raw: ''));
-
-        $writer->sendEvent(new SseEvent(type: 'done', data: [], raw: ''));
-    }
-
-    private function emitMockRename(SseWriter $writer, string $question, ?string $widgetId): void
-    {
-        $widgetId = $widgetId ?? 'mock-default';
-        $newTitle = $this->extractMockNewTitle($question);
-
-        // action_call
-        $writer->sendEvent(new SseEvent(
-            type: 'action_call',
-            data: [
-                'action_type' => 'update_widget_field',
-                'params' => ['widget_id' => $widgetId, 'field' => 'title', 'value' => $newTitle],
-            ],
-            raw: '',
-        ));
-
-        // dashboard_patch
-        $writer->sendEvent(new SseEvent(
-            type: 'dashboard_patch',
-            data: [
-                'patches' => [
-                    ['op' => 'replace', 'path' => "/widgets/{$widgetId}/title", 'value' => $newTitle],
-                ],
-            ],
-            raw: '',
-        ));
-
-        // action_call_result
-        $writer->sendEvent(new SseEvent(
-            type: 'action_call_result',
-            data: ['success' => true, 'result' => ['widget_id' => $widgetId, 'patch_count' => 1]],
-            raw: '',
-        ));
-
-        $writer->sendEvent(new SseEvent(type: 'answer', data: ['text' => "标题已更新为'{$newTitle}'"], raw: ''));
-
-        $writer->sendEvent(new SseEvent(type: 'done', data: [], raw: ''));
-    }
-
-    private function emitMockDelete(SseWriter $writer, string $question, ?string $widgetId): void
-    {
-        $widgetId = $widgetId ?? 'mock-default';
-
-        // action_call
-        $writer->sendEvent(new SseEvent(
-            type: 'action_call',
-            data: [
-                'action_type' => 'remove_widget',
-                'params' => ['widget_id' => $widgetId],
-            ],
-            raw: '',
-        ));
-
-        // dashboard_patch
-        $writer->sendEvent(new SseEvent(
-            type: 'dashboard_patch',
-            data: [
-                'patches' => [
-                    ['op' => 'remove', 'path' => "/widgets/{$widgetId}"],
-                ],
-            ],
-            raw: '',
-        ));
-
-        // action_call_result
-        $writer->sendEvent(new SseEvent(
-            type: 'action_call_result',
-            data: ['success' => true, 'result' => ['widget_id' => $widgetId, 'patch_count' => 1]],
-            raw: '',
-        ));
-
-        $writer->sendEvent(new SseEvent(type: 'answer', data: ['text' => '已删除该图表'], raw: ''));
-
-        $writer->sendEvent(new SseEvent(type: 'done', data: [], raw: ''));
-    }
-
-    private function emitMockAddChart(SseWriter $writer, string $question): void
-    {
-        $writer->sendEvent(new SseEvent(type: 'answer', data: ['text' => '正在生成新图表...'], raw: ''));
-
-        $sql = 'SELECT year, SUM(revenue) AS revenue FROM film_yearly GROUP BY year ORDER BY year';
-        $writer->sendEvent(new SseEvent(type: 'sql_generated', data: ['sql' => $sql], raw: ''));
-
-        $widgetId = 'mock-' . substr(md5($question . time()), 0, 8);
-        $writer->sendEvent(new SseEvent(
-            type: 'chart_ready',
-            data: [
-                'id'         => $widgetId,
-                'title'      => $this->mockTitleFromQuestion($question),
-                'chart_type' => 'line',
-                'g2_spec'    => [
-                    'type'  => 'line',
-                    'encode' => ['x' => 'year', 'y' => 'revenue'],
-                ],
-                'data' => [
-                    ['year' => '2020', 'revenue' => 1200],
-                    ['year' => '2021', 'revenue' => 1800],
-                    ['year' => '2022', 'revenue' => 2400],
-                    ['year' => '2023', 'revenue' => 3100],
-                    ['year' => '2024', 'revenue' => 4200],
-                ],
-                'sql'    => $sql,
-                'layout' => ['x' => 0, 'y' => 6, 'w' => 12, 'h' => 6],
-            ],
-            raw: '',
-        ));
-
-        $writer->sendEvent(new SseEvent(type: 'done', data: [], raw: ''));
-    }
-
-    private function mockFilmCategoryData(): array
-    {
-        return [
-            ['category' => '动作', 'cnt' => 64],
-            ['category' => '喜剧', 'cnt' => 51],
-            ['category' => '剧情', 'cnt' => 43],
-            ['category' => '恐怖', 'cnt' => 28],
-            ['category' => '科幻', 'cnt' => 22],
-        ];
-    }
-
-    private function mockTitleFromQuestion(string $question): string
-    {
-        if (mb_strlen($question) > 20) {
-            return mb_substr($question, 0, 20) . '...';
-        }
-        return $question;
+        return $this->mockEmitter;
     }
 
     private function validateSocketInput(?array $input): ?array
@@ -548,137 +257,29 @@ class Chat2VizController extends GyController
         ?StreamAccumulator $accumulator = null,
         ?int $assistantMessageId = null
     ): bool {
-        $headers = $this->buildHeaders();
-        $timeout = (int) env('CHAT2VIZ_SSE_TIMEOUT', 180);
+        $fallback = $this->getGuzzleFallback();
+        return $fallback(
+            $payload,
+            $wantsChat2viz,
+            $conversationId,
+            $accumulator,
+            $assistantMessageId,
+            $this->buildHeaders()
+        );
+    }
 
-        // SSE headers may already be set by SseProxy::socket() or need to be
-        // sent now.  Either way, all error exits from this method must be SSE
-        // events — never ajaxReturn() (which would set application/json).
-        SseWriter::sendHeaders();
-        SseWriter::clearOutputBuffers();
-        SseWriter::applyExecutionGuards();
-        $sseWriter = new SseWriter(autoStart: false);
-
-        try {
-            $response = $this->httpClient->post(
-                $this->serviceUrl . '/api/v1/ask/stream',
-                [
-                    RequestOptions::JSON    => $payload,
-                    RequestOptions::HEADERS => $headers,
-                    RequestOptions::STREAM  => true,
-                    RequestOptions::TIMEOUT => $timeout,
-                ]
+    private function getGuzzleFallback(): GuzzleStreamFallback
+    {
+        if ($this->guzzleFallback === null) {
+            $ctrl = $this;
+            $this->guzzleFallback = new GuzzleStreamFallback(
+                $this->httpClient,
+                $this->serviceUrl,
+                fn(string $tag, string $detail) => $this->logError($tag, $detail),
+                fn(StreamAccumulator $acc, string $convId, SseEvent $evt) => $ctrl->routeEventToAccumulator($acc, $convId, $evt)
             );
-        } catch (ConnectException $e) {
-            $this->logError('stream connect failed', 'ConnectException');
-            $sseWriter->sendError('service_unavailable', '分析服务不可用');
-            return false;
-        } catch (RequestException $e) {
-            $this->logError('stream request failed', 'RequestException');
-            $sseWriter->sendError('service_error', '分析服务请求失败');
-            return false;
-        } catch (GuzzleException $e) {
-            $this->logError('stream guzzle error', 'GuzzleException');
-            $sseWriter->sendError('service_error', '分析服务请求失败');
-            return false;
         }
-
-        if ($response->getStatusCode() !== 200) {
-            $this->logError('stream non-200', sprintf('status=%d', $response->getStatusCode()));
-            $sseWriter->sendError('service_error', '分析服务请求失败');
-            return false;
-        }
-
-        // Capture variables for closure use in anonymous handler classes
-        $ctrl = $this;
-        $acc = $accumulator;
-        $convId = $conversationId;
-
-        if ($wantsChat2viz) {
-            $transformer = new Nl2sqlEventTransformer($conversationId);
-            $handler = new class($transformer, $sseWriter, $acc, $convId, $ctrl) implements SseEventHandler {
-                public function __construct(
-                    private Nl2sqlEventTransformer $transformer,
-                    private SseWriter $writer,
-                    private ?StreamAccumulator $accumulator,
-                    private string $conversationId,
-                    private Chat2VizController $controller
-                ) {}
-
-                public function onEvent(SseEvent $event): void
-                {
-                    if (connection_aborted()) {
-                        return;
-                    }
-                    foreach ($this->transformer->transform($event) as $mapped) {
-                        if ($this->accumulator !== null) {
-                            $this->controller->routeEventToAccumulator(
-                                $this->accumulator,
-                                $this->conversationId,
-                                $mapped
-                            );
-                        }
-                        $this->writer->sendEvent($mapped);
-                    }
-                }
-
-                public function onError(SseError $error): void
-                {
-                    $errorEvent = SseEvent::fromRaw(
-                        "event: error\ndata: " . json_encode([
-                            'type' => 'upstream_disconnected',
-                            'info' => "分析服务连接中断",
-                        ], JSON_UNESCAPED_UNICODE)
-                    );
-                    if ($errorEvent !== null) {
-                        $this->writer->sendEvent($errorEvent);
-                    }
-                }
-
-                public function onComplete(): void
-                {
-                    // No-op: do not emit any completion event to the browser.
-                }
-            };
-        } else {
-            $passthrough = new SsePassthrough($sseWriter);
-            $handler = new class($passthrough, $sseWriter) implements SseEventHandler {
-                public function __construct(
-                    private SsePassthrough $passthrough,
-                    private SseWriter $writer,
-                ) {}
-
-                public function onEvent(SseEvent $event): void
-                {
-                    if (connection_aborted()) {
-                        return;
-                    }
-                    $this->passthrough->onEvent($event);
-                }
-
-                public function onError(SseError $error): void
-                {
-                    $errorEvent = SseEvent::fromRaw(
-                        "event: error\ndata: " . json_encode([
-                            'type' => 'upstream_disconnected',
-                            'info' => "分析服务连接中断",
-                        ], JSON_UNESCAPED_UNICODE)
-                    );
-                    if ($errorEvent !== null) {
-                        $this->writer->sendEvent($errorEvent);
-                    }
-                }
-
-                public function onComplete(): void
-                {
-                    // No-op: do not emit any completion event to the browser.
-                }
-            };
-        }
-
-        $body = $response->getBody();
-        (new SseReader($body))->consume($handler);
-        return true;
+        return $this->guzzleFallback;
     }
 
     private function validateParsedInput(?array $input): ?array
@@ -997,6 +598,17 @@ class Chat2VizController extends GyController
     }
 
     /**
+     * Validate that a uid string matches UUID v4 format.
+     */
+    private function validateDashboardUid(string $uid): bool
+    {
+        return preg_match(
+            '/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i',
+            $uid
+        ) === 1;
+    }
+
+    /**
      * Create a new conversation for a dashboard.
      *
      * 1. Archive the current active conversation for this dashboard (status=0)
@@ -1021,6 +633,10 @@ class Chat2VizController extends GyController
         $dashboardUid = trim((string) ($input['dashboard_uid'] ?? ''));
         if ($dashboardUid === '') {
             $this->ajaxReturn(['status' => 0, 'info' => '缺少仪表盘ID']);
+            return;
+        }
+        if (!$this->validateDashboardUid($dashboardUid)) {
+            $this->ajaxReturn(['status' => 0, 'info' => '仪表盘ID格式无效']);
             return;
         }
 
@@ -1074,6 +690,10 @@ class Chat2VizController extends GyController
             $this->ajaxReturn(['status' => 0, 'info' => '缺少仪表盘ID']);
             return;
         }
+        if (!$this->validateDashboardUid($uid)) {
+            $this->ajaxReturn(['status' => 0, 'info' => '仪表盘ID格式无效']);
+            return;
+        }
 
         try {
             $convRepo = AdapterFactory::createConversationRepository();
@@ -1124,13 +744,20 @@ class Chat2VizController extends GyController
             $this->ajaxReturn(['status' => 0, 'info' => '缺少仪表盘ID']);
             return;
         }
+        if (!$this->validateDashboardUid($uid)) {
+            $this->ajaxReturn(['status' => 0, 'info' => '仪表盘ID格式无效']);
+            return;
+        }
 
         try {
             $convRepo = AdapterFactory::createConversationRepository();
             $conversations = $convRepo->findByDashboardUid($uid);
 
-            // Enrich each conversation with derived message count
+            // Enrich each conversation with derived message count (batch query)
             $msgRepo = AdapterFactory::createMessageRepository();
+            $convIds = array_map(fn($c) => (string) $c['id'], $conversations);
+            $counts = $msgRepo->countByConversationIds($convIds);
+
             $enriched = [];
             foreach ($conversations as $conv) {
                 $convId = (string) $conv['id'];
@@ -1139,7 +766,7 @@ class Chat2VizController extends GyController
                     'dashboard_uid' => $conv['dashboard_uid'] ?? $uid,
                     'title'         => $conv['title'] ?? '',
                     'status'        => (int) ($conv['status'] ?? 1),
-                    'message_count' => $msgRepo->countByConversationId($convId),
+                    'message_count' => $counts[$convId] ?? 0,
                     'created_at'    => $conv['created_at'] ?? '',
                     'updated_at'    => $conv['updated_at'] ?? '',
                 ];

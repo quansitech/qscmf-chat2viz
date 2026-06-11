@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { Empty, Spin, Typography } from 'antd';
 import { LayoutOutlined } from '@ant-design/icons';
 import RGL, { WidthProvider, Layout } from 'react-grid-layout';
@@ -32,6 +32,8 @@ export default function PreviewPanel() {
   const updateLayout = useDashboardStore((s) => s.updateLayout);
   const removePanel = useDashboardStore((s) => s.removePanel);
   const streamingState = useDashboardStore((s) => s.streamingState);
+
+  const [dragging, setDragging] = useState(false);
 
   const widgetList = useMemo(() => Object.values(widgets) as Widget[], [widgets]);
   const hasWidgets = widgetList.length > 0;
@@ -106,12 +108,16 @@ export default function PreviewPanel() {
   }
 
   return (
-    <div style={styles.container}>
+    <div style={{ ...styles.container, overflow: dragging ? 'hidden' : 'auto' }}>
       <ResponsiveGridLayout
         layout={layout}
         cols={COLS}
         rowHeight={ROW_HEIGHT}
         onLayoutChange={handleLayoutChange}
+        onDragStart={() => setDragging(true)}
+        onDragStop={() => setDragging(false)}
+        onResizeStart={() => setDragging(true)}
+        onResizeStop={() => setDragging(false)}
         compactType={COMPACT_TYPE}
         draggableHandle=".widget-header"
         isResizable={true}

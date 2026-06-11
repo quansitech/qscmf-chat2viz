@@ -3,7 +3,7 @@ import { Badge, Button, Collapse, Empty, Input, message, Spin, Tag, Tooltip, Typ
 import { SendOutlined, QuestionCircleOutlined, PlusOutlined } from '@ant-design/icons';
 import { useDashboardStore } from '../store/dashboardStore';
 import { useSseStream } from '../hooks/useSseStream';
-import type { ChatMessage, MessageStatus } from '../store/dashboardStore';
+import type { ChatMessage } from '../store/dashboardStore';
 
 // ---------------------------------------------------------------------------
 // Constants

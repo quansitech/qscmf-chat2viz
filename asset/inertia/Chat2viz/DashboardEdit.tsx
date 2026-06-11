@@ -130,11 +130,14 @@ export default function DashboardEdit() {
         const msgs: ChatMessage[] = result.data.messages
           .filter((m: any) => m.role === 'user' || m.role === 'assistant')
           .map((m: any) => {
-            let metadata = m.metadata
-              ? typeof m.metadata === 'string'
-                ? JSON.parse(m.metadata)
-                : m.metadata
-              : undefined;
+            let metadata: any;
+            if (!m.metadata) {
+              metadata = undefined;
+            } else if (typeof m.metadata !== 'string') {
+              metadata = m.metadata;
+            } else {
+              try { metadata = JSON.parse(m.metadata); } catch { metadata = undefined; }
+            }
 
             return {
               id: String(m.id ?? Math.random().toString(36).slice(2)),

@@ -59,6 +59,17 @@ class SqlValidator
         if (preg_match('/\b(LOAD\s+DATA|GET_LOCK|RELEASE_LOCK|IS_FREE_LOCK|IS_USED_LOCK|LOAD_FILE|BENCHMARK|SLEEP|EXTRACTVALUE|UPDATEXML)\s*\(/i', $normalized)) {
             throw new \InvalidArgumentException('Disallowed function in query');
         }
+
+        // 7. Reject INFORMATION_SCHEMA access (schema/table enumeration, privilege escalation)
+        if (preg_match('/\bINFORMATION_SCHEMA\b/i', $normalized)) {
+            throw new \InvalidArgumentException('INFORMATION_SCHEMA access is not allowed');
+        }
+
+        // 8. Reject subqueries in FROM clause (derived tables) to prevent data exfiltration
+        //    e.g. SELECT * FROM (SELECT password FROM admin_users) AS t
+        if (preg_match('/\bFROM\s*\(/i', $normalized)) {
+            throw new \InvalidArgumentException('Subqueries in FROM clause are not allowed');
+        }
     }
 
     /**

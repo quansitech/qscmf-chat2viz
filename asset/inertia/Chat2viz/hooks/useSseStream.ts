@@ -238,9 +238,7 @@ function dispatchEvent(event: SseEvent | null): void {
         title: raw.title || (raw.g2_spec as { title?: string })?.title || '',
         g2_spec: raw.g2_spec || {},
         data: raw.data || {},
-        layout: raw.layout && typeof raw.layout === 'object' && 'w' in (raw.layout as object)
-          ? raw.layout
-          : computeNextSlot(store.widgets),
+        layout: computeNextSlot(store.widgets),
       };
       store.addPanel(widget);
       store.addAiStep({

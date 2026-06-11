@@ -163,6 +163,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderBottom: '1px solid #f5f5f5',
     cursor: 'grab',
     userSelect: 'none',
+    touchAction: 'none',
   },
   titleArea: {
     display: 'flex',
