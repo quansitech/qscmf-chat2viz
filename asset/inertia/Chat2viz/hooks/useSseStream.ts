@@ -401,6 +401,147 @@ function validateWidget(data: unknown): data is Widget {
 }
 
 // ---------------------------------------------------------------------------
+// Deep-path utilities
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a partial widget update that sets a value at an arbitrary depth.
+ *
+ * @param widget  Current widget state (read-only — not mutated)
+ * @param segments  Full JSON Pointer segments: ['widgets', id, ...fieldPath]
+ * @param value   Value to set at the leaf
+ * @returns A Partial<Widget> suitable for store.updateWidget(), or null on error.
+ *
+ * For `segments = ['widgets','w1','g2_spec','encode','x']` and `value = "month"`:
+ *   → reads current widget.g2_spec, deep-clones it, sets .encode.x = "month"
+ *   → returns { g2_spec: <cloned-and-updated> }
+ *
+ * For `segments = ['widgets','w1','title']` (fieldPath length 1):
+ *   → returns { title: value } (backward-compatible shallow path)
+ */
+function deepSetByPath(
+  widget: Widget,
+  segments: string[],
+  value: unknown,
+): Partial<Widget> | null {
+  const fieldPath = segments.slice(2); // e.g. ['g2_spec','encode','x']
+  if (fieldPath.length === 0) return null;
+
+  const topKey = fieldPath[0];
+
+  // Shallow path — same as the old `segments[2]` behaviour
+  if (fieldPath.length === 1) {
+    return { [topKey]: value } as unknown as Partial<Widget>;
+  }
+
+  // Deep path: clone the current subtree, then deep-set the leaf
+  const widgetRec = widget as unknown as Record<string, unknown>;
+  const current = widgetRec[topKey];
+  // Guard: cannot deep-set inside a non-null primitive
+  if (current !== null && current !== undefined && typeof current !== 'object') {
+    return null;
+  }
+  const cloned: Record<string, unknown> =
+    current !== null && current !== undefined
+      ? JSON.parse(JSON.stringify(current))
+      : {};
+
+  // Walk to the parent of the leaf, creating missing intermediate nodes
+  let target: Record<string, unknown> = cloned;
+  for (let i = 1; i < fieldPath.length - 1; i++) {
+    const key = fieldPath[i];
+    if (
+      target[key] === undefined ||
+      target[key] === null
+    ) {
+      // "mkdir -p": next segment is numeric → array, else → object
+      const nextKey = fieldPath[i + 1];
+      target[key] = /^\d+$/.test(nextKey) ? [] : {};
+    } else if (typeof target[key] === 'object') {
+      // Shallow-clone at each level to avoid mutating siblings
+      target[key] = Array.isArray(target[key])
+        ? [...(target[key] as unknown[])]
+        : { ...(target[key] as Record<string, unknown>) };
+    } else {
+      // Encountered a primitive where we need a container — cannot traverse
+      return null;
+    }
+    target = target[key] as Record<string, unknown>;
+  }
+
+  // Final guard: target must be a writable container
+  if (typeof target !== 'object' || target === null) return null;
+
+  // Set the leaf value
+  const lastKey = fieldPath[fieldPath.length - 1];
+  target[lastKey] = value;
+
+  return { [topKey]: cloned } as unknown as Partial<Widget>;
+}
+
+/**
+ * Build a partial widget update that deletes a leaf at an arbitrary depth.
+ * Returns null if the path does not exist or cannot be traversed.
+ */
+function deepDeleteByPath(
+  widget: Widget,
+  segments: string[],
+): Partial<Widget> | null {
+  const fieldPath = segments.slice(2);
+  if (fieldPath.length === 0) return null;
+
+  const topKey = fieldPath[0];
+
+  // Deleting a top-level widget field is not supported via updateWidget
+  // (Object.assign cannot remove keys). Return null — the caller should
+  // handle this case directly using Immer draft if needed.
+  if (fieldPath.length === 1) {
+    return null;
+  }
+
+  const widgetRec = widget as unknown as Record<string, unknown>;
+  const current = widgetRec[topKey];
+  if (
+    current === null ||
+    current === undefined ||
+    typeof current !== 'object'
+  ) {
+    return null;
+  }
+
+  const cloned: Record<string, unknown> = JSON.parse(
+    JSON.stringify(current),
+  );
+
+  // Walk to the parent of the leaf
+  let target: Record<string, unknown> = cloned;
+  for (let i = 1; i < fieldPath.length - 1; i++) {
+    const key = fieldPath[i];
+    const child = target[key];
+    if (
+      child === undefined ||
+      child === null ||
+      typeof child !== 'object'
+    ) {
+      return null; // Path doesn't exist — nothing to delete
+    }
+    target = child as Record<string, unknown>;
+  }
+
+  const lastKey = fieldPath[fieldPath.length - 1];
+  if (Array.isArray(target)) {
+    const idx = parseInt(lastKey, 10);
+    if (!isNaN(idx) && idx >= 0 && idx < target.length) {
+      target.splice(idx, 1);
+    }
+  } else {
+    delete target[lastKey];
+  }
+
+  return { [topKey]: cloned } as unknown as Partial<Widget>;
+}
+
+// ---------------------------------------------------------------------------
 // Patch application
 // ---------------------------------------------------------------------------
 
@@ -410,14 +551,24 @@ function applyPatches(patches: DashboardPatch[]): void {
   const store = useDashboardStore.getState();
 
   for (const patch of patches) {
-    // path format: "/widgets/{id}/field" or "/title" etc.
+    // path format: "/widgets/{id}/field" or "/widgets/{id}/g2_spec/encode/x" etc.
     const segments = patch.path.split('/').filter(Boolean);
 
     if (segments[0] === 'widgets' && segments.length >= 2) {
       const widgetId = segments[1];
 
       if (patch.op === 'remove') {
-        store.removePanel(widgetId);
+        if (segments.length === 2) {
+          // Remove entire widget
+          store.removePanel(widgetId);
+        } else {
+          // Deep remove: delete only the leaf node
+          const widget = store.widgets[widgetId];
+          if (widget) {
+            const partial = deepDeleteByPath(widget, segments);
+            if (partial) store.updateWidget(widgetId, partial);
+          }
+        }
         continue;
       }
 
@@ -430,8 +581,12 @@ function applyPatches(patches: DashboardPatch[]): void {
             store.addPanel(patch.value as unknown as Widget);
           }
         } else {
-          const field = segments[2];
-          store.updateWidget(widgetId, { [field]: patch.value } as unknown as Partial<Widget>);
+          // segments.length >= 3 — shallow or deep path
+          const widget = store.widgets[widgetId];
+          if (widget) {
+            const partial = deepSetByPath(widget, segments, patch.value);
+            if (partial) store.updateWidget(widgetId, partial);
+          }
         }
       }
     } else if (segments[0] === 'title' && patch.value !== undefined) {
