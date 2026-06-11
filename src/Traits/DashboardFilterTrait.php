@@ -19,11 +19,18 @@ trait DashboardFilterTrait
     private function filterWhitelist(array $filters): array
     {
         $safe = [];
-        $validStatuses = ['draft', 'published', 'archived'];
+        $validDashboardStatuses = ['draft', 'published', 'archived'];
 
-        if (isset($filters['status']) && in_array($filters['status'], $validStatuses, true)) {
-            $safe['status'] = $filters['status'];
+        // Technical status: TINYINT (1=enabled, 0=disabled)
+        if (isset($filters['status']) && is_numeric($filters['status'])) {
+            $safe['status'] = (int) $filters['status'];
         }
+
+        // Business status: ENUM (draft/published/archived)
+        if (isset($filters['dashboard_status']) && in_array($filters['dashboard_status'], $validDashboardStatuses, true)) {
+            $safe['dashboard_status'] = $filters['dashboard_status'];
+        }
+
         if (isset($filters['created_by']) && is_numeric($filters['created_by'])) {
             $safe['created_by'] = (int) $filters['created_by'];
         }

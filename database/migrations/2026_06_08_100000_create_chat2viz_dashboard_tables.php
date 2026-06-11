@@ -7,25 +7,19 @@ use Illuminate\Database\Migrations\Migration;
 class CreateChat2vizDashboardTables extends Migration
 {
     /**
-     * Schema fidelity notes (Layer 6 audit):
+     * Schema fidelity notes:
      *
      * 1. Timestamp columns (created_at, updated_at) are database-managed.
      *    - created_at: DEFAULT CURRENT_TIMESTAMP (set on INSERT, never auto-updated)
      *    - updated_at: DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-     *      (set on INSERT and automatically updated on every row modification)
-     *    - Verified: actual DB columns match migration definition.
      *
-     * 2. qs_chat2viz_conversation_messages.content
-     *    - Defined as TEXT NOT NULL with no default.
-     *    - Application layer must always provide content; empty string is valid.
-     *    - Verified: actual DB column matches migration definition.
+     * 2. Dual status design on dashboards:
+     *    - status TINYINT: technical state (1=enabled, 0=disabled/soft-delete), universal
+     *    - dashboard_status ENUM: business state (draft/published/archived), specific to dashboards
+     *    These two dimensions are independent.
      *
-     * 3. Legacy conversation_id=NULL records in qs_chat2viz_dashboards
-     *    - The dashboards table allows conversation_id to be NULL (nullable column).
-     *    - Old dashboards created before the conversation linkage feature may have
-     *      conversation_id=NULL. These records cannot be retroactively linked to
-     *      conversations because the original conversation data no longer exists.
-     *    - This is an accepted historical artifact; no data recovery is needed.
+     * 3. Conversations are tracked in qs_chat2viz_conversations (linked by dashboard_uid),
+     *    not via a conversation_id column on dashboards.
      */
 
     public function beforeCmmUp()
@@ -51,11 +45,11 @@ class CreateChat2vizDashboardTables extends Migration
             $table->string('title', 255)->default('')->comment('看板标题');
             $table->json('current_schema')->comment('当前正在编辑的 Dashboard Schema');
             $table->unsignedBigInteger('published_version_id')->nullable()->comment('指向已发布的版本快照');
-            $table->string('conversation_id', 64)->nullable()->comment('关联的会话 ID');
-            $table->enum('status', ['draft', 'published', 'archived'])->default('draft')->comment('看板状态：draft-草稿，published-已发布，archived-已归档');
+            $table->unsignedTinyInteger('status')->default(1)->comment('技术状态：1=启用，0=禁用/软删除');
+            $table->enum('dashboard_status', ['draft', 'published', 'archived'])->default('draft')->comment('业务状态：draft-草稿，published-已发布，archived-已归档');
             $table->unsignedBigInteger('created_by')->nullable()->comment('创建人用户 ID');
-            $table->timestamp('created_at')->useCurrent()->comment('创建时间（数据库自动维护，DEFAULT CURRENT_TIMESTAMP）');
-            $table->timestamp('updated_at')->useCurrent()->useCurrentOnUpdate()->comment('更新时间（数据库自动维护，DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP）');
+            $table->timestamp('created_at')->useCurrent()->comment('创建时间');
+            $table->timestamp('updated_at')->useCurrent()->useCurrentOnUpdate()->comment('更新时间');
 
             $table->index('status', 'idx_status');
             $table->index('created_by', 'idx_created_by');
@@ -67,12 +61,12 @@ class CreateChat2vizDashboardTables extends Migration
         Schema::create('qs_chat2viz_dashboard_versions', function (Blueprint $table) {
             $table->bigIncrements('id')->comment('主键 ID');
             $table->unsignedBigInteger('dashboard_id')->comment('所属看板 ID（外键关联 qs_chat2viz_dashboards.id，级联删除）');
-            $table->integer('version')->default(1)->comment('版本号，同一看板下从 1 递增，唯一约束 (dashboard_id, version)');
+            $table->integer('version')->default(1)->comment('版本号，同一看板下从 1 递增');
             $table->json('schema')->comment('已发布的 Schema 快照（已清除数据）');
-            $table->dateTime('published_at')->nullable()->comment('发布时间，未发布时为 NULL');
+            $table->dateTime('published_at')->nullable()->comment('发布时间');
             $table->unsignedBigInteger('published_by')->nullable()->comment('发布人用户 ID');
-            $table->timestamp('created_at')->useCurrent()->comment('创建时间（数据库自动维护，DEFAULT CURRENT_TIMESTAMP）');
-            $table->timestamp('updated_at')->useCurrent()->useCurrentOnUpdate()->comment('更新时间（数据库自动维护，DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP）');
+            $table->timestamp('created_at')->useCurrent()->comment('创建时间');
+            $table->timestamp('updated_at')->useCurrent()->useCurrentOnUpdate()->comment('更新时间');
 
             $table->foreign('dashboard_id')
                 ->references('id')
@@ -86,18 +80,35 @@ class CreateChat2vizDashboardTables extends Migration
             $table->collation = 'utf8mb4_general_ci';
         });
 
+        Schema::create('qs_chat2viz_conversations', function (Blueprint $table) {
+            $table->bigIncrements('id')->comment('主键 ID');
+            $table->string('dashboard_uid', 36)->comment('关联看板 UID（qs_chat2viz_dashboards.uid）');
+            $table->string('title', 255)->default('')->comment('会话标题');
+            $table->unsignedTinyInteger('status')->default(1)->comment('技术状态：1=启用，0=禁用/软删除');
+            $table->timestamp('created_at')->useCurrent()->comment('创建时间');
+            $table->timestamp('updated_at')->useCurrent()->useCurrentOnUpdate()->comment('更新时间');
+
+            $table->index(['dashboard_uid', 'status', 'created_at'], 'idx_dashboard_uid_status');
+
+            $table->charset = 'utf8mb4';
+            $table->collation = 'utf8mb4_general_ci';
+        });
+
         Schema::create('qs_chat2viz_conversation_messages', function (Blueprint $table) {
             $table->bigIncrements('id')->comment('主键 ID');
-            $table->string('conversation_id', 64)->comment('会话 ID，关联一次完整的对话');
-            $table->string('dashboard_uid', 64)->comment('关联的看板 UID（qs_chat2viz_dashboards.uid）');
+            $table->string('conversation_id', 64)->comment('会话 ID，关联 qs_chat2viz_conversations.id');
             $table->enum('role', ['user', 'assistant', 'system'])->comment('消息角色：user-用户提问，assistant-助手回复，system-系统提示');
-            $table->text('content')->comment('消息正文（TEXT NOT NULL，由应用层保证始终有值）');
-            $table->json('metadata')->nullable()->comment('sql、g2_spec、tool_calls 等附加信息');
-            $table->timestamp('created_at')->useCurrent()->comment('创建时间（数据库自动维护，DEFAULT CURRENT_TIMESTAMP）');
-            $table->timestamp('updated_at')->useCurrent()->useCurrentOnUpdate()->comment('更新时间（数据库自动维护，DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP）');
+            $table->longText('content')->comment('消息正文');
+            $table->longText('reasoning_content')->nullable()->comment('推理过程内容');
+            $table->json('tool_calls')->nullable()->comment('工具调用记录');
+            $table->enum('message_status', ['streaming', 'complete', 'interrupted', 'failed'])
+                ->default('complete')
+                ->comment('消息状态：streaming-流式中，complete-完成，interrupted-中断，failed-失败');
+            $table->json('metadata')->nullable()->comment('sql、g2_spec 等附加信息');
+            $table->timestamp('created_at')->useCurrent()->comment('创建时间');
+            $table->timestamp('updated_at')->useCurrent()->useCurrentOnUpdate()->comment('更新时间');
 
             $table->index(['conversation_id', 'created_at'], 'idx_conv_created');
-            $table->index('dashboard_uid', 'idx_dashboard');
 
             $table->charset = 'utf8mb4';
             $table->collation = 'utf8mb4_general_ci';
@@ -112,6 +123,7 @@ class CreateChat2vizDashboardTables extends Migration
     public function down()
     {
         Schema::dropIfExists('qs_chat2viz_conversation_messages');
+        Schema::dropIfExists('qs_chat2viz_conversations');
         Schema::dropIfExists('qs_chat2viz_dashboard_versions');
         Schema::dropIfExists('qs_chat2viz_dashboards');
     }

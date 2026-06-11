@@ -13,8 +13,8 @@ class Dashboard extends Model
         'title',
         'current_schema',
         'published_version_id',
-        'conversation_id',
         'status',
+        'dashboard_status',
         'created_by',
     ];
 

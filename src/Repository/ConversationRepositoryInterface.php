@@ -2,40 +2,58 @@
 
 namespace Qscmf\Chat2Viz\Repository;
 
+use Qscmf\Chat2Viz\Exception\DashboardException;
+
+/**
+ * Repository interface for managing conversation records (qs_chat2viz_conversations).
+ *
+ * A "conversation" groups messages into a logical session tied to a dashboard.
+ * This interface handles conversation lifecycle: create, find, archive.
+ */
 interface ConversationRepositoryInterface
 {
     /**
-     * Persist a single message in a conversation.
+     * Create a new conversation for a dashboard.
      *
-     * @param string $conversationId Max 64 chars
-     * @param string $dashboardUid   Max 64 chars
-     * @param string $role           One of: user, assistant, system
-     * @param string $content        Message body
-     * @param array|null $metadata   Optional JSON-encodable metadata (sql, g2_spec, etc.)
-     * @return array The created row as a plain array
+     * @param string $dashboardUid UUID v4 of the dashboard
+     * @param string $title        Human-readable title (defaults to empty)
+     * @return array The created conversation row as a plain array
+     *
+     * @throws DashboardException On persistence failure
      */
-    public function createMessage(
-        string $conversationId,
-        string $dashboardUid,
-        string $role,
-        string $content,
-        ?array $metadata = null
-    ): array;
+    public function createConversation(string $dashboardUid, string $title = ''): array;
 
     /**
-     * Load messages for a conversation, oldest first.
+     * Find a conversation by its primary key.
      *
-     * @param string $conversationId
-     * @param int    $limit   Max 200, default 50
-     * @param int    $offset  Number of messages to skip (for pagination)
-     * @return array<int, array> List of message rows
+     * @param int $id Conversation primary key
+     * @return array|null Conversation row as plain array, or null if not found
      */
-    public function getMessages(string $conversationId, int $limit = 50, int $offset = 0): array;
+    public function findById(int $id): ?array;
 
     /**
-     * Get distinct conversation IDs for a dashboard, most recent first.
+     * Find the single active conversation for a dashboard.
      *
-     * @return array<int, array{conversation_id: string, last_active: string}>
+     * Returns the most recently created conversation where status = 1 (active).
+     *
+     * @param string $dashboardUid UUID v4 of the dashboard
+     * @return array|null Conversation row, or null if no active conversation exists
      */
-    public function getRecentConversationIds(string $dashboardUid, int $limit = 20): array;
+    public function findActiveByDashboardUid(string $dashboardUid): ?array;
+
+    /**
+     * List all conversations for a dashboard, newest first.
+     *
+     * @param string $dashboardUid UUID v4 of the dashboard
+     * @return array<int, array> List of conversation rows
+     */
+    public function findByDashboardUid(string $dashboardUid): array;
+
+    /**
+     * Archive (soft-delete) a conversation by setting status = 0.
+     *
+     * @param int $id Conversation primary key
+     * @return bool True if archived, false if not found
+     */
+    public function archive(int $id): bool;
 }

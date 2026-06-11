@@ -3,7 +3,7 @@ import { Button, Input, Tag, Tooltip } from 'antd';
 import { ArrowLeftOutlined, CloudOutlined, CloudSyncOutlined, CloudUploadOutlined } from '@ant-design/icons';
 import { getPageProps, navigate } from './adapters';
 import { useDashboardStore } from './store/dashboardStore';
-import type { ChatMessage } from './store/dashboardStore';
+import type { ChatMessage, MessageStatus } from './store/dashboardStore';
 import { useDashboardDraft } from './hooks/useDashboardDraft';
 import ChatPanel from './components/ChatPanel';
 import PreviewPanel from './components/PreviewPanel';
@@ -17,7 +17,6 @@ interface DashboardData {
   uid: string;
   title: string;
   current_schema: Record<string, unknown>;
-  conversation_id?: string;
   status?: string;
 }
 
@@ -63,7 +62,6 @@ export default function DashboardEdit() {
     useDashboardStore.setState({
       uid: dashboard.uid || '',
       title: dashboard.title || '',
-      conversationId: dashboard.conversation_id || '',
     });
 
     // Hydrate widgets from current_schema if present
@@ -124,22 +122,36 @@ export default function DashboardEdit() {
       .then((r) => r.json())
       .then((result) => {
         if (result.status !== 1 || !result.data?.messages?.length) return;
+
+        const conversationId = result.data.conversation_id
+          ? String(result.data.conversation_id)
+          : '';
+
         const msgs: ChatMessage[] = result.data.messages
           .filter((m: any) => m.role === 'user' || m.role === 'assistant')
-          .map((m: any) => ({
-            id: String(m.id ?? Math.random().toString(36).slice(2)),
-            role: m.role,
-            content: m.content || '',
-            timestamp: m.created_at || new Date().toISOString(),
-            metadata: m.metadata
+          .map((m: any) => {
+            let metadata = m.metadata
               ? typeof m.metadata === 'string'
                 ? JSON.parse(m.metadata)
                 : m.metadata
-              : undefined,
-          }));
-        if (msgs.length > 0) {
-          useDashboardStore.setState({ messages: msgs });
+              : undefined;
+
+            return {
+              id: String(m.id ?? Math.random().toString(36).slice(2)),
+              role: m.role,
+              content: m.content || '',
+              timestamp: m.created_at || new Date().toISOString(),
+              message_status: (['streaming', 'complete', 'interrupted', 'failed'].includes(m.message_status)
+                ? m.message_status : 'complete') as MessageStatus | undefined,
+              metadata,
+            };
+          });
+
+        const update: Partial<import('./store/dashboardStore').DashboardState> = { messages: msgs };
+        if (conversationId) {
+          update.conversationId = conversationId;
         }
+        useDashboardStore.setState(update);
       })
       .catch(() => {
         // Non-critical: conversation history is best-effort

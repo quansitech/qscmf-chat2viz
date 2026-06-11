@@ -16,10 +16,14 @@ class ConversationMessage extends Model
         'role',
         'content',
         'metadata',
+        'reasoning_content',
+        'tool_calls',
+        'message_status',
         'created_at',
     ];
 
     protected $casts = [
         'metadata' => 'array',
+        'tool_calls' => 'array',
     ];
 }

@@ -5,7 +5,6 @@ import type {
   ActionCall,
   ActionCallResult,
   DashboardPatch,
-  AiStep,
 } from '../store/dashboardStore';
 import { parseSseEvent, type SseEvent } from '../sse-parser';
 import { computeNextSlot } from '../utils/layout';
@@ -58,6 +57,30 @@ export function useSseStream() {
     const controller = new AbortController();
     abortRef.current = controller;
 
+    // Ensure an active conversation exists before starting SSE stream.
+    // If conversationId is missing, call api_conversation_history to
+    // get/create one for the current dashboard.
+    if (!store.conversationId && store.uid) {
+      try {
+        const resp = await fetch(
+          `/extends/Chat2Viz/api_conversation_history?uid=${encodeURIComponent(store.uid)}`,
+          { credentials: 'same-origin', signal: controller.signal },
+        );
+        if (resp.ok) {
+          const result = await resp.json();
+          if (result.status === 1 && result.data?.conversation_id) {
+            useDashboardStore.getState().setConversationId(
+              String(result.data.conversation_id),
+            );
+          }
+        }
+      } catch (err) {
+        // If aborted, exit early
+        if (controller.signal.aborted) return;
+        // Non-fatal: proceed without conversation_id; backend will create one
+      }
+    }
+
     store.startConversation(question);
 
     const payload: Record<string, unknown> = {
@@ -65,8 +88,9 @@ export function useSseStream() {
       dashboard_context: store.getDashboardContext(),
     };
 
-    if (store.conversationId) {
-      payload.conversation_id = store.conversationId;
+    const conversationId = useDashboardStore.getState().conversationId;
+    if (conversationId) {
+      payload.conversation_id = conversationId;
     }
 
     let attempt = 0;
@@ -205,10 +229,19 @@ function dispatchEvent(event: SseEvent | null): void {
         // Silently skip invalid chart data to prevent UI disruption
         break;
       }
-      const widget = event.data as unknown as Widget;
-      if (!widget.layout) {
-        widget.layout = computeNextSlot(store.widgets);
-      }
+      // Normalize widget: build a new object to avoid mutating event.data
+      // (immutable update) and to coalesce id/widget_id aliasing.
+      const raw = event.data as unknown as Widget;
+      const widget: Widget = {
+        ...raw,
+        id: raw.id || (raw as unknown as { widget_id?: string }).widget_id || generateId(),
+        title: raw.title || (raw.g2_spec as { title?: string })?.title || '',
+        g2_spec: raw.g2_spec || {},
+        data: raw.data || {},
+        layout: raw.layout && typeof raw.layout === 'object' && 'w' in (raw.layout as object)
+          ? raw.layout
+          : computeNextSlot(store.widgets),
+      };
       store.addPanel(widget);
       store.addAiStep({
         id: generateStepId(),
@@ -328,12 +361,13 @@ function dispatchEvent(event: SseEvent | null): void {
 function validateWidget(data: unknown): data is Widget {
   if (typeof data !== 'object' || data === null) return false;
   const d = data as Record<string, unknown>;
-  return (
-    typeof d.id === 'string' &&
-    d.id.length > 0 &&
-    typeof d.g2_spec === 'object' &&
-    d.g2_spec !== null
-  );
+  // Accept either `id` (canonical) or `widget_id` (Python service convention).
+  const id = d.id ?? d.widget_id;
+  if (typeof id !== 'string' || id.length === 0) return false;
+  // g2_spec must be a non-null object — empty object is allowed (LazyG2Renderer
+  // will render the skeleton until the spec arrives via a follow-up event).
+  if (typeof d.g2_spec !== 'object' || d.g2_spec === null) return false;
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -414,7 +448,7 @@ function delay(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 function generateStepId(): string {
-  return 'step-' + crypto.randomUUID().slice(0, 8);
+  return 'step-' + generateId().slice(0, 8);
 }
 
 const TOOL_LABELS: Record<string, string> = {

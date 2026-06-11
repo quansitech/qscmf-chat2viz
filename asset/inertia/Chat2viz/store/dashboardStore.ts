@@ -62,11 +62,14 @@ export interface DashboardPatch {
   value?: unknown;
 }
 
+export type MessageStatus = 'streaming' | 'complete' | 'interrupted' | 'failed';
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: string;
+  message_status?: MessageStatus;
   metadata?: {
     sql?: string;
     g2_spec?: Record<string, unknown>;
@@ -118,6 +121,7 @@ export interface DashboardActions {
   completeConversation: () => void;
   saveDraft: () => Promise<void>;
   setConversationId: (id: string) => void;
+  resetConversation: () => void;
   toggleAutoSave: () => void;
   getDashboardContext: () => object;
   addAiStep: (step: AiStep) => void;
@@ -308,6 +312,17 @@ const _store = _create()(
           });
         },
 
+        resetConversation: () => {
+          set((state) => {
+            state.conversationId = '';
+            state.messages = [];
+            state.aiSteps = [];
+            state.error = '';
+            state.streamingState = 'idle';
+            state.isLoading = false;
+          });
+        },
+
         // ------- Persistence -------
 
         saveDraft: async () => {
@@ -327,8 +342,12 @@ const _store = _create()(
           // Python NL2SQL service expects widgets as a dict keyed by id, not an array.
           const widgetDict: Record<string, unknown> = {};
           for (const w of Object.values(widgets) as Widget[]) {
+            // Derive chart type from g2_spec (G2 mark: interval→bar, line→line, etc.)
+            const mark = (w.g2_spec?.mark ?? w.g2_spec?.type) as string | undefined;
+            const chartType = mark || 'unknown';
             widgetDict[w.id] = {
               id: w.id,
+              type: chartType,
               title: w.title,
               sql: w.sql ?? null,
               layout: w.layout,
@@ -366,8 +385,8 @@ const _store = _create()(
     {
       limit: 50,
       partialize: (state: any) => {
-        const { widgets, title, uid, conversationId } = state;
-        return { widgets, title, uid, conversationId };
+        const { widgets, title, uid } = state;
+        return { widgets, title, uid };
       },
     },
   ),

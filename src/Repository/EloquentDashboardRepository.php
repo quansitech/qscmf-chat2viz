@@ -65,9 +65,9 @@ class EloquentDashboardRepository implements DashboardRepositoryInterface
             'uid' => $uid,
             'title' => $data['title'] ?? '',
             'current_schema' => $currentSchema,
-            'status' => 'draft',
+            'status' => 1,
+            'dashboard_status' => 'draft',
             'published_version_id' => null,
-            'conversation_id' => $data['conversation_id'] ?? null,
             'created_by' => $data['created_by'] ?? null,
         ]);
 
@@ -88,11 +88,11 @@ class EloquentDashboardRepository implements DashboardRepositoryInterface
         if (isset($data['current_schema'])) {
             $updateData['current_schema'] = $data['current_schema'];
         }
-        if (isset($data['conversation_id'])) {
-            $updateData['conversation_id'] = $data['conversation_id'];
-        }
         if (isset($data['status'])) {
             $updateData['status'] = $data['status'];
+        }
+        if (isset($data['dashboard_status'])) {
+            $updateData['dashboard_status'] = $data['dashboard_status'];
         }
 
         if (!empty($updateData)) {
@@ -110,7 +110,7 @@ class EloquentDashboardRepository implements DashboardRepositoryInterface
             return false;
         }
 
-        return $dashboard->update(['status' => 'archived']);
+        return $dashboard->update(['dashboard_status' => 'archived']);
     }
 
     public function publish(string $uid, ?int $publishedBy = null): array
@@ -156,7 +156,7 @@ class EloquentDashboardRepository implements DashboardRepositoryInterface
 
             $locked->update([
                 'published_version_id' => $version->id,
-                'status' => 'published',
+                'dashboard_status' => 'published',
             ]);
 
             return $version->toArray();

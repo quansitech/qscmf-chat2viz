@@ -1,9 +1,9 @@
 import { useRef, useEffect, useState, useCallback, useMemo } from 'react';
-import { Badge, Button, Collapse, Empty, Input, Spin, Typography } from 'antd';
-import { SendOutlined, QuestionCircleOutlined } from '@ant-design/icons';
+import { Badge, Button, Collapse, Empty, Input, message, Spin, Tag, Tooltip, Typography } from 'antd';
+import { SendOutlined, QuestionCircleOutlined, PlusOutlined } from '@ant-design/icons';
 import { useDashboardStore } from '../store/dashboardStore';
 import { useSseStream } from '../hooks/useSseStream';
-import type { ChatMessage } from '../store/dashboardStore';
+import type { ChatMessage, MessageStatus } from '../store/dashboardStore';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -69,12 +69,42 @@ export default function ChatPanel() {
   const messages = useDashboardStore((s) => s.messages);
   const isLoading = useDashboardStore((s) => s.isLoading);
   const streamingState = useDashboardStore((s) => s.streamingState);
-  const error = useDashboardStore((s) => s.error);
+  const uid = useDashboardStore((s) => s.uid);
   const { sendQuestion, cancel } = useSseStream();
   const lastAssistantHasContent = useDashboardStore(selectLastAssistantHasContent);
 
   const [inputValue, setInputValue] = useState('');
+  const [newConvLoading, setNewConvLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // ---- New Conversation ----
+  const handleNewConversation = useCallback(async () => {
+    if (!uid || streamingState !== 'idle') return;
+    setNewConvLoading(true);
+    try {
+      const resp = await fetch('/extends/Chat2Viz/api_conversation_create', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dashboard_uid: uid }),
+      });
+      const result = await resp.json();
+      if (result.status === 1) {
+        useDashboardStore.getState().resetConversation();
+        if (result.data?.conversation_id) {
+          useDashboardStore.getState().setConversationId(
+            String(result.data.conversation_id),
+          );
+        }
+      } else {
+        message.error(result.info || 'Failed to create new conversation');
+      }
+    } catch {
+      message.error('Network error creating conversation');
+    } finally {
+      setNewConvLoading(false);
+    }
+  }, [uid, streamingState]);
 
   // ---- Auto-scroll to bottom on new messages ----
   useEffect(() => {
@@ -113,6 +143,26 @@ export default function ChatPanel() {
 
   return (
     <div style={styles.panel}>
+      {/* ---- Header with New Conversation button ---- */}
+      {hasMessages && (
+        <div style={styles.panelHeader}>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {messages.length} messages
+          </Typography.Text>
+          <Tooltip title="New Conversation">
+            <Button
+              size="small"
+              icon={<PlusOutlined />}
+              loading={newConvLoading}
+              disabled={streamingState !== 'idle'}
+              onClick={handleNewConversation}
+            >
+              New
+            </Button>
+          </Tooltip>
+        </div>
+      )}
+
       {/* ---- Message List ---- */}
       <div style={styles.messageList}>
         {!hasMessages && (
@@ -141,11 +191,10 @@ export default function ChatPanel() {
 
         <AiStepsIndicator />
 
-        {error && (
-          <div style={styles.errorBlock}>
-            <Typography.Text type="danger">{error}</Typography.Text>
-          </div>
-        )}
+        {/* Streaming errors are surfaced in the top bar (DashboardEdit) to
+            avoid duplicate display.  The top bar error is the single source
+            of truth; when streamingState resets to 'idle' (via the `done`
+            event from the backend) the user can send a new question. */}
 
         <div ref={messagesEndRef} />
         {streamingState !== 'idle' && lastAssistantHasContent && (
@@ -195,11 +244,24 @@ function MessageBubble({ message }: MessageBubbleProps) {
     messages[messages.length - 1]?.id === message.id;
   const showCursor = isLastAssistant && streamingState !== 'idle';
 
+  const status = message.message_status;
+
   if (isSystem) return null;
 
   return (
     <div style={{ ...styles.bubbleRow, justifyContent: isUser ? 'flex-end' : 'flex-start' }}>
       <div style={isUser ? styles.userBubble : styles.assistantBubble}>
+        {/* Status indicators for non-complete messages */}
+        {!isUser && status === 'streaming' && (
+          <Tag color="processing" style={styles.statusTag}>AI was generating...</Tag>
+        )}
+        {!isUser && status === 'interrupted' && (
+          <Tag color="warning" style={styles.statusTag}>Interrupted</Tag>
+        )}
+        {!isUser && status === 'failed' && (
+          <Tag color="error" style={styles.statusTag}>Failed</Tag>
+        )}
+
         {/* Security: React auto-escapes text content. If switching to
             dangerouslySetInnerHTML for markdown rendering, MUST sanitize
             with DOMPurify first. */}
@@ -244,6 +306,14 @@ const styles: Record<string, React.CSSProperties> = {
     background: '#fff',
     borderRight: '1px solid #f0f0f0',
   },
+  panelHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: '6px 12px',
+    borderBottom: '1px solid #f0f0f0',
+    flexShrink: 0,
+  },
   messageList: {
     flex: 1,
     overflowY: 'auto',
@@ -285,12 +355,6 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     gap: 6,
     marginBottom: 4,
-  },
-  errorBlock: {
-    padding: '8px 12px',
-    background: '#fff2f0',
-    borderRadius: 6,
-    marginTop: 8,
   },
   inputBar: {
     display: 'flex',
@@ -338,5 +402,9 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: 'auto',
     margin: 0,
     maxHeight: 100,
+  },
+  statusTag: {
+    fontSize: 11,
+    marginBottom: 4,
   },
 };

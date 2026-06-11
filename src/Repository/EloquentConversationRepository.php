@@ -3,57 +3,65 @@
 namespace Qscmf\Chat2Viz\Repository;
 
 use Qscmf\Chat2Viz\Exception\DashboardException;
-use Qscmf\Chat2Viz\Model\ConversationMessage;
-use Illuminate\Support\Facades\DB;
+use Qscmf\Chat2Viz\Model\Conversation;
 
+/**
+ * Eloquent (Laravel) implementation of ConversationRepositoryInterface.
+ *
+ * Used when Think\Model is not available (v15+).
+ */
 class EloquentConversationRepository implements ConversationRepositoryInterface
 {
-    private const VALID_ROLES = ['user', 'assistant', 'system'];
-
-    public function createMessage(
-        string $conversationId,
-        string $dashboardUid,
-        string $role,
-        string $content,
-        ?array $metadata = null
-    ): array {
-        if (!in_array($role, self::VALID_ROLES, true)) {
-            throw new DashboardException('Invalid message role: ' . $role);
-        }
-
-        $message = ConversationMessage::create([
-            'conversation_id' => $conversationId,
-            'dashboard_uid'   => $dashboardUid,
-            'role'            => $role,
-            'content'         => $content,
-            'metadata'        => $metadata,
-            'created_at'      => date('Y-m-d H:i:s'),
+    public function createConversation(string $dashboardUid, string $title = ''): array
+    {
+        $conversation = Conversation::create([
+            'dashboard_uid' => $dashboardUid,
+            'title'         => $title,
+            'status'        => 1,
         ]);
 
-        return $message->toArray();
+        return $conversation->toArray();
     }
 
-    public function getMessages(string $conversationId, int $limit = 50, int $offset = 0): array
+    public function findById(int $id): ?array
     {
-        $limit = min(max(1, $limit), 200);
-        $offset = max(0, $offset);
+        $conversation = Conversation::find($id);
+        if ($conversation === null) {
+            return null;
+        }
 
-        return ConversationMessage::where('conversation_id', $conversationId)
-            ->orderBy('created_at', 'asc')
-            ->skip($offset)
-            ->take($limit)
+        return $conversation->toArray();
+    }
+
+    public function findActiveByDashboardUid(string $dashboardUid): ?array
+    {
+        $conversation = Conversation::where('dashboard_uid', $dashboardUid)
+            ->where('status', 1)
+            ->orderByDesc('created_at')
+            ->first();
+
+        if ($conversation === null) {
+            return null;
+        }
+
+        return $conversation->toArray();
+    }
+
+    public function findByDashboardUid(string $dashboardUid): array
+    {
+        return Conversation::where('dashboard_uid', $dashboardUid)
+            ->orderByDesc('created_at')
             ->get()
             ->toArray();
     }
 
-    public function getRecentConversationIds(string $dashboardUid, int $limit = 20): array
+    public function archive(int $id): bool
     {
-        return ConversationMessage::where('dashboard_uid', $dashboardUid)
-            ->select('conversation_id', DB::raw('MAX(created_at) AS last_active'))
-            ->groupBy('conversation_id')
-            ->orderByDesc('last_active')
-            ->limit($limit)
-            ->get()
-            ->toArray();
+        $conversation = Conversation::find($id);
+        if ($conversation === null) {
+            return false;
+        }
+
+        return $conversation->update(['status' => 0]);
     }
 }

@@ -110,6 +110,13 @@ class Nl2sqlEventTransformer
             $info = $error;
         } elseif (is_array($error) && isset($error['message'])) {
             $info = $error['message'];
+            // Translate the upstream's generic INTERNAL_ERROR to something
+            // actionable for the user.  This is a mid-stream failure inside
+            // the Python agent (e.g. LLM provider hiccup, tool error); the
+            // user can simply retry.
+            if (($error['code'] ?? '') === 'INTERNAL_ERROR') {
+                $info = '生成过程出错，请稍后重试';
+            }
         } else {
             $info = '未知错误';
         }

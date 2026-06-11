@@ -104,7 +104,7 @@ class DashboardController extends GyController
 
         try {
             $dashboard = $this->repo->findByUid($uid);
-            if (!$dashboard || ($dashboard['status'] ?? '') !== 'published') {
+            if (!$dashboard || ($dashboard['dashboard_status'] ?? '') !== 'published') {
                 $this->error('仪表盘不存在或未发布');
                 return;
             }
@@ -261,13 +261,11 @@ class DashboardController extends GyController
             }
             $updateData['current_schema'] = $input['current_schema'];
         }
-        if (isset($input['conversation_id'])) {
-            $convId = (string) $input['conversation_id'];
-            if (!preg_match('/^[a-f0-9\-]{1,64}$/i', $convId)) {
-                $this->ajaxReturn(['status' => 0, 'info' => '无效的会话ID']);
-                return;
+        if (isset($input['dashboard_status'])) {
+            $validStatuses = ['draft', 'published', 'archived'];
+            if (in_array($input['dashboard_status'], $validStatuses, true)) {
+                $updateData['dashboard_status'] = $input['dashboard_status'];
             }
-            $updateData['conversation_id'] = $convId;
         }
 
         if (empty($updateData)) {
@@ -654,6 +652,11 @@ class DashboardController extends GyController
     {
         $currentUserId = $this->getCurrentUserId();
         $ownerId = $dashboard['created_by'] ?? null;
+
+        // Allow null-on-null: same anonymous session that created the dashboard
+        if ($currentUserId === null && $ownerId === null) {
+            return true;
+        }
 
         if ($currentUserId === null || $ownerId === null || (int) $ownerId !== $currentUserId) {
             $this->ajaxReturn(['status' => 0, 'info' => '无权操作']);

@@ -4,73 +4,82 @@ namespace Qscmf\Chat2Viz\Repository;
 
 use Qscmf\Chat2Viz\Exception\DashboardException;
 
+/**
+ * ThinkModel (ThinkPHP 3.x) implementation of ConversationRepositoryInterface.
+ *
+ * Uses the M() helper for all database operations with parameterized queries.
+ * Table: qs_chat2viz_conversations (prefix 'qs_' added by ThinkPHP convention).
+ */
 class ThinkModelConversationRepository implements ConversationRepositoryInterface
 {
-    private const TABLE = 'chat2viz_conversation_messages';
+    private const TABLE = 'chat2viz_conversations';
 
-    private const VALID_ROLES = ['user', 'assistant', 'system'];
-
-    public function createMessage(
-        string $conversationId,
-        string $dashboardUid,
-        string $role,
-        string $content,
-        ?array $metadata = null
-    ): array {
-        if (!in_array($role, self::VALID_ROLES, true)) {
-            throw new DashboardException('Invalid message role: ' . $role);
-        }
-
+    public function createConversation(string $dashboardUid, string $title = ''): array
+    {
         $insertData = [
-            'conversation_id' => $conversationId,
-            'dashboard_uid'   => $dashboardUid,
-            'role'            => $role,
-            'content'         => $content,
-            'metadata'        => $metadata !== null
-                ? json_encode($metadata, JSON_UNESCAPED_UNICODE)
-                : null,
-            'created_at'      => date('Y-m-d H:i:s'),
+            'dashboard_uid' => $dashboardUid,
+            'title'         => $title,
+            'status'        => 1,
         ];
 
         $id = M(self::TABLE)->add($insertData);
 
         if (!$id) {
-            throw new DashboardException('Failed to create conversation message');
+            throw new DashboardException('Failed to create conversation');
         }
 
+        return $this->findById((int)$id) ?? ['id' => $id] + $insertData;
+    }
+
+    public function findById(int $id): ?array
+    {
         $row = M(self::TABLE)->find($id);
 
         if (!is_array($row) || empty($row)) {
-            throw new DashboardException('Failed to retrieve created message');
+            return null;
         }
 
         return $row;
     }
 
-    public function getMessages(string $conversationId, int $limit = 50, int $offset = 0): array
+    public function findActiveByDashboardUid(string $dashboardUid): ?array
     {
-        $limit = min(max(1, $limit), 200);
-        $offset = max(0, $offset);
+        $row = M(self::TABLE)
+            ->where([
+                'dashboard_uid' => $dashboardUid,
+                'status'        => 1,
+            ])
+            ->order('created_at DESC')
+            ->find();
 
+        if (!is_array($row) || empty($row)) {
+            return null;
+        }
+
+        return $row;
+    }
+
+    public function findByDashboardUid(string $dashboardUid): array
+    {
         $rows = M(self::TABLE)
-            ->where(['conversation_id' => $conversationId])
-            ->order('created_at ASC')
-            ->limit($offset, $limit)
+            ->where(['dashboard_uid' => $dashboardUid])
+            ->order('created_at DESC')
             ->select();
 
         return is_array($rows) ? $rows : [];
     }
 
-    public function getRecentConversationIds(string $dashboardUid, int $limit = 20): array
+    public function archive(int $id): bool
     {
-        $rows = M(self::TABLE)
-            ->field('conversation_id, MAX(created_at) AS last_active')
-            ->where(['dashboard_uid' => $dashboardUid])
-            ->group('conversation_id')
-            ->order('last_active DESC')
-            ->limit($limit)
-            ->select();
+        $row = $this->findById($id);
+        if ($row === null) {
+            return false;
+        }
 
-        return is_array($rows) ? $rows : [];
+        $affected = M(self::TABLE)
+            ->where(['id' => $id])
+            ->save(['status' => 0]);
+
+        return $affected !== false;
     }
 }

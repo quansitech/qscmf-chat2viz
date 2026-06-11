@@ -110,9 +110,9 @@ class ThinkModelDashboardRepository implements DashboardRepositoryInterface
             'current_schema' => is_string($currentSchema)
                 ? $currentSchema
                 : json_encode($currentSchema, JSON_UNESCAPED_UNICODE),
-            'status' => 'draft',
+            'status' => 1,
+            'dashboard_status' => 'draft',
             'published_version_id' => null,
-            'conversation_id' => $data['conversation_id'] ?? null,
             'created_by' => $data['created_by'] ?? null,
         ];
 
@@ -145,12 +145,12 @@ class ThinkModelDashboardRepository implements DashboardRepositoryInterface
                 : json_encode($data['current_schema'], JSON_UNESCAPED_UNICODE);
         }
 
-        if (isset($data['conversation_id'])) {
-            $updateData['conversation_id'] = $data['conversation_id'];
-        }
-
         if (isset($data['status'])) {
             $updateData['status'] = $data['status'];
+        }
+
+        if (isset($data['dashboard_status'])) {
+            $updateData['dashboard_status'] = $data['dashboard_status'];
         }
 
         if (!empty($updateData)) {
@@ -169,7 +169,7 @@ class ThinkModelDashboardRepository implements DashboardRepositoryInterface
 
         $affected = M(self::TABLE_DASHBOARDS)
             ->where(['uid' => $uid])
-            ->save(['status' => 'archived']);
+            ->save(['dashboard_status' => 'archived']);
 
         return $affected !== false;
     }
@@ -237,7 +237,7 @@ class ThinkModelDashboardRepository implements DashboardRepositoryInterface
                 ->where(['uid' => $uid])
                 ->save([
                     'published_version_id' => $versionId,
-                    'status' => 'published',
+                    'dashboard_status' => 'published',
                 ]);
 
             $transModel->commit();
