@@ -21,6 +21,11 @@ class SqlValidator
      */
     public static function validateSelectOnly(string $sql): void
     {
+        // 0. Strip trailing semicolons/whitespace — legitimate SQL often ends with ';'
+        //    (e.g. "SELECT ... LIMIT 1000;").  A genuine multi-statement attack
+        //    ("SELECT 1; DELETE FROM t") still has a ';' in the middle after rtrim.
+        $sql = rtrim($sql, " \t\n\r;");
+
         // 1. Globally strip ALL block comments (/* ... */) and line comments (-- ...)
         //    before any keyword analysis. This prevents bypass via UN/**/ION or
         //    IN/**/TO OUTFILE injection patterns.

@@ -477,6 +477,23 @@ class Chat2VizController extends GyController
                 $text = $data['text'] ?? '';
                 if ($text !== '') {
                     $accumulator->accumulateAnswer($conversationId, $text);
+
+                    // Fallback: if the agent only writes SQL inside a markdown
+                    // ```sql``` block in the answer (no sql_generated event and
+                    // chart_ready has no sql field), extract it so the widget
+                    // schema can be persisted with sql.
+                    $existingSql = $accumulator->peekField($conversationId, 'sql');
+                    if ($existingSql === '' || $existingSql === null) {
+                        $content = $accumulator->peekField($conversationId, 'content');
+                        if (is_string($content) && $content !== ''
+                            && preg_match_all('/```sql\s*\n([\s\S]*?)\n```/i', $content, $matches)
+                            && !empty($matches[1])) {
+                            $extractedSql = trim((string) end($matches[1]));
+                            if ($extractedSql !== '') {
+                                $accumulator->accumulateSql($conversationId, $extractedSql);
+                            }
+                        }
+                    }
                 }
                 break;
 
