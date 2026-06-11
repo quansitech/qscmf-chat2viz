@@ -548,9 +548,11 @@ function deepDeleteByPath(
 function applyPatches(patches: DashboardPatch[]): void {
   if (patches.length === 0) return;
 
-  const store = useDashboardStore.getState();
-
   for (const patch of patches) {
+    // Re-read store state each iteration so sequential patches see
+    // the result of the previous patch (Requirement: Sequential application).
+    const store = useDashboardStore.getState();
+
     // path format: "/widgets/{id}/field" or "/widgets/{id}/g2_spec/encode/x" etc.
     const segments = patch.path.split('/').filter(Boolean);
 
