@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Button, Input, Tag, Tooltip } from 'antd';
+import { Button, Input, Tag, Tooltip, message } from 'antd';
 import { ArrowLeftOutlined, CloudOutlined, CloudSyncOutlined, CloudUploadOutlined } from '@ant-design/icons';
 import { getPageProps, navigate } from './adapters';
 import { useDashboardStore } from './store/dashboardStore';
@@ -208,6 +208,25 @@ export default function DashboardEdit() {
   // ---- Publish dialog state ----
   const [publishVisible, setPublishVisible] = useState(false);
 
+  // ---- Publish handler: save before opening dialog ----
+  const handlePublish = useCallback(async () => {
+    if (isDirty) {
+      try {
+        await saveNow();
+      } catch {
+        message.error('保存失败，请重试');
+        return;
+      }
+      // Re-check error state after save — saveNow may have set store.error
+      const storeError = useDashboardStore.getState().error;
+      if (storeError) {
+        message.error('保存失败，请重试');
+        return;
+      }
+    }
+    setPublishVisible(true);
+  }, [isDirty, saveNow]);
+
   // ---- Save status indicator ----
   const saveStatusText = isDirty
     ? '未保存'
@@ -252,7 +271,7 @@ export default function DashboardEdit() {
           >
             保存
           </Button>
-          <Button type="primary" icon={<CloudUploadOutlined />} onClick={() => setPublishVisible(true)}>
+          <Button type="primary" icon={<CloudUploadOutlined />} onClick={handlePublish} loading={isSaving && publishVisible}>
             发布
           </Button>
         </div>

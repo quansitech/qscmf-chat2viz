@@ -132,9 +132,23 @@ export function useSseStream() {
         }
 
         // Consume the SSE stream
-        await consumeStream(response.body, controller.signal);
+        const streamClean = await consumeStream(response.body, controller.signal);
 
-        useDashboardStore.getState().completeConversation();
+        if (streamClean) {
+          useDashboardStore.getState().completeConversation();
+        } else {
+          // Stream terminated (done=true) without receiving a 'done' event.
+          // Clean up loading state without displaying an error message — the
+          // partial response may still be useful to the user.
+          const s = useDashboardStore.getState();
+          if (s.isLoading) {
+            useDashboardStore.setState({
+              isLoading: false,
+              streamingState: 'idle',
+              aiSteps: [],
+            });
+          }
+        }
 
         // Auto-save is handled by useDashboardDraft's store subscription,
         // which detects isDirty transitions and triggers debounced saves.
@@ -174,16 +188,17 @@ export function useSseStream() {
 // Stream consumer
 // ---------------------------------------------------------------------------
 
-async function consumeStream(body: ReadableStream<Uint8Array>, signal: AbortSignal): Promise<void> {
+async function consumeStream(body: ReadableStream<Uint8Array>, signal: AbortSignal): Promise<boolean> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let receivedDone = false;
 
   try {
     while (true) {
       if (signal.aborted) {
         reader.cancel();
-        return;
+        return false;
       }
 
       const { done, value } = await reader.read();
@@ -200,26 +215,32 @@ async function consumeStream(body: ReadableStream<Uint8Array>, signal: AbortSign
       for (const frame of frames) {
         if (!frame.trim()) continue;
         const event = parseSseEvent(frame);
-        dispatchEvent(event);
+        if (dispatchEvent(event)) {
+          receivedDone = true;
+        }
       }
     }
 
     // Process any remaining data in the buffer
     if (buffer.trim()) {
       const event = parseSseEvent(buffer);
-      dispatchEvent(event);
+      if (dispatchEvent(event)) {
+        receivedDone = true;
+      }
     }
   } finally {
     reader.releaseLock();
   }
+
+  return receivedDone;
 }
 
 // ---------------------------------------------------------------------------
 // Event dispatch
 // ---------------------------------------------------------------------------
 
-function dispatchEvent(event: SseEvent | null): void {
-  if (!event) return;
+function dispatchEvent(event: SseEvent | null): boolean {
+  if (!event) return false;
 
   const store = useDashboardStore.getState();
 
@@ -229,6 +250,14 @@ function dispatchEvent(event: SseEvent | null): void {
         // Silently skip invalid chart data to prevent UI disruption
         break;
       }
+      // Resolve SQL: payload.sql takes priority, then lastAssistant.metadata.sql
+      const payloadSql = str(event.data.sql);
+      const metadataSql = (() => {
+        const last = [...store.messages].reverse().find(m => m.role === 'assistant');
+        return last?.metadata?.sql ?? '';
+      })();
+      const resolvedSql = payloadSql || metadataSql || undefined;
+
       // Normalize widget: build a new object to avoid mutating event.data
       // (immutable update) and to coalesce id/widget_id aliasing.
       const raw = event.data as unknown as Widget;
@@ -238,6 +267,7 @@ function dispatchEvent(event: SseEvent | null): void {
         title: raw.title || (raw.g2_spec as { title?: string })?.title || '',
         g2_spec: raw.g2_spec || {},
         data: raw.data || {},
+        sql: resolvedSql,
         layout: computeNextSlot(store.widgets),
       };
       store.addPanel(widget);
@@ -310,7 +340,7 @@ function dispatchEvent(event: SseEvent | null): void {
 
     case 'done': {
       store.clearAiSteps();
-      break;
+      return true;
     }
 
     case 'sql_generated': {
@@ -350,6 +380,8 @@ function dispatchEvent(event: SseEvent | null): void {
       break;
     }
   }
+
+  return false;
 }
 
 // ---------------------------------------------------------------------------

@@ -31,6 +31,7 @@ class Chat2VizController extends GyController
     protected Client $httpClient;
     private ?MockStreamEmitter $mockEmitter = null;
     private ?GuzzleStreamFallback $guzzleFallback = null;
+    private string $currentDashboardUid = '';
 
     protected function _initialize()
     {
@@ -97,6 +98,7 @@ class Chat2VizController extends GyController
         }
 
         $payload = $this->buildPayloadFromParsed($input);
+        $this->currentDashboardUid = trim((string) ($payload['dashboard_context']['dashboard_uid'] ?? ''));
         [$conversationId, $assistantMessageId, $accumulator] = $this->resolveConversation($payload);
 
         $wantsChat2viz = $this->wantsChat2vizFormat();
@@ -482,6 +484,12 @@ class Chat2VizController extends GyController
                 $sql = $data['sql'] ?? '';
                 if ($sql !== '') {
                     $accumulator->accumulateSql($conversationId, $sql);
+
+                    // Backfill SQL into an already-accumulated widget if present.
+                    $existingWidgetId = $accumulator->peekField($conversationId, 'widget_id');
+                    if ($existingWidgetId !== '') {
+                        $this->backfillWidgetSql($existingWidgetId, $sql);
+                    }
                 }
                 break;
 
@@ -494,6 +502,15 @@ class Chat2VizController extends GyController
                 $widgetId = $data['id'] ?? $data['widget_id'] ?? '';
                 if ($chartType !== '' || $widgetId !== '') {
                     $accumulator->accumulateChartMeta($conversationId, (string) $chartType, (string) $widgetId);
+                }
+
+                // Merge SQL: payload.sql first, then previously accumulated sql_generated.
+                $payloadSql = $data['sql'] ?? '';
+                if (!is_string($payloadSql) || $payloadSql === '') {
+                    $payloadSql = $accumulator->peekField($conversationId, 'sql');
+                }
+                if ($payloadSql !== '' && $widgetId !== '') {
+                    $this->backfillWidgetSql((string) $widgetId, $payloadSql);
                 }
                 break;
 
@@ -523,6 +540,61 @@ class Chat2VizController extends GyController
             // data_preview, dashboard_patch, comment/heartbeat events
                 break;
         }
+    }
+
+    /**
+     * Backfill the SQL field on an existing dashboard widget.
+     *
+     * Reads the current schema, injects sql into the matching widget, and saves.
+     * Non-critical: failures are logged but do not interrupt the stream.
+     */
+    private function backfillWidgetSql(string $widgetId, string $sql): void
+    {
+        try {
+            $dashboardUid = $this->resolveDashboardUidFromRequest();
+            if ($dashboardUid === '') {
+                return;
+            }
+
+            $dashboardM = M('Chat2VizDashboard');
+            $row = $dashboardM->where(['uid' => $dashboardUid])->find();
+            if (!$row) {
+                return;
+            }
+
+            $schema = $row['current_schema'];
+            if (is_string($schema)) {
+                $schema = json_decode($schema, true);
+            }
+            if (!is_array($schema) || !isset($schema['widgets']) || !is_array($schema['widgets'])) {
+                return;
+            }
+
+            $dirty = false;
+            foreach ($schema['widgets'] as $i => $w) {
+                if (isset($w['id']) && $w['id'] === $widgetId) {
+                    $schema['widgets'][$i]['sql'] = $sql;
+                    $dirty = true;
+                    break;
+                }
+            }
+
+            if ($dirty) {
+                $dashboardM->where(['uid' => $dashboardUid])->save([
+                    'current_schema' => json_encode($schema, JSON_UNESCAPED_UNICODE),
+                ]);
+            }
+        } catch (\Throwable $e) {
+            $this->logError('backfill widget sql failed', $e->getMessage());
+        }
+    }
+
+    /**
+     * Resolve the dashboard_uid from the current request payload (stored at stream start).
+     */
+    private function resolveDashboardUidFromRequest(): string
+    {
+        return $this->currentDashboardUid;
     }
 
     /**

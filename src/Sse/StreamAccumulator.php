@@ -234,6 +234,27 @@ class StreamAccumulator
         return $this->redisAvailable;
     }
 
+    /**
+     * Read a single hash field from the accumulator without modifying it.
+     *
+     * Returns the field value as a string, or '' if unavailable.
+     */
+    public function peekField(string $conversationId, string $field): string
+    {
+        if (!$this->redisAvailable) {
+            return '';
+        }
+
+        try {
+            $redis = $this->redis();
+            $key = $this->key($conversationId);
+            $val = $redis->hGet($key, $field);
+            return $val !== false ? (string) $val : '';
+        } catch (\Throwable $e) {
+            return '';
+        }
+    }
+
     // -------------------------------------------------------
     // Private helpers
     // -------------------------------------------------------
