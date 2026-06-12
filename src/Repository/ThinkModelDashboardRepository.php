@@ -110,7 +110,7 @@ class ThinkModelDashboardRepository implements DashboardRepositoryInterface
             'current_schema' => is_string($currentSchema)
                 ? $currentSchema
                 : json_encode($currentSchema, JSON_UNESCAPED_UNICODE),
-            'status' => 1,
+            'status' => \Gy_Library\DBCont::NORMAL_STATUS,
             'dashboard_status' => 'draft',
             'published_version_id' => null,
             'created_by' => $data['created_by'] ?? null,
@@ -309,5 +309,46 @@ class ThinkModelDashboardRepository implements DashboardRepositoryInterface
             'page' => $page,
             'perPage' => $perPage,
         ];
+    }
+
+    public function updateWidgetSql(string $uid, string $widgetId, string $sql): void
+    {
+        $dashboard = $this->findByUid($uid);
+        if ($dashboard === null) {
+            throw new DashboardNotFoundException($uid);
+        }
+
+        $schemaRaw = $dashboard['current_schema'];
+        $schema = is_string($schemaRaw) ? json_decode($schemaRaw, true) : $schemaRaw;
+        if (!is_array($schema)) {
+            return;
+        }
+
+        $widgets = $schema['widgets'] ?? [];
+        $found = false;
+        foreach ($widgets as $index => $widget) {
+            if (is_array($widget) && ($widget['id'] ?? '') === $widgetId) {
+                $widgets[$index]['sql'] = $sql;
+                $found = true;
+                break;
+            }
+        }
+
+        if (!$found) {
+            return;
+        }
+
+        $schema['widgets'] = $widgets;
+        M(self::TABLE_DASHBOARDS)
+            ->where(['uid' => $uid])
+            ->save([
+                'current_schema' => json_encode($schema, JSON_UNESCAPED_UNICODE),
+            ]);
+    }
+
+    public function executeRawQuery(string $sql): array
+    {
+        $rows = M()->query($sql);
+        return is_array($rows) ? $rows : [];
     }
 }

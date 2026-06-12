@@ -78,7 +78,7 @@ class ThinkModelConversationRepository implements ConversationRepositoryInterfac
 
         $affected = M(self::TABLE)
             ->where(['id' => $id])
-            ->save(['status' => 0]);
+            ->save(['status' => \Gy_Library\DBCont::FORBIDDEN_STATUS]);
 
         return $affected !== false;
     }

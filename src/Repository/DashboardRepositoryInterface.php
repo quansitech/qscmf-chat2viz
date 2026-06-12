@@ -61,4 +61,27 @@ interface DashboardRepositoryInterface
      * @return array{items: array<int, array>, total: int, page: int, perPage: int}
      */
     public function getVersions(string $uid, int $page = 1, int $perPage = 20): array;
+
+    /**
+     * Inject SQL into a specific widget within the dashboard's current_schema.
+     *
+     * Reads current_schema, locates the widget by ID, sets its sql field,
+     * and writes back the updated schema.
+     *
+     * @param string $uid Dashboard UID
+     * @param string $widgetId Widget ID within the schema
+     * @param string $sql SQL string to inject
+     */
+    public function updateWidgetSql(string $uid, string $widgetId, string $sql): void;
+
+    /**
+     * Execute a raw SQL SELECT query and return results as array.
+     *
+     * Used by WidgetDataService for user-submitted widget data queries.
+     * The caller is responsible for SQL validation (SqlValidator) before calling.
+     *
+     * @param string $sql Validated SQL query string
+     * @return array<int, array<string, mixed>> Query result rows
+     */
+    public function executeRawQuery(string $sql): array;
 }

@@ -65,7 +65,7 @@ class EloquentDashboardRepository implements DashboardRepositoryInterface
             'uid' => $uid,
             'title' => $data['title'] ?? '',
             'current_schema' => $currentSchema,
-            'status' => 1,
+            'status' => \Gy_Library\DBCont::NORMAL_STATUS,
             'dashboard_status' => 'draft',
             'published_version_id' => null,
             'created_by' => $data['created_by'] ?? null,
@@ -208,5 +208,42 @@ class EloquentDashboardRepository implements DashboardRepositoryInterface
             'page' => $page,
             'perPage' => $perPage,
         ];
+    }
+
+    public function updateWidgetSql(string $uid, string $widgetId, string $sql): void
+    {
+        $dashboard = Dashboard::where('uid', $uid)->first();
+        if ($dashboard === null) {
+            throw new DashboardNotFoundException($uid);
+        }
+
+        $schema = $dashboard->current_schema;
+        if (!is_array($schema)) {
+            return;
+        }
+
+        $widgets = $schema['widgets'] ?? [];
+        $found = false;
+        foreach ($widgets as $index => $widget) {
+            if (is_array($widget) && ($widget['id'] ?? '') === $widgetId) {
+                $widgets[$index]['sql'] = $sql;
+                $found = true;
+                break;
+            }
+        }
+
+        if (!$found) {
+            return;
+        }
+
+        $schema['widgets'] = $widgets;
+        $dashboard->current_schema = $schema;
+        $dashboard->save();
+    }
+
+    public function executeRawQuery(string $sql): array
+    {
+        $results = DB::select($sql);
+        return array_map(fn ($row) => (array) $row, $results);
     }
 }

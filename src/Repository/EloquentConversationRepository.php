@@ -62,6 +62,6 @@ class EloquentConversationRepository implements ConversationRepositoryInterface
             return false;
         }
 
-        return $conversation->update(['status' => 0]);
+        return $conversation->update(['status' => \Gy_Library\DBCont::FORBIDDEN_STATUS]);
     }
 }

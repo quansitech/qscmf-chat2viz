@@ -3,7 +3,7 @@
 namespace Qscmf\Chat2Viz\Traits;
 
 /**
- * UUID v4 generation.
+ * UUID v4 generation and validation.
  */
 trait UuidTrait
 {
@@ -16,5 +16,17 @@ trait UuidTrait
         $data[8] = chr(ord($data[8]) & 0x3f | 0x80);
 
         return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($data), 4));
+    }
+
+    /**
+     * Validate a UUID v4 string.
+     *
+     * @param string $uid String to validate
+     * @return bool True if valid UUID v4 format
+     */
+    public static function validateUuid(string $uid): bool
+    {
+        $pattern = '/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i';
+        return preg_match($pattern, $uid) === 1;
     }
 }

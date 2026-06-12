@@ -60,7 +60,7 @@ class CreateChat2vizDashboardTables extends Migration
 
         Schema::create('qs_chat2viz_dashboard_versions', function (Blueprint $table) {
             $table->bigIncrements('id')->comment('主键 ID');
-            $table->unsignedBigInteger('dashboard_id')->comment('所属看板 ID（外键关联 qs_chat2viz_dashboards.id，级联删除）');
+            $table->unsignedBigInteger('dashboard_id')->comment('所属看板 ID（关联 qs_chat2viz_dashboards.id）');
             $table->integer('version')->default(1)->comment('版本号，同一看板下从 1 递增');
             $table->json('schema')->comment('已发布的 Schema 快照（已清除数据）');
             $table->dateTime('published_at')->nullable()->comment('发布时间');
@@ -68,11 +68,7 @@ class CreateChat2vizDashboardTables extends Migration
             $table->timestamp('created_at')->useCurrent()->comment('创建时间');
             $table->timestamp('updated_at')->useCurrent()->useCurrentOnUpdate()->comment('更新时间');
 
-            $table->foreign('dashboard_id')
-                ->references('id')
-                ->on('qs_chat2viz_dashboards')
-                ->onDelete('cascade');
-
+            $table->index('dashboard_id', 'idx_dashboard_id');
             $table->unique(['dashboard_id', 'version'], 'uk_dashboard_version');
             $table->index('published_at', 'idx_published');
 
@@ -96,7 +92,7 @@ class CreateChat2vizDashboardTables extends Migration
 
         Schema::create('qs_chat2viz_conversation_messages', function (Blueprint $table) {
             $table->bigIncrements('id')->comment('主键 ID');
-            $table->string('conversation_id', 64)->comment('会话 ID，关联 qs_chat2viz_conversations.id');
+            $table->unsignedBigInteger('conversation_id')->comment('会话 ID，关联 qs_chat2viz_conversations.id');
             $table->enum('role', ['user', 'assistant', 'system'])->comment('消息角色：user-用户提问，assistant-助手回复，system-系统提示');
             $table->longText('content')->comment('消息正文');
             $table->longText('reasoning_content')->nullable()->comment('推理过程内容');

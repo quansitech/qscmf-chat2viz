@@ -20,7 +20,6 @@ class ThinkModelMessageRepository implements MessageRepositoryInterface
 
     public function createMessage(
         string $conversationId,
-        string $dashboardUid,
         string $role,
         string $content,
         ?array $metadata = null
@@ -31,7 +30,6 @@ class ThinkModelMessageRepository implements MessageRepositoryInterface
 
         $insertData = [
             'conversation_id' => $conversationId,
-            'dashboard_uid'   => $dashboardUid,
             'role'            => $role,
             'content'         => $content,
             'metadata'        => $metadata !== null
@@ -70,11 +68,10 @@ class ThinkModelMessageRepository implements MessageRepositoryInterface
 
     public function getRecentConversationIds(string $dashboardUid, int $limit = 20): array
     {
-        $rows = M(self::TABLE)
-            ->field('conversation_id, MAX(created_at) AS last_active')
-            ->where(['dashboard_uid' => $dashboardUid])
-            ->group('conversation_id')
-            ->order('last_active DESC')
+        $rows = M('chat2viz_conversations')
+            ->field('id AS conversation_id, updated_at AS last_active')
+            ->where(['dashboard_uid' => $dashboardUid, 'status' => \Gy_Library\DBCont::NORMAL_STATUS])
+            ->order('updated_at DESC')
             ->limit($limit)
             ->select();
 
@@ -82,12 +79,10 @@ class ThinkModelMessageRepository implements MessageRepositoryInterface
     }
 
     public function createPreallocatedAssistantMessage(
-        string $conversationId,
-        string $dashboardUid
+        string $conversationId
     ): int {
         $insertData = [
             'conversation_id'  => $conversationId,
-            'dashboard_uid'    => $dashboardUid,
             'role'             => 'assistant',
             'content'          => '',
             'metadata'         => null,

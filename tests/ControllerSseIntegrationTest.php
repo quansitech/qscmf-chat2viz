@@ -6,6 +6,7 @@ namespace Qscmf\Chat2Viz\Tests;
 
 use PHPUnit\Framework\TestCase;
 use Qscmf\Chat2Viz\Controller\Chat2VizController;
+use Qscmf\Chat2Viz\Validator\ConversationValidator;
 use Qscmf\SseCore\SseEvent;
 use Qscmf\SseCore\SocketTransport;
 
@@ -20,7 +21,7 @@ use Qscmf\SseCore\SocketTransport;
  * - Validation errors returning proper JSON
  *
  * @covers \Qscmf\Chat2Viz\Controller\Chat2VizController::api_ask_stream
- * @covers \Qscmf\Chat2Viz\Controller\Chat2VizController::validateSocketInput
+ * @covers \Qscmf\Chat2Viz\Validator\ConversationValidator::validateQuestion
  * @covers \Qscmf\Chat2Viz\Controller\Chat2VizController::buildPayloadFromParsed
  * @covers \Qscmf\Chat2Viz\Controller\Chat2VizController::createSocketTransport
  */
@@ -556,9 +557,7 @@ class ControllerSseIntegrationTest extends TestCase
 
     private function invokeValidateSocketInput(?array $input): ?array
     {
-        $method = new \ReflectionMethod(Chat2VizController::class, 'validateSocketInput');
-        $method->setAccessible(true);
-        return $method->invoke($this->controller, $input);
+        return ConversationValidator::validateQuestion($input);
     }
 
     private function invokeBuildPayload(array $input): array

@@ -5,28 +5,16 @@ declare(strict_types=1);
 namespace Qscmf\Chat2Viz\Tests;
 
 use PHPUnit\Framework\TestCase;
-use Qscmf\Chat2Viz\Controller\Chat2VizController;
+use Qscmf\Chat2Viz\Validator\ConversationValidator;
 
 /**
- * @covers \Qscmf\Chat2Viz\Controller\Chat2VizController::validateSocketInput
+ * @covers \Qscmf\Chat2Viz\Validator\ConversationValidator::validateQuestion
  */
 class ValidateSocketInputTest extends TestCase
 {
-    private Chat2VizController $controller;
-
-    protected function setUp(): void
-    {
-        // Chat2VizController extends GyController which requires ThinkPHP.
-        // We use a reflection-based approach to test the private method in isolation.
-        $this->controller = (new \ReflectionClass(Chat2VizController::class))
-            ->newInstanceWithoutConstructor();
-    }
-
     private function invokeValidateSocketInput(?array $input): ?array
     {
-        $method = new \ReflectionMethod(Chat2VizController::class, 'validateSocketInput');
-        $method->setAccessible(true);
-        return $method->invoke($this->controller, $input);
+        return ConversationValidator::validateQuestion($input);
     }
 
     // --- null input (non-JSON request) ---
@@ -114,8 +102,7 @@ class ValidateSocketInputTest extends TestCase
 
     public function testNoServiceUrlValidation(): void
     {
-        // validateSocketInput should pass even without serviceUrl config.
-        // This is the key difference from validateParsedInput which checks serviceUrl.
+        // validateQuestion with requireServiceUrl=false should pass without serviceUrl.
         $result = $this->invokeValidateSocketInput(['question' => 'valid question']);
         $this->assertNull($result);
     }

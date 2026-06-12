@@ -19,7 +19,6 @@ class EloquentMessageRepository implements MessageRepositoryInterface
 
     public function createMessage(
         string $conversationId,
-        string $dashboardUid,
         string $role,
         string $content,
         ?array $metadata = null
@@ -30,7 +29,6 @@ class EloquentMessageRepository implements MessageRepositoryInterface
 
         $message = ConversationMessage::create([
             'conversation_id' => $conversationId,
-            'dashboard_uid'   => $dashboardUid,
             'role'            => $role,
             'content'         => $content,
             'metadata'        => $metadata,
@@ -54,22 +52,20 @@ class EloquentMessageRepository implements MessageRepositoryInterface
 
     public function getRecentConversationIds(string $dashboardUid, int $limit = 20): array
     {
-        return ConversationMessage::where('dashboard_uid', $dashboardUid)
-            ->select('conversation_id', DB::raw('MAX(created_at) AS last_active'))
-            ->groupBy('conversation_id')
-            ->orderByDesc('last_active')
+        return \Qscmf\Chat2Viz\Model\Conversation::where('dashboard_uid', $dashboardUid)
+            ->where('status', \Gy_Library\DBCont::NORMAL_STATUS)
+            ->selectRaw('id AS conversation_id, updated_at AS last_active')
+            ->orderByDesc('updated_at')
             ->limit($limit)
             ->get()
             ->toArray();
     }
 
     public function createPreallocatedAssistantMessage(
-        string $conversationId,
-        string $dashboardUid
+        string $conversationId
     ): int {
         $message = ConversationMessage::create([
             'conversation_id'   => $conversationId,
-            'dashboard_uid'     => $dashboardUid,
             'role'              => 'assistant',
             'content'           => '',
             'metadata'          => null,

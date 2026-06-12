@@ -12,8 +12,7 @@ use PHPUnit\Framework\TestCase;
  * Tests the validation logic for the chat ask endpoint,
  * covering all edge cases from sakila-test-prompts.md interaction patterns.
  *
- * Mirrors Chat2VizController::validateSocketInput and
- * Chat2VizController::validateParsedInput private methods.
+ * Mirrors ConversationValidator::validateQuestion logic.
  */
 class Chat2VizApiTest extends TestCase
 {

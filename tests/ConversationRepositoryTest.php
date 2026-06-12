@@ -5,24 +5,28 @@ declare(strict_types=1);
 namespace Qscmf\Chat2Viz\Tests;
 
 use PHPUnit\Framework\TestCase;
-use Qscmf\Chat2Viz\Controller\Chat2VizController;
+use Qscmf\Chat2Viz\Service\ConversationService;
 
 /**
  * @covers \Qscmf\Chat2Viz\Repository\ConversationRepositoryInterface
  * @covers \Qscmf\Chat2Viz\Repository\ThinkModelConversationRepository
- * @covers \Qscmf\Chat2Viz\Controller\Chat2VizController::persistConversationMessage
+ * @covers \Qscmf\Chat2Viz\Service\ConversationService::persistMessage
  */
 class ConversationRepositoryTest extends TestCase
 {
-    // ─── In-memory store for ThinkModel M() stub ────────────────────────
+    // ─── In-memory stores for ThinkModel M() stub ────────────────────────
 
     private static array $store = [];
     private static int $autoId = 0;
+    private static array $convStore = [];
+    private static int $convAutoId = 0;
 
     public static function storeReset(): void
     {
         self::$store = [];
         self::$autoId = 0;
+        self::$convStore = [];
+        self::$convAutoId = 0;
     }
 
     public static function storeAdd(array $row): int
@@ -31,6 +35,14 @@ class ConversationRepositoryTest extends TestCase
         $row['id'] = self::$autoId;
         self::$store[self::$autoId] = $row;
         return self::$autoId;
+    }
+
+    public static function convStoreAdd(array $row): int
+    {
+        self::$convAutoId++;
+        $row['id'] = self::$convAutoId;
+        self::$convStore[self::$convAutoId] = $row;
+        return self::$convAutoId;
     }
 
     public static function storeFind(int $id): ?array
@@ -42,12 +54,10 @@ class ConversationRepositoryTest extends TestCase
     {
         $rows = array_values(self::$store);
 
-        // Filter by where conditions
         foreach ($where as $key => $value) {
             $rows = array_filter($rows, fn($r) => ($r[$key] ?? null) === $value);
         }
 
-        // Sort
         if ($order !== '') {
             $parts = explode(' ', trim($order));
             $field = $parts[0];
@@ -58,7 +68,6 @@ class ConversationRepositoryTest extends TestCase
             });
         }
 
-        // Limit
         if ($limit > 0) {
             $rows = array_slice($rows, 0, $limit);
         }
@@ -66,43 +75,29 @@ class ConversationRepositoryTest extends TestCase
         return array_values($rows);
     }
 
-    public static function storeSelectGrouped(string $field, string $groupField, array $where, string $order = '', int $limit = 0): array
+    public static function convStoreSelect(array $where, string $order = '', int $limit = 0): array
     {
-        $rows = self::storeSelect($where);
+        $rows = array_values(self::$convStore);
 
-        $groups = [];
-        foreach ($rows as $row) {
-            $key = $row[$groupField] ?? '';
-            if (!isset($groups[$key])) {
-                $groups[$key] = [];
-            }
-            $groups[$key][] = $row;
-        }
-
-        $result = [];
-        foreach ($groups as $key => $groupRows) {
-            $maxCreated = max(array_column($groupRows, 'created_at'));
-            $result[] = [
-                $groupField => $key,
-                'last_active' => $maxCreated,
-            ];
+        foreach ($where as $key => $value) {
+            $rows = array_filter($rows, fn($r) => ($r[$key] ?? null) === $value);
         }
 
         if ($order !== '') {
             $parts = explode(' ', trim($order));
-            $sortField = $parts[0];
+            $field = $parts[0];
             $dir = strtoupper($parts[1] ?? 'ASC');
-            usort($result, function ($a, $b) use ($sortField, $dir) {
-                $cmp = ($a[$sortField] ?? '') <=> ($b[$sortField] ?? '');
+            usort($rows, function ($a, $b) use ($field, $dir) {
+                $cmp = ($a[$field] ?? '') <=> ($b[$field] ?? '');
                 return $dir === 'DESC' ? -$cmp : $cmp;
             });
         }
 
         if ($limit > 0) {
-            $result = array_slice($result, 0, $limit);
+            $rows = array_slice($rows, 0, $limit);
         }
 
-        return array_values($result);
+        return array_values($rows);
     }
 
     // ─── ThinkModelConversationRepository tests ─────────────────────────
@@ -119,7 +114,6 @@ class ConversationRepositoryTest extends TestCase
         return new class {
             public function createMessage(
                 string $conversationId,
-                string $dashboardUid,
                 string $role,
                 string $content,
                 ?array $metadata = null
@@ -131,7 +125,6 @@ class ConversationRepositoryTest extends TestCase
 
                 $insertData = [
                     'conversation_id' => $conversationId,
-                    'dashboard_uid'   => $dashboardUid,
                     'role'            => $role,
                     'content'         => $content,
                     'metadata'        => $metadata !== null
@@ -155,13 +148,15 @@ class ConversationRepositoryTest extends TestCase
 
             public function getRecentConversationIds(string $dashboardUid, int $limit = 20): array
             {
-                return ConversationRepositoryTest::storeSelectGrouped(
-                    'conversation_id',
-                    'conversation_id',
-                    ['dashboard_uid' => $dashboardUid],
-                    'last_active DESC',
+                $rows = ConversationRepositoryTest::convStoreSelect(
+                    ['dashboard_uid' => $dashboardUid, 'status' => 1],
+                    'updated_at DESC',
                     $limit
                 );
+                return array_map(fn($r) => [
+                    'conversation_id' => $r['id'],
+                    'last_active'     => $r['updated_at'] ?? '',
+                ], $rows);
             }
         };
     }
@@ -172,7 +167,6 @@ class ConversationRepositoryTest extends TestCase
 
         $row = $repo->createMessage(
             'conv-001',
-            'dash-001',
             'user',
             'Show me sales',
             ['source' => 'test']
@@ -180,7 +174,6 @@ class ConversationRepositoryTest extends TestCase
 
         $this->assertIsArray($row);
         $this->assertSame('conv-001', $row['conversation_id']);
-        $this->assertSame('dash-001', $row['dashboard_uid']);
         $this->assertSame('user', $row['role']);
         $this->assertSame('Show me sales', $row['content']);
     }
@@ -191,7 +184,6 @@ class ConversationRepositoryTest extends TestCase
 
         $row = $repo->createMessage(
             'conv-002',
-            'dash-002',
             'assistant',
             'Here is the chart',
             null
@@ -206,15 +198,15 @@ class ConversationRepositoryTest extends TestCase
     {
         $repo = $this->createRepo();
         $this->expectException(\RuntimeException::class);
-        $repo->createMessage('conv-003', 'dash-003', 'invalid', 'test');
+        $repo->createMessage('conv-003', 'invalid', 'test');
     }
 
     public function testGetMessagesReturnsOrderedRows(): void
     {
         $repo = $this->createRepo();
 
-        $repo->createMessage('conv-010', 'dash-010', 'user', 'First');
-        $repo->createMessage('conv-010', 'dash-010', 'assistant', 'Second');
+        $repo->createMessage('conv-010', 'user', 'First');
+        $repo->createMessage('conv-010', 'assistant', 'Second');
 
         $messages = $repo->getMessages('conv-010');
 
@@ -228,7 +220,7 @@ class ConversationRepositoryTest extends TestCase
         $repo = $this->createRepo();
 
         for ($i = 0; $i < 5; $i++) {
-            $repo->createMessage('conv-limit', 'dash-limit', 'user', "msg {$i}");
+            $repo->createMessage('conv-limit', 'user', "msg {$i}");
         }
 
         $messages = $repo->getMessages('conv-limit', 3);
@@ -247,16 +239,15 @@ class ConversationRepositoryTest extends TestCase
     {
         $repo = $this->createRepo();
 
-        $repo->createMessage('conv-a', 'dash-recent', 'user', 'A1');
-        $repo->createMessage('conv-b', 'dash-recent', 'user', 'B1');
-        $repo->createMessage('conv-a', 'dash-recent', 'assistant', 'A2');
+        // Create conversations (the new implementation queries conversations table)
+        self::convStoreAdd(['dashboard_uid' => 'dash-recent', 'status' => 1, 'updated_at' => '2026-06-01 10:00:00']);
+        self::convStoreAdd(['dashboard_uid' => 'dash-recent', 'status' => 1, 'updated_at' => '2026-06-01 11:00:00']);
 
         $ids = $repo->getRecentConversationIds('dash-recent');
 
         $this->assertNotEmpty($ids);
         $conversationIds = array_column($ids, 'conversation_id');
-        $this->assertContains('conv-a', $conversationIds);
-        $this->assertContains('conv-b', $conversationIds);
+        $this->assertCount(2, $conversationIds);
     }
 
     public function testGetRecentConversationIdsReturnsEmptyForUnknownDashboard(): void
@@ -267,51 +258,98 @@ class ConversationRepositoryTest extends TestCase
         $this->assertSame([], $ids);
     }
 
-    // ─── Controller integration: persistConversationMessages ────────────
+    // ─── ConversationService::persistMessage integration ────────────────
 
-    public function testPersistConversationMessageWritesUserMessage(): void
+    public function testPersistMessageWritesUserMessage(): void
     {
-        $controller = (new \ReflectionClass(Chat2VizController::class))
-            ->newInstanceWithoutConstructor();
+        $convRepo = new class implements \Qscmf\Chat2Viz\Repository\ConversationRepositoryInterface {
+            public function createConversation(string $dashboardUid, string $title = ''): array { return ['id' => 1]; }
+            public function findById(int $id): ?array { return null; }
+            public function findActiveByDashboardUid(string $dashboardUid): ?array { return null; }
+            public function findByDashboardUid(string $dashboardUid): array { return []; }
+            public function archive(int $id): bool { return true; }
+        };
+        $msgRepo = new class implements \Qscmf\Chat2Viz\Repository\MessageRepositoryInterface {
+            public array $captured = [];
+            public function createMessage(string $conversationId, string $role, string $content, ?array $metadata = null): array {
+                $this->captured = ['conversation_id' => $conversationId, 'role' => $role, 'content' => $content];
+                return [];
+            }
+            public function getMessages(string $conversationId, int $limit = 50, int $offset = 0): array { return []; }
+            public function getRecentConversationIds(string $dashboardUid, int $limit = 20): array { return []; }
+            public function createPreallocatedAssistantMessage(string $conversationId): int { return 0; }
+            public function updateMessageWithMetadata(int $messageId, ?string $content = null, ?array $metadata = null, ?string $reasoningContent = null, ?array $toolCalls = null, ?string $messageStatus = null): void {}
+            public function findConversationHistory(string $conversationId): array { return []; }
+            public function countByConversationId(string $conversationId): int { return 0; }
+            public function countByConversationIds(array $conversationIds): array { return []; }
+        };
 
-        $method = new \ReflectionMethod(Chat2VizController::class, 'persistConversationMessage');
-        $method->setAccessible(true);
+        $service = new ConversationService($convRepo, $msgRepo);
+        $service->persistMessage('conv-ctrl-001', 'user', 'Show revenue');
 
-        // Should not throw -- persistence failures are caught internally
-        $method->invoke($controller, 'conv-ctrl-001', [
-            'question' => 'Show revenue',
-            'dashboard_context' => ['dashboard_uid' => 'dash-ctrl'],
-        ], 'user');
-
-        $this->assertTrue(true);
+        $this->assertSame('conv-ctrl-001', $msgRepo->captured['conversation_id']);
+        $this->assertSame('user', $msgRepo->captured['role']);
+        $this->assertSame('Show revenue', $msgRepo->captured['content']);
     }
 
-    public function testPersistConversationMessageWritesAssistantMessage(): void
+    public function testPersistMessageWritesAssistantMessage(): void
     {
-        $controller = (new \ReflectionClass(Chat2VizController::class))
-            ->newInstanceWithoutConstructor();
+        $convRepo = new class implements \Qscmf\Chat2Viz\Repository\ConversationRepositoryInterface {
+            public function createConversation(string $dashboardUid, string $title = ''): array { return ['id' => 1]; }
+            public function findById(int $id): ?array { return null; }
+            public function findActiveByDashboardUid(string $dashboardUid): ?array { return null; }
+            public function findByDashboardUid(string $dashboardUid): array { return []; }
+            public function archive(int $id): bool { return true; }
+        };
+        $msgRepo = new class implements \Qscmf\Chat2Viz\Repository\MessageRepositoryInterface {
+            public array $captured = [];
+            public function createMessage(string $conversationId, string $role, string $content, ?array $metadata = null): array {
+                $this->captured = ['role' => $role, 'content' => $content];
+                return [];
+            }
+            public function getMessages(string $conversationId, int $limit = 50, int $offset = 0): array { return []; }
+            public function getRecentConversationIds(string $dashboardUid, int $limit = 20): array { return []; }
+            public function createPreallocatedAssistantMessage(string $conversationId): int { return 0; }
+            public function updateMessageWithMetadata(int $messageId, ?string $content = null, ?array $metadata = null, ?string $reasoningContent = null, ?array $toolCalls = null, ?string $messageStatus = null): void {}
+            public function findConversationHistory(string $conversationId): array { return []; }
+            public function countByConversationId(string $conversationId): int { return 0; }
+            public function countByConversationIds(array $conversationIds): array { return []; }
+        };
 
-        $method = new \ReflectionMethod(Chat2VizController::class, 'persistConversationMessage');
-        $method->setAccessible(true);
+        $service = new ConversationService($convRepo, $msgRepo);
+        $service->persistMessage('conv-ctrl-003', 'assistant', '');
 
-        // Assistant message with empty content (stream data not captured at PHP level)
-        $method->invoke($controller, 'conv-ctrl-003', [
-            'dashboard_context' => ['dashboard_uid' => 'dash-ctrl'],
-        ], 'assistant');
-
-        $this->assertTrue(true);
+        $this->assertSame('assistant', $msgRepo->captured['role']);
     }
 
-    public function testPersistConversationMessageHandlesMissingDashboardContext(): void
+    public function testPersistMessageHandlesEmptyContent(): void
     {
-        $controller = (new \ReflectionClass(Chat2VizController::class))
-            ->newInstanceWithoutConstructor();
+        $convRepo = new class implements \Qscmf\Chat2Viz\Repository\ConversationRepositoryInterface {
+            public function createConversation(string $dashboardUid, string $title = ''): array { return ['id' => 1]; }
+            public function findById(int $id): ?array { return null; }
+            public function findActiveByDashboardUid(string $dashboardUid): ?array { return null; }
+            public function findByDashboardUid(string $dashboardUid): array { return []; }
+            public function archive(int $id): bool { return true; }
+        };
+        $msgRepo = new class implements \Qscmf\Chat2Viz\Repository\MessageRepositoryInterface {
+            public array $captured = [];
+            public function createMessage(string $conversationId, string $role, string $content, ?array $metadata = null): array {
+                $this->captured = ['role' => $role, 'content' => $content];
+                return [];
+            }
+            public function getMessages(string $conversationId, int $limit = 50, int $offset = 0): array { return []; }
+            public function getRecentConversationIds(string $dashboardUid, int $limit = 20): array { return []; }
+            public function createPreallocatedAssistantMessage(string $conversationId): int { return 0; }
+            public function updateMessageWithMetadata(int $messageId, ?string $content = null, ?array $metadata = null, ?string $reasoningContent = null, ?array $toolCalls = null, ?string $messageStatus = null): void {}
+            public function findConversationHistory(string $conversationId): array { return []; }
+            public function countByConversationId(string $conversationId): int { return 0; }
+            public function countByConversationIds(array $conversationIds): array { return []; }
+        };
 
-        $method = new \ReflectionMethod(Chat2VizController::class, 'persistConversationMessage');
-        $method->setAccessible(true);
+        $service = new ConversationService($convRepo, $msgRepo);
+        $service->persistMessage('conv-ctrl-002', 'user', '');
 
-        // No dashboard_context key at all -- should not throw
-        $method->invoke($controller, 'conv-ctrl-002', ['question' => 'hello'], 'user');
-        $this->assertTrue(true);
+        $this->assertSame('user', $msgRepo->captured['role']);
+        $this->assertSame('', $msgRepo->captured['content']);
     }
 }

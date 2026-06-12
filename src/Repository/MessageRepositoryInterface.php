@@ -16,7 +16,6 @@ interface MessageRepositoryInterface
      * Persist a single message in a conversation.
      *
      * @param string   $conversationId Max 64 chars
-     * @param string   $dashboardUid   Max 64 chars
      * @param string   $role           One of: user, assistant, system
      * @param string   $content        Message body
      * @param array|null $metadata     Optional JSON-encodable metadata (sql, g2_spec, etc.)
@@ -26,7 +25,6 @@ interface MessageRepositoryInterface
      */
     public function createMessage(
         string $conversationId,
-        string $dashboardUid,
         string $role,
         string $content,
         ?array $metadata = null
@@ -56,14 +54,12 @@ interface MessageRepositoryInterface
      * The returned ID is used to update content as SSE chunks arrive.
      *
      * @param string $conversationId Max 64 chars
-     * @param string $dashboardUid   Max 64 chars
      * @return int The auto-increment message ID
      *
      * @throws DashboardException On persistence failure
      */
     public function createPreallocatedAssistantMessage(
-        string $conversationId,
-        string $dashboardUid
+        string $conversationId
     ): int;
 
     /**
