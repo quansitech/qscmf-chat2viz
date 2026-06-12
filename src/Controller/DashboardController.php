@@ -665,11 +665,7 @@ class DashboardController extends GyController
         $currentUserId = $this->getCurrentUserId();
         $ownerId = $dashboard['created_by'] ?? null;
 
-        // Allow null-on-null: same anonymous session that created the dashboard
-        if ($currentUserId === null && $ownerId === null) {
-            return true;
-        }
-
+        // Reject any unauthenticated or ownerless access — no anonymous modifications.
         if ($currentUserId === null || $ownerId === null || (int) $ownerId !== $currentUserId) {
             $this->ajaxReturn(['status' => 0, 'info' => '无权操作']);
             return false;

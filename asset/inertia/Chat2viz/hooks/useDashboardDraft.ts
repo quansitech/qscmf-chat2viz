@@ -267,6 +267,9 @@ export function useDashboardDraft(): UseDashboardDraftReturn {
       // Only react when isDirty transitions from false to true
       if (prevState.isDirty || !state.isDirty) return;
 
+      // Suppress auto-save during SSE streaming — save once after completion.
+      if (state.streamingState === 'streaming') return;
+
       // Determine the source by comparing what changed
       let source: SaveSource = 'ai'; // default for SSE-driven changes
 
@@ -281,6 +284,19 @@ export function useDashboardDraft(): UseDashboardDraftReturn {
       saveRef.current(source);
     });
 
+    return unsubscribe;
+  }, []);
+
+  // ---- Flush deferred save when streaming ends and draft is still dirty ----
+
+  useEffect(() => {
+    const unsubscribe = useDashboardStore.subscribe((state, prevState) => {
+      if (prevState.streamingState !== 'streaming' || state.streamingState === 'streaming') return;
+      // Streaming just ended — if there are unsaved changes, flush now.
+      if (state.isDirty) {
+        saveRef.current('ai');
+      }
+    });
     return unsubscribe;
   }, []);
 

@@ -101,6 +101,12 @@ class Chat2VizController extends GyController
         $this->currentDashboardUid = trim((string) ($payload['dashboard_context']['dashboard_uid'] ?? ''));
         [$conversationId, $assistantMessageId, $accumulator] = $this->resolveConversation($payload);
 
+        // Release session lock before long-running stream.
+        // Without this, concurrent requests (auto-save api_update) block until the SSE stream ends.
+        if (session_status() === PHP_SESSION_ACTIVE) {
+            session_write_close();
+        }
+
         $wantsChat2viz = $this->wantsChat2vizFormat();
 
         if ($this->getMockEmitter()->isMockMode()) {

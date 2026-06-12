@@ -144,7 +144,7 @@ export default function PreviewPanel() {
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          pointerEvents: 'none',
+          cursor: 'not-allowed',
           zIndex: 10,
         }}>
           <Spin tip="AI 正在生成图表..." />
