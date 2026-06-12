@@ -46,7 +46,8 @@ interface DashboardViewPageProps {
   dashboard: {
     uid: string;
     title: string;
-    status: string;
+    status: number;
+    dashboard_status: string;
   };
   schema: {
     widgets?: SchemaWidget[];
@@ -69,17 +70,18 @@ const ROW_HEIGHT = 60;
 
 interface ViewWidgetCardProps {
   uid: string;
+  dashboardStatus: string;
   widget: SchemaWidget;
 }
 
-function ViewWidgetCard({ uid, widget }: ViewWidgetCardProps) {
+function ViewWidgetCard({ uid, dashboardStatus, widget }: ViewWidgetCardProps) {
   const { data, isLoading, isError, error } = useQuery({
-    queryKey: ['widget-data', uid, widget.id],
+    queryKey: ['widget-data', uid, widget.id, dashboardStatus],
     queryFn: async () => {
-      const resp = await fetch(
-        `/extends/Chat2VizDashboard/api_widget_data/uid/${uid}/widgetId/${widget.id}`,
-        { credentials: 'same-origin' },
-      );
+      const endpoint = dashboardStatus === 'published'
+        ? `/extends/Chat2VizDashboard/api_widget_data/uid/${uid}/widgetId/${widget.id}`
+        : `/extends/Chat2VizDashboard/api_draft_widget_data/uid/${uid}/widgetId/${widget.id}`;
+      const resp = await fetch(endpoint, { credentials: 'same-origin' });
       const result = await resp.json();
       if (result.status !== 1) {
         throw new Error(result.info || '加载图表数据失败');
@@ -211,7 +213,7 @@ function DashboardViewInner() {
             >
               {widgets.map((w) => (
                 <div key={w.id}>
-                  <ViewWidgetCard uid={dashboard.uid} widget={w} />
+                  <ViewWidgetCard uid={dashboard.uid} dashboardStatus={dashboard.dashboard_status} widget={w} />
                 </div>
               ))}
             </ResponsiveGridLayout>

@@ -31,11 +31,12 @@ const STANDARD_EVENT_TYPES = [
   'metadata',
 ] as const;
 
-/** The 3 additional dashboard-specific event types. */
+/** The 4 additional dashboard-specific event types. */
 const DASHBOARD_EVENT_TYPES = [
   'action_call',
   'action_call_result',
   'dashboard_patch',
+  'dashboard_rollback',
 ] as const;
 
 export type StandardEventType = (typeof STANDARD_EVENT_TYPES)[number];
@@ -144,5 +145,18 @@ export interface DashboardPatchEvent {
       path: string;
       value?: unknown;
     }>;
+  };
+}
+
+/** Emitted to restore a widget to its pre-conversation state on critical failure. */
+export interface DashboardRollbackEvent {
+  type: 'dashboard_rollback';
+  data: {
+    widget_id: string;
+    snapshot: {
+      sql?: string;
+      g2_spec?: Record<string, unknown>;
+      title?: string;
+    };
   };
 }

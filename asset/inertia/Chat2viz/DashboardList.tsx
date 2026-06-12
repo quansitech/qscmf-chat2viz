@@ -11,7 +11,8 @@ import { getPageProps, navigate } from './adapters';
 interface DashboardItem {
   uid: string;
   title: string;
-  status: string;
+  status: number;
+  dashboard_status: string;
   created_at: string;
 }
 
@@ -23,17 +24,28 @@ interface DashboardListProps {
 }
 
 // ---------------------------------------------------------------------------
-// Status tag color mapping
+// Status tag mappings
 // ---------------------------------------------------------------------------
 
-const STATUS_COLORS: Record<string, string> = {
-  draft: 'default',
-  published: 'success',
-  archived: 'warning',
+const DASHBOARD_STATUS_MAP: Record<string, { label: string; color: string }> = {
+  draft: { label: '草稿', color: 'default' },
+  published: { label: '已发布', color: 'success' },
+  archived: { label: '已归档', color: 'warning' },
 };
 
-function statusTag(status: string) {
-  return <Tag color={STATUS_COLORS[status] || 'default'}>{status}</Tag>;
+const TECH_STATUS_MAP: Record<number, { label: string; color: string }> = {
+  1: { label: '启用', color: 'success' },
+  0: { label: '停用', color: 'error' },
+};
+
+function dashboardStatusTag(status: string) {
+  const cfg = DASHBOARD_STATUS_MAP[status] || { label: status, color: 'default' };
+  return <Tag color={cfg.color}>{cfg.label}</Tag>;
+}
+
+function techStatusTag(status: number) {
+  const cfg = TECH_STATUS_MAP[status] || { label: String(status), color: 'default' };
+  return <Tag color={cfg.color}>{cfg.label}</Tag>;
 }
 
 // ---------------------------------------------------------------------------
@@ -52,11 +64,18 @@ export default function DashboardList() {
       ellipsis: true,
     },
     {
-      title: '状态',
+      title: '发布状态',
+      dataIndex: 'dashboard_status',
+      key: 'dashboard_status',
+      width: 100,
+      render: (status: string) => dashboardStatusTag(status),
+    },
+    {
+      title: '启用状态',
       dataIndex: 'status',
       key: 'status',
-      width: 120,
-      render: (status: string) => statusTag(status),
+      width: 80,
+      render: (status: number) => techStatusTag(status),
     },
     {
       title: '创建时间',

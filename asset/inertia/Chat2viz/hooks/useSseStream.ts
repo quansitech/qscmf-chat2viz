@@ -313,6 +313,29 @@ function dispatchEvent(event: SseEvent | null): boolean {
       break;
     }
 
+    case 'dashboard_rollback': {
+      const rollbackWidgetId = str(event.data.widget_id);
+      const rollbackSnapshot = obj<{
+        sql?: string;
+        g2_spec?: Record<string, unknown>;
+        title?: string;
+      }>(event.data.snapshot);
+      // Per design: skip rollback if snapshot is empty (no error thrown).
+      if (!rollbackWidgetId || !rollbackSnapshot || Object.keys(rollbackSnapshot).length === 0) {
+        break;
+      }
+      // Preserve current layout — rollback restores sql/g2_spec/title only.
+      const currentWidget = store.widgets[rollbackWidgetId];
+      const preservedLayout = currentWidget?.layout
+        ? { layout: currentWidget.layout }
+        : {};
+      store.updateWidget(rollbackWidgetId, {
+        ...rollbackSnapshot,
+        ...preservedLayout,
+      } as Partial<Widget>);
+      break;
+    }
+
     case 'answer': {
       store.appendAnswer(str(event.data.text));
       break;

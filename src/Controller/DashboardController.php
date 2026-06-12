@@ -87,7 +87,7 @@ class DashboardController extends GyController
     }
 
     /**
-     * Published dashboard view page (public).
+     * Dashboard view page (public for published; preview for draft/archived).
      * URL: GET /extends/Chat2VizDashboard/view?uid={uid}
      */
     public function view()
@@ -104,12 +104,24 @@ class DashboardController extends GyController
 
         try {
             $dashboard = $this->repo->findByUid($uid);
-            if (!$dashboard || ($dashboard['dashboard_status'] ?? '') !== 'published') {
-                $this->error('仪表盘不存在或未发布');
+            if (!$dashboard) {
+                $this->error('仪表盘不存在');
                 return;
             }
 
-            $schema = $this->repo->getPublishedSchema($uid);
+            $dashboardStatus = $dashboard['dashboard_status'] ?? 'draft';
+
+            if ($dashboardStatus === 'published') {
+                $schema = $this->repo->getPublishedSchema($uid);
+            } else {
+                // draft / archived: preview from current_schema
+                $schemaRaw = $dashboard['current_schema'] ?? null;
+                $schema = is_string($schemaRaw) ? json_decode($schemaRaw, true) : $schemaRaw;
+                if (!is_array($schema)) {
+                    $schema = [];
+                }
+            }
+
             $this->renderer->renderShow($dashboard, $schema ?? []);
         } catch (DashboardNotFoundException $e) {
             $this->error('仪表盘不存在');

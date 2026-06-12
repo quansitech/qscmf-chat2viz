@@ -171,6 +171,36 @@ type SetFn = (fn: (draft: Draft<DashboardState>) => void) => void;
 type GetFn = () => DashboardState;
 
 // ---------------------------------------------------------------------------
+// Encode summary extractor -- flat {channel: field_name} from g2_spec.encode
+// ---------------------------------------------------------------------------
+
+function extractEncodeSummary(
+  encode: Record<string, unknown>,
+): Record<string, string> | null {
+  const result: Record<string, string> = {};
+  for (const [channel, value] of Object.entries(encode)) {
+    if (typeof value === 'object' && value !== null && 'field' in (value as Record<string, unknown>)) {
+      const fieldName = (value as Record<string, unknown>).field;
+      if (typeof fieldName === 'string') {
+        result[channel] = fieldName;
+      }
+    } else if (Array.isArray(value)) {
+      // Multi-field encode (rare), take first field
+      for (const item of value) {
+        if (typeof item === 'object' && item !== null && 'field' in item) {
+          const fieldName = (item as Record<string, unknown>).field;
+          if (typeof fieldName === 'string') {
+            result[channel] = fieldName;
+            break;
+          }
+        }
+      }
+    }
+  }
+  return Object.keys(result).length > 0 ? result : null;
+}
+
+// ---------------------------------------------------------------------------
 // Raw store (any-typed for middleware composition compatibility)
 // ---------------------------------------------------------------------------
 
@@ -342,15 +372,31 @@ const _store = _create()(
           // Python NL2SQL service expects widgets as a dict keyed by id, not an array.
           const widgetDict: Record<string, unknown> = {};
           for (const w of Object.values(widgets) as Widget[]) {
-            // Derive chart type from g2_spec (G2 mark: interval→bar, line→line, etc.)
+            // Derive chart type from g2_spec (G2 mark: interval->bar, line->line, etc.)
             const mark = (w.g2_spec?.mark ?? w.g2_spec?.type) as string | undefined;
             const chartType = mark || 'unknown';
+            // Extract encode channel summary: {channel: field_name}
+            const encodeSpec = w.g2_spec?.encode as Record<string, unknown> | undefined;
+            const encodeSummary: Record<string, string> | null = encodeSpec
+              ? extractEncodeSummary(encodeSpec)
+              : null;
+            // Strip data array from g2_spec before sending to backend (token budget).
+            // The snapshot only needs spec structure, not query results.
+            const g2SpecNoData: Record<string, unknown> | null = w.g2_spec
+              ? (() => {
+                  const clone = JSON.parse(JSON.stringify(w.g2_spec as Record<string, unknown>));
+                  delete clone.data;
+                  return clone;
+                })()
+              : null;
             widgetDict[w.id] = {
               id: w.id,
               type: chartType,
               title: w.title,
               sql: w.sql ?? null,
               layout: w.layout,
+              ...(encodeSummary ? { encode: encodeSummary } : {}),
+              ...(g2SpecNoData ? { g2_spec: g2SpecNoData } : {}),
             };
           }
           return {
