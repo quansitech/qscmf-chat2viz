@@ -35,12 +35,12 @@ class GuzzleStreamFallback
      * @param callable(StreamAccumulator, string, SseEvent): void $eventRouter
      */
     public function __construct(
-        Client $httpClient,
+        ?Client $httpClient,
         string $serviceUrl,
         callable $logger,
         callable $eventRouter
     ) {
-        $this->httpClient = $httpClient;
+        $this->httpClient = $httpClient ?? new Client(['timeout' => 120, 'stream' => true]);
         $this->serviceUrl = $serviceUrl;
         $this->logger = $logger;
         $this->eventRouter = $eventRouter;

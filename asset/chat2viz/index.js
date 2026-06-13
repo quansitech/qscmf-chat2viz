@@ -6,6 +6,37 @@
   var loading = false;
   var conversationId = null;
   var chartInstances = {};
+  var serviceUnavailable = false;
+
+  // --- Socket Health Check ---
+  function checkSocketHealth() {
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', '/extends/Chat2Viz/api_socket_health', true);
+    xhr.timeout = 6000;
+    xhr.onreadystatechange = function () {
+      if (xhr.readyState !== 4) return;
+      if (xhr.status !== 200) {
+        serviceUnavailable = true;
+        messages.push({ role: 'error', content: '分析服务不可用，请检查后端服务状态' });
+        render();
+        disableControls();
+      }
+    };
+    xhr.onerror = xhr.ontimeout = function () {
+      serviceUnavailable = true;
+      messages.push({ role: 'error', content: '分析服务不可用，请检查后端服务状态' });
+      render();
+      disableControls();
+    };
+    xhr.send();
+  }
+
+  function disableControls() {
+    var inputEl = document.getElementById('chat2viz-input');
+    var btnEl = document.getElementById('chat2viz-btn');
+    if (inputEl) inputEl.disabled = true;
+    if (btnEl) btnEl.disabled = true;
+  }
 
   // --- SSE Parser Utilities (T3) ---
 
@@ -414,6 +445,7 @@
   // --- Main Ask Function ---
 
   window.__chat2viz_ask = function () {
+    if (serviceUnavailable) return;
     var input = document.getElementById('chat2viz-input');
     if (!input) return;
     var q = input.value.trim();
@@ -429,4 +461,5 @@
   };
 
   render();
+  checkSocketHealth();
 })();

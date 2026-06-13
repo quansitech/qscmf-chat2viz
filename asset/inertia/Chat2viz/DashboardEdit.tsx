@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Button, Input, Tag, Tooltip, message } from 'antd';
+import { Button, Input, Modal, Tag, Tooltip, message } from 'antd';
 import { ArrowLeftOutlined, CloudOutlined, CloudSyncOutlined, CloudUploadOutlined } from '@ant-design/icons';
 import { getPageProps, navigate } from './adapters';
 import { useDashboardStore } from './store/dashboardStore';
@@ -208,6 +208,29 @@ export default function DashboardEdit() {
   // ---- Publish dialog state ----
   const [publishVisible, setPublishVisible] = useState(false);
 
+  // ---- Socket health check ----
+  const [socketAvailable, setSocketAvailable] = useState(true);
+  const healthCheckedRef = useRef(false);
+
+  useEffect(() => {
+    if (healthCheckedRef.current) return;
+    healthCheckedRef.current = true;
+
+    fetch('/extends/Chat2Viz/api_socket_health', { credentials: 'same-origin' })
+      .then((r) => {
+        if (r.ok) return;
+        throw new Error('unavailable');
+      })
+      .then(() => setSocketAvailable(true))
+      .catch(() => {
+        setSocketAvailable(false);
+        Modal.error({
+          title: '服务不可用',
+          content: '分析服务不可用，请检查后端服务状态。对话功能已禁用。',
+        });
+      });
+  }, []);
+
   // ---- Publish handler: save before opening dialog ----
   const handlePublish = useCallback(async () => {
     if (isDirty) {
@@ -280,7 +303,7 @@ export default function DashboardEdit() {
       {/* ---- Main Content: Dual-pane ---- */}
       <div className="dashboard-edit-content" style={styles.content}>
         <div className="dashboard-edit-chat-pane" style={styles.chatPane}>
-          <ChatPanel />
+          <ChatPanel disabled={!socketAvailable} />
         </div>
         <div className="dashboard-edit-preview-pane" style={styles.previewPane}>
           <PreviewPanel />

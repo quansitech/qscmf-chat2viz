@@ -8,12 +8,9 @@ use Qscmf\Chat2Viz\Sse\{
     GuzzleStreamFallback,
     MockStreamEmitter,
     Nl2sqlEventTransformer,
-    SseEvent,
-    SseProxy,
-    SseWriter,
     StreamAccumulator,
 };
-use Qscmf\Chat2Viz\Transport\SocketTransport;
+use Qscmf\SseCore\{SseEvent, SseProxy, SseWriter, SocketTransport};
 
 class StreamService
 {
@@ -93,8 +90,33 @@ class StreamService
                 $accumulator, $conversation_id, $assistant_message_id, 'complete'
             );
         } catch (\Throwable $e) {
-            ($this->logger)('socket failed, falling back to http', $e->getMessage());
+            $fallbackEnabled = env('CHAT2VIZ_SOCKET_FALLBACK_ENABLED', false);
+            ($this->logger)('socket failed', sprintf('fallback=%s | err=%s', $fallbackEnabled ? 'on' : 'off', $e->getMessage()));
 
+            if ($fallbackEnabled) {
+                if (headers_sent()) {
+                    $this->conversationService->finalizeStream(
+                        $accumulator, $conversation_id, $assistant_message_id, 'interrupted'
+                    );
+                    $writer = new SseWriter(autoStart: false);
+                    $writer->sendError('socket_fallback_failed', '分析服务连接失败');
+                    return;
+                }
+
+                $stream_completed = $this->fallbackToHttp(
+                    $payload, $wants_chat2viz, $conversation_id, $accumulator, $assistant_message_id
+                );
+
+                $this->conversationService->finalizeStream(
+                    $accumulator,
+                    $conversation_id,
+                    $assistant_message_id,
+                    $stream_completed ? 'complete' : 'interrupted'
+                );
+                return;
+            }
+
+            // Fallback disabled (default): return 503 or SSE error
             if (headers_sent()) {
                 $this->conversationService->finalizeStream(
                     $accumulator, $conversation_id, $assistant_message_id, 'interrupted'
@@ -104,16 +126,9 @@ class StreamService
                 return;
             }
 
-            $stream_completed = $this->fallbackToHttp(
-                $payload, $wants_chat2viz, $conversation_id, $accumulator, $assistant_message_id
-            );
-
-            $this->conversationService->finalizeStream(
-                $accumulator,
-                $conversation_id,
-                $assistant_message_id,
-                $stream_completed ? 'complete' : 'interrupted'
-            );
+            http_response_code(503);
+            header('Content-Type: application/json; charset=utf-8');
+            echo json_encode(['status' => 0, 'info' => '分析服务不可用'], JSON_UNESCAPED_UNICODE);
         }
     }
 

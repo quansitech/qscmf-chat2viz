@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState, useCallback, useMemo } from 'react';
+import { useRef, useEffect, useState, useCallback } from 'react';
 import { Badge, Button, Collapse, Empty, Input, message, Spin, Tag, Tooltip, Typography } from 'antd';
 import { SendOutlined, QuestionCircleOutlined, PlusOutlined } from '@ant-design/icons';
 import { useDashboardStore } from '../store/dashboardStore';
@@ -65,7 +65,11 @@ function AiStepsIndicator() {
 // Component
 // ---------------------------------------------------------------------------
 
-export default function ChatPanel() {
+interface ChatPanelProps {
+  disabled?: boolean;
+}
+
+export default function ChatPanel({ disabled = false }: ChatPanelProps) {
   const messages = useDashboardStore((s) => s.messages);
   const isLoading = useDashboardStore((s) => s.isLoading);
   const streamingState = useDashboardStore((s) => s.streamingState);
@@ -143,6 +147,13 @@ export default function ChatPanel() {
 
   return (
     <div style={styles.panel}>
+      {/* ---- Service unavailable banner ---- */}
+      {disabled && (
+        <div style={styles.disabledBanner}>
+          分析服务不可用，请检查后端服务状态
+        </div>
+      )}
+
       {/* ---- Header with New Conversation button ---- */}
       {hasMessages && (
         <div style={styles.panelHeader}>
@@ -174,7 +185,7 @@ export default function ChatPanel() {
                   <Typography.Text type="secondary">向数据提问</Typography.Text>
                   <div style={styles.examples}>
                     {EXAMPLE_QUESTIONS.map((q) => (
-                      <button key={q} onClick={() => handleExampleClick(q)} style={styles.exampleBtn}>
+                      <button key={q} onClick={() => !disabled && handleExampleClick(q)} disabled={disabled} style={{ ...styles.exampleBtn, opacity: disabled ? 0.5 : 1, cursor: disabled ? 'not-allowed' : 'pointer' }}>
                         {q}
                       </button>
                     ))}
@@ -211,6 +222,7 @@ export default function ChatPanel() {
           placeholder="输入你的问题...（回车发送，Shift+回车换行）"
           autoSize={{ minRows: 1, maxRows: 4 }}
           style={styles.textArea}
+          disabled={disabled}
         />
         <Button
           type={streamingState === 'idle' ? 'primary' : 'default'}
@@ -218,6 +230,7 @@ export default function ChatPanel() {
           onClick={streamingState !== 'idle' ? cancel : handleSend}
           danger={streamingState !== 'idle'}
           style={styles.sendBtn}
+          disabled={disabled || (streamingState === 'idle' && !inputValue.trim())}
         >
           {streamingState !== 'idle' ? '停止' : '发送'}
         </Button>
@@ -305,6 +318,15 @@ const styles: Record<string, React.CSSProperties> = {
     height: '100%',
     background: '#fff',
     borderRight: '1px solid #f0f0f0',
+  },
+  disabledBanner: {
+    padding: '8px 16px',
+    background: '#fff2f0',
+    borderBottom: '1px solid #ffccc7',
+    color: '#cf1322',
+    fontSize: 13,
+    textAlign: 'center' as const,
+    flexShrink: 0,
   },
   panelHeader: {
     display: 'flex',

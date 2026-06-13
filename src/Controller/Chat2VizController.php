@@ -62,7 +62,7 @@ class Chat2VizController extends GyController
     {
         if ($this->streamService === null) {
             $eventRouter = new EventRouter(
-                AdapterFactory::createDashboardRepository(),
+                AdapterFactory::createRepository(),
                 $this->currentDashboardUid,
                 fn(string $tag, string $detail) => $this->logError($tag, $detail)
             );
@@ -125,6 +125,30 @@ class Chat2VizController extends GyController
         } catch (GuzzleException $e) {
             $this->logError('guzzle error', sprintf('err=%s', $e->getMessage()));
             $this->ajaxReturn(['status' => 0, 'info' => '分析服务请求失败']);
+        }
+    }
+
+    public function api_socket_health()
+    {
+        if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
+            $this->ajaxReturn(['status' => 0, 'info' => '请求方法不允许']);
+            return;
+        }
+
+        try {
+            $transport = new \Qscmf\SseCore\SocketTransport([
+                'socket_path' => env('CHAT2VIZ_SOCKET_PATH', '/run/chat2viz.sock'),
+                'timeout' => 5,
+            ]);
+            $socket = $transport->connect();
+            if (is_resource($socket)) {
+                fclose($socket);
+            }
+            $this->ajaxReturn(['status' => 1, 'data' => ['status' => 'ok']]);
+        } catch (\Throwable $e) {
+            $this->logError('socket health check failed', $e->getMessage());
+            http_response_code(503);
+            $this->ajaxReturn(['status' => 0, 'info' => '分析服务不可用，请检查后端服务状态']);
         }
     }
 
@@ -390,7 +414,7 @@ class Chat2VizController extends GyController
     private function createSocketTransport(): \Qscmf\SseCore\SocketTransport
     {
         return new \Qscmf\SseCore\SocketTransport([
-            'path' => env('CHAT2VIZ_SOCKET_PATH', '/tmp/chat2viz.sock'),
+            'socket_path' => env('CHAT2VIZ_SOCKET_PATH', '/run/chat2viz.sock'),
         ]);
     }
 
