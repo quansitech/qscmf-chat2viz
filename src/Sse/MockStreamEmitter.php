@@ -43,7 +43,14 @@ class MockStreamEmitter
         ));
 
         if ($wantsChat2viz) {
-            $widgets = $payload['dashboard_context']['widgets'] ?? [];
+            // dashboard_context may arrive as a nested stdClass (JSON object),
+            // not an array — normalize so ['widgets'] access never throws
+            // "Cannot use object of type stdClass as array".
+            $ctx = $payload['dashboard_context'] ?? [];
+            if (is_object($ctx)) {
+                $ctx = json_decode((string) json_encode($ctx), true) ?? [];
+            }
+            $widgets = is_array($ctx) ? ($ctx['widgets'] ?? []) : [];
             $firstWidgetId = !empty($widgets) ? ($widgets[0]['id'] ?? null) : null;
             $intent = $this->classifyMockIntent($question);
 
@@ -59,6 +66,10 @@ class MockStreamEmitter
                     break;
                 case 'add':
                     $this->emitMockAddChart($writer, $question);
+                    break;
+                case 'multi':
+                    // Whole-dashboard request: unified multi-widget delivery.
+                    $this->emitMockMultiWidget($writer);
                     break;
                 default:
                     $this->emitMockQuery($writer, $question);
@@ -78,6 +89,13 @@ class MockStreamEmitter
 
     private function classifyMockIntent(string $question): string
     {
+        // Multi-widget summary dashboard — matched first so a whole-dashboard
+        // request takes the unified multi-widget delivery path (DASHBOARD_INIT
+        // → N×WIDGET_DATA_UPDATE). Exercises the same frontend code as the
+        // real emitter, deterministically (no LLM variance).
+        if (preg_match('/整体.*仪表盘|仪表盘|总览|概览|overview|dashboard|summary/u', $question)) {
+            return 'multi';
+        }
         if (preg_match('/换成|换.*图|改.*图|变成.*图|修改.*图/u', $question)) {
             return 'modify_chart';
         }
@@ -132,19 +150,38 @@ class MockStreamEmitter
         $writer->sendEvent(new SseEvent(type: 'sql_generated', data: ['sql' => $sql], raw: ''));
 
         $widgetId = 'mock-' . substr(md5($question), 0, 8);
+        $g2Spec = ['type' => 'interval', 'encode' => ['x' => 'category', 'y' => 'cnt']];
+        $data = $this->mockFilmCategoryData();
+
+        // Unified delivery (count == 1 uses the same path as count >= 1):
+        // DASHBOARD_INIT (skeleton frame) then WIDGET_DATA_UPDATE (data + g2_spec).
         $writer->sendEvent(new SseEvent(
-            type: 'chart_ready',
+            type: 'DASHBOARD_INIT',
             data: [
-                'id'         => $widgetId,
-                'title'      => $this->mockTitleFromQuestion($question),
-                'chart_type' => 'bar',
-                'g2_spec'    => [
-                    'type'  => 'interval',
-                    'encode' => ['x' => 'category', 'y' => 'cnt'],
+                // Contract §2: layout is an array<{i,x,y,w,h}> with i == widget_id;
+                // widgets is a map<widget_id, WidgetMeta>. chart_type matches the
+                // Python emitter field name (contract §2).
+                'layout' => [['i' => $widgetId, 'x' => 0, 'y' => 0, 'w' => 12, 'h' => 6]],
+                'widgets' => [
+                    $widgetId => [
+                        'widget_id'  => $widgetId,
+                        'title'      => $this->mockTitleFromQuestion($question),
+                        'chart_type' => 'bar',
+                    ],
                 ],
-                'data' => $this->mockFilmCategoryData(),
-                'sql'    => $sql,
-                'layout' => ['x' => 0, 'y' => 0, 'w' => 12, 'h' => 6],
+            ],
+            raw: '',
+        ));
+
+        $writer->sendEvent(new SseEvent(
+            type: 'WIDGET_DATA_UPDATE',
+            data: [
+                'widget_id' => $widgetId,
+                'sql'       => $sql,
+                'data'      => $data,
+                'g2_spec'   => $g2Spec,
+                'truncated' => false,
+                'total'     => count($data),
             ],
             raw: '',
         ));
@@ -284,30 +321,169 @@ class MockStreamEmitter
         $writer->sendEvent(new SseEvent(type: 'sql_generated', data: ['sql' => $sql], raw: ''));
 
         $widgetId = 'mock-' . substr(md5($question . time()), 0, 8);
+        $g2Spec = ['type' => 'line', 'encode' => ['x' => 'year', 'y' => 'revenue']];
+        $data = [
+            ['year' => '2020', 'revenue' => 1200],
+            ['year' => '2021', 'revenue' => 1800],
+            ['year' => '2022', 'revenue' => 2400],
+            ['year' => '2023', 'revenue' => 3100],
+            ['year' => '2024', 'revenue' => 4200],
+        ];
+
+        // Unified delivery: DASHBOARD_INIT (skeleton) then WIDGET_DATA_UPDATE (data + g2_spec).
         $writer->sendEvent(new SseEvent(
-            type: 'chart_ready',
+            type: 'DASHBOARD_INIT',
             data: [
-                'id'         => $widgetId,
-                'title'      => $this->mockTitleFromQuestion($question),
-                'chart_type' => 'line',
-                'g2_spec'    => [
-                    'type'  => 'line',
-                    'encode' => ['x' => 'year', 'y' => 'revenue'],
+                'layout' => [['i' => $widgetId, 'x' => 0, 'y' => 6, 'w' => 12, 'h' => 6]],
+                'widgets' => [
+                    $widgetId => [
+                        'widget_id'  => $widgetId,
+                        'title'      => $this->mockTitleFromQuestion($question),
+                        'chart_type' => 'line',
+                    ],
                 ],
-                'data' => [
-                    ['year' => '2020', 'revenue' => 1200],
-                    ['year' => '2021', 'revenue' => 1800],
-                    ['year' => '2022', 'revenue' => 2400],
-                    ['year' => '2023', 'revenue' => 3100],
-                    ['year' => '2024', 'revenue' => 4200],
-                ],
-                'sql'    => $sql,
-                'layout' => ['x' => 0, 'y' => 6, 'w' => 12, 'h' => 6],
+            ],
+            raw: '',
+        ));
+
+        $writer->sendEvent(new SseEvent(
+            type: 'WIDGET_DATA_UPDATE',
+            data: [
+                'widget_id' => $widgetId,
+                'sql'       => $sql,
+                'data'      => $data,
+                'g2_spec'   => $g2Spec,
+                'truncated' => false,
+                'total'     => count($data),
             ],
             raw: '',
         ));
 
         $writer->sendEvent(new SseEvent(type: 'done', data: [], raw: ''));
+    }
+
+    /**
+     * Build the multi-widget mock event sequence (pure, no SseWriter side effects).
+     *
+     * Sequence: DASHBOARD_INIT → N×WIDGET_DATA_UPDATE → done.
+     * Kept separate from emitMockMultiWidget() so the frame layout is unit-
+     * testable without a live SseWriter. Single- and multi-widget delivery
+     * now share the same unified path (count == 1 behaves like count >= 1).
+     *
+     * @return SseEvent[]
+     */
+    public function buildMultiWidgetEvents(int $widgetCount = 3): array
+    {
+        $widgetCount = max(1, $widgetCount);
+
+        // DASHBOARD_INIT — declare N widget placeholders (skeleton frames,
+        // no g2_spec yet; status=pending at the contract event-level).
+        // Contract §2: widgets is a map<widget_id, WidgetMeta>; layout is an
+        // array<{i,x,y,w,h}> with i == widget_id. chart_type matches the
+        // Python emitter field name.
+        $layoutMap = [
+            ['x' => 0, 'y' => 0, 'w' => 12, 'h' => 6],
+            ['x' => 12, 'y' => 0, 'w' => 12, 'h' => 6],
+            ['x' => 0, 'y' => 6, 'w' => 24, 'h' => 6],
+        ];
+        $types = ['bar', 'line', 'pie'];
+        $titles = ['分类销量对比', '月度趋势', '占比分布'];
+        $g2Specs = [
+            ['type' => 'interval', 'encode' => ['x' => 'category', 'y' => 'cnt']],
+            ['type' => 'line', 'encode' => ['x' => 'month', 'y' => 'revenue']],
+            ['type' => 'pie', 'encode' => ['color' => 'rating', 'y' => 'cnt']],
+        ];
+        $widgets = [];
+        $layout = [];
+        for ($i = 0; $i < $widgetCount; $i++) {
+            $widgetId = 'w' . ($i + 1);
+            $slot = $layoutMap[$i % count($layoutMap)];
+            $widgets[$widgetId] = [
+                'widget_id'  => $widgetId,
+                'title'      => $titles[$i % count($titles)],
+                'chart_type' => $types[$i % count($types)],
+            ];
+            $layout[] = [
+                'i' => $widgetId,
+                'x' => $slot['x'],
+                'y' => $slot['y'],
+                'w' => $slot['w'],
+                'h' => $slot['h'],
+            ];
+        }
+        $events = [];
+        $events[] = new SseEvent(
+            type: 'DASHBOARD_INIT',
+            data: ['layout' => $layout, 'widgets' => $widgets],
+            raw: '',
+        );
+
+        // N×WIDGET_DATA_UPDATE — one data frame per declared widget, each
+        // carrying its own g2_spec (config/data separation, contract §7).
+        // truncated/total are set authoritatively here (Python is the sole
+        // computation authority in production; the mock emulates that role).
+        for ($i = 0; $i < $widgetCount; $i++) {
+            $widgetId = 'w' . ($i + 1);
+            $data = $this->mockWidgetRows($i);
+            $events[] = new SseEvent(
+                type: 'WIDGET_DATA_UPDATE',
+                data: [
+                    'widget_id' => $widgetId,
+                    'sql'       => $this->mockWidgetSql($i),
+                    'data'      => $data,
+                    'g2_spec'   => $g2Specs[$i % count($g2Specs)],
+                    'truncated' => false,
+                    'total'     => count($data),
+                ],
+                raw: '',
+            );
+        }
+
+        $events[] = new SseEvent(type: 'done', data: [], raw: '');
+        return $events;
+    }
+
+    /**
+     * Emit the multi-widget mock stream to the given SseWriter.
+     * Companion to emitMockQuery() (single-widget, same unified path).
+     */
+    public function emitMockMultiWidget(SseWriter $writer, int $widgetCount = 3): void
+    {
+        foreach ($this->buildMultiWidgetEvents($widgetCount) as $event) {
+            $writer->sendEvent($event);
+        }
+    }
+
+    private function mockWidgetSql(int $index): string
+    {
+        $sqls = [
+            'SELECT category, COUNT(*) AS cnt FROM film GROUP BY category ORDER BY cnt DESC',
+            'SELECT month, SUM(revenue) AS revenue FROM monthly_sales GROUP BY month ORDER BY month',
+            'SELECT rating, COUNT(*) AS cnt FROM film GROUP BY rating ORDER BY cnt DESC',
+        ];
+        return $sqls[$index % count($sqls)];
+    }
+
+    private function mockWidgetRows(int $index): array
+    {
+        $rows = [
+            [
+                ['category' => '动作', 'cnt' => 64],
+                ['category' => '喜剧', 'cnt' => 51],
+                ['category' => '剧情', 'cnt' => 43],
+            ],
+            [
+                ['month' => '2026-01', 'revenue' => 1200],
+                ['month' => '2026-02', 'revenue' => 1800],
+                ['month' => '2026-03', 'revenue' => 2400],
+            ],
+            [
+                ['rating' => 'PG', 'cnt' => 194],
+                ['rating' => 'R', 'cnt' => 195],
+                ['rating' => 'NC-17', 'cnt' => 210],
+            ],
+        ];
+        return $rows[$index % count($rows)];
     }
 
     private function mockFilmCategoryData(): array

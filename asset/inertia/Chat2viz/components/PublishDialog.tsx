@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect } from 'react';
 import { Button, Input, Modal, Typography, message } from 'antd';
 import { CloudUploadOutlined } from '@ant-design/icons';
 import { navigate } from '../adapters';
+import { ADMIN_BASE, PUBLIC_BASE } from '../utils/routes';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -37,7 +38,7 @@ export default function PublishDialog({ uid, title, visible, onClose }: PublishD
     setPublishing(true);
 
     try {
-      const resp = await fetch(`/extends/Chat2VizDashboard/api_publish/uid/${uid}`, {
+      const resp = await fetch(`${ADMIN_BASE}/api_publish/uid/${uid}`, {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
@@ -51,7 +52,7 @@ export default function PublishDialog({ uid, title, visible, onClose }: PublishD
       if (result.status === 1) {
         message.success('仪表盘发布成功');
         const publishedUid = result.data?.uid || uid;
-        setShareUrl(window.location.origin + '/extends/Chat2VizDashboard/view/uid/' + publishedUid);
+        setShareUrl(`${window.location.origin}${PUBLIC_BASE}/view/uid/${publishedUid}`);
         setShareMode(true);
       } else {
         message.error(result.info || '发布失败');

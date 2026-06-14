@@ -2,12 +2,12 @@ import { useRef, useCallback } from 'react';
 import { useDashboardStore, generateId } from '../store/dashboardStore';
 import type {
   Widget,
+  WidgetLayout,
   ActionCall,
   ActionCallResult,
   DashboardPatch,
 } from '../store/dashboardStore';
 import { parseSseEvent, type SseEvent } from '../sse-parser';
-import { computeNextSlot } from '../utils/layout';
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -16,6 +16,13 @@ import { computeNextSlot } from '../utils/layout';
 const SSE_ENDPOINT = '/extends/Chat2Viz/api_ask_stream';
 const MAX_RETRIES = 2;
 const RETRY_DELAY_MS = 1000;
+
+/**
+ * Stream-level timeout watchdog threshold (contract §6). Fixed constant —
+ * MUST NOT be changed by implementors. Only the slowest widget gets a
+ * pending→error fallback; the fetch itself is NOT aborted.
+ */
+const WIDGET_TIMEOUT_MS = 30000;
 
 // ---------------------------------------------------------------------------
 // Helpers for extracting typed values from untyped SSE data
@@ -37,6 +44,52 @@ function obj<T = Record<string, unknown>>(val: unknown, fallback = {} as T): T {
 
 function arr<T>(val: unknown, fallback: T[] = []): T[] {
   return Array.isArray(val) ? (val as T[]) : fallback;
+}
+
+function num(val: unknown, fallback = 0): number {
+  return typeof val === 'number' && !Number.isNaN(val) ? val : fallback;
+}
+
+// ---------------------------------------------------------------------------
+// Per-widget timeout watchdog (time-driven, 30s threshold)
+//
+// Tracks when each widget entered the 'loading' state. On every dispatched
+// event the watchdog checks whether any loading widget has exceeded the
+// threshold and, if so, falls that single widget back to 'error' — WITHOUT
+// aborting the fetch (the rest of the multi-widget stream keeps flowing).
+// ---------------------------------------------------------------------------
+
+const widgetLoadingSince: Map<string, number> = new Map();
+
+function trackWidgetLoading(widgetId: string): void {
+  if (!widgetLoadingSince.has(widgetId)) {
+    widgetLoadingSince.set(widgetId, Date.now());
+  }
+}
+
+function clearWidgetLoading(widgetId: string): void {
+  widgetLoadingSince.delete(widgetId);
+}
+
+function runWatchdog(): void {
+  const now = Date.now();
+  const expired: string[] = [];
+  for (const [widgetId, since] of widgetLoadingSince) {
+    if (now - since >= WIDGET_TIMEOUT_MS) {
+      expired.push(widgetId);
+    }
+  }
+  if (expired.length === 0) return;
+  const store = useDashboardStore.getState();
+  for (const widgetId of expired) {
+    clearWidgetLoading(widgetId);
+    store.setWidgetError(widgetId);
+  }
+}
+
+/** Reset all watchdog timers (e.g. at the start of a new stream). */
+function resetWatchdog(): void {
+  widgetLoadingSince.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -82,6 +135,9 @@ export function useSseStream() {
     }
 
     store.startConversation(question);
+
+    // New stream — clear any stale per-widget watchdog timers.
+    resetWatchdog();
 
     const payload: Record<string, unknown> = {
       question,
@@ -245,39 +301,74 @@ function dispatchEvent(event: SseEvent | null): boolean {
   const store = useDashboardStore.getState();
 
   switch (event.type) {
-    case 'chart_ready': {
-      if (!validateWidget(event.data)) {
-        // Silently skip invalid chart data to prevent UI disruption
-        break;
-      }
-      // Resolve SQL: payload.sql takes priority, then lastAssistant.metadata.sql
-      const payloadSql = str(event.data.sql);
-      const metadataSql = (() => {
-        const last = [...store.messages].reverse().find(m => m.role === 'assistant');
-        return last?.metadata?.sql ?? '';
-      })();
-      const resolvedSql = payloadSql || metadataSql || undefined;
+    case 'DASHBOARD_INIT': {
+      // widgets is a map<widget_id, WidgetMeta> per contract §2. Tolerate an
+      // array shape too (some emitters send a list). Placeholders go through
+      // the store action directly (NOT validateWidget) — they legitimately
+      // carry no g2_spec yet (skeleton frame, contract §1/§7).
+      const widgetsField = event.data.widgets;
+      const widgetList: Record<string, unknown>[] = Array.isArray(widgetsField)
+        ? widgetsField as Record<string, unknown>[]
+        : Object.values(obj<Record<string, Record<string, unknown>>>(widgetsField));
 
-      // Normalize widget: build a new object to avoid mutating event.data
-      // (immutable update) and to coalesce id/widget_id aliasing.
-      const raw = event.data as unknown as Widget;
-      const widget: Widget = {
-        ...raw,
-        id: raw.id || (raw as unknown as { widget_id?: string }).widget_id || generateId(),
-        title: raw.title || (raw.g2_spec as { title?: string })?.title || '',
-        g2_spec: raw.g2_spec || {},
-        data: raw.data || {},
-        sql: resolvedSql,
-        layout: computeNextSlot(store.widgets),
-      };
-      store.addPanel(widget);
-      store.addAiStep({
-        id: generateStepId(),
-        type: 'chart_ready',
-        label: '图表已生成',
-        timestamp: generateId(),
-        completed: true,
-      });
+      // layout is an array<{i,x,y,w,h}> with i == widget_id (contract §2).
+      // Build a lookup so each placeholder inherits its grid slot.
+      const layoutById = new Map<string, WidgetLayout>();
+      for (const item of arr<Record<string, unknown>>(event.data.layout)) {
+        const i = str(item.i);
+        if (i) {
+          layoutById.set(i, {
+            x: num(item.x, 0),
+            y: num(item.y, 0),
+            w: num(item.w, 12),
+            h: num(item.h, 6),
+          });
+        }
+      }
+
+      for (const w of widgetList) {
+        const validPlaceholder = validateWidgetPlaceholder(w);
+        const widgetId = str(w.widget_id) || str((w as { id?: string }).id);
+        if (!validPlaceholder) continue;
+        const layout = layoutById.get(widgetId);
+        useDashboardStore.getState().createWidgetPlaceholder(widgetId, {
+          title: str(w.title) || undefined,
+          ...(layout ? { layout } : {}),
+        });
+        trackWidgetLoading(widgetId);
+      }
+      // Event-level status mapping is implicit here: DASHBOARD_INIT (pending)
+      // → placeholder status=loading (handled inside createWidgetPlaceholder).
+      // MUST NOT set global store.error.
+      runWatchdog();
+      break;
+    }
+
+    case 'WIDGET_DATA_UPDATE': {
+      const widgetId = str(event.data.widget_id) || str((event.data as { id?: string }).id);
+      if (widgetId) {
+        // g2_spec is the widget's config, delivered via this event (contract §3/§7).
+        // Forward it so the widget transitions loading→chart with its real spec.
+        const g2Spec = obj<Record<string, unknown>>(event.data.g2_spec);
+        useDashboardStore.getState().updateWidgetData(widgetId, event.data.data, {
+          truncated: bool(event.data.truncated, undefined),
+          total: typeof event.data.total === 'number' ? event.data.total : undefined,
+          ...(Object.keys(g2Spec).length > 0 ? { g2_spec: g2Spec } : {}),
+        });
+        clearWidgetLoading(widgetId);
+      }
+      runWatchdog();
+      break;
+    }
+
+    case 'WIDGET_ERROR': {
+      const widgetId = str(event.data.widget_id) || str((event.data as { id?: string }).id);
+      if (widgetId) {
+        // Local degradation: only this widget → error. MUST NOT set store.error.
+        useDashboardStore.getState().setWidgetError(widgetId);
+        clearWidgetLoading(widgetId);
+      }
+      runWatchdog();
       break;
     }
 
@@ -362,6 +453,11 @@ function dispatchEvent(event: SseEvent | null): boolean {
     }
 
     case 'done': {
+      // Event-driven cleanup: widgets still loading at stream end lost their
+      // WIDGET_DATA_UPDATE/WIDGET_ERROR frames — fall them back to error so
+      // the skeleton does not hang forever. No time threshold; done triggers it.
+      useDashboardStore.getState().fallbackLoadingWidgetsToError();
+      resetWatchdog();
       store.clearAiSteps();
       return true;
     }
@@ -421,6 +517,20 @@ function validateWidget(data: unknown): data is Widget {
   // will render the skeleton until the spec arrives via a follow-up event).
   if (typeof d.g2_spec !== 'object' || d.g2_spec === null) return false;
   return true;
+}
+
+/**
+ * Lenient validator for DASHBOARD_INIT placeholder widgets (design D5).
+ *
+ * DASHBOARD_INIT placeholders legitimately carry only title/type and NO
+ * g2_spec (skeleton frame) — the strict validator would discard them.
+ * This path only requires a valid id/widget_id and a non-null object root.
+ */
+function validateWidgetPlaceholder(data: unknown): data is Record<string, unknown> {
+  if (typeof data !== 'object' || data === null) return false;
+  const d = data as Record<string, unknown>;
+  const id = d.id ?? d.widget_id;
+  return typeof id === 'string' && id.length > 0;
 }
 
 // ---------------------------------------------------------------------------

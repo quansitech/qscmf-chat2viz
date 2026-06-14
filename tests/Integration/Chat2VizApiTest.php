@@ -253,16 +253,16 @@ class Chat2VizApiTest extends TestCase
     // =========================================================================
 
     /**
-     * Test frame filtering: only chart_ready frames should produce widgets.
+     * Test frame filtering: only WIDGET_DATA_UPDATE frames carry widget payloads.
      */
-    public function testFrameFilteringExtractsOnlyChartReady(): void
+    public function testFrameFilteringExtractsOnlyWidgetDataUpdate(): void
     {
         $frames = [
             ['type' => 'delta', 'data' => ['text' => 'thinking...']],
             ['type' => 'answer', 'data' => ['text' => '正在分析...']],
             ['type' => 'conversation_id', 'data' => ['conversation_id' => 'conv-1']],
-            ['type' => 'chart_ready', 'data' => [
-                'id' => 'w1',
+            ['type' => 'WIDGET_DATA_UPDATE', 'data' => [
+                'widget_id' => 'w1',
                 'title' => '电影数量',
                 'g2_spec' => ['type' => 'interval'],
                 'sql' => 'SELECT COUNT(*) FROM qs_film',
@@ -270,38 +270,38 @@ class Chat2VizApiTest extends TestCase
             ['type' => 'done', 'data' => []],
         ];
 
-        $chartReadyFrames = array_filter($frames, fn($f) => ($f['type'] ?? '') === 'chart_ready');
+        $widgetFrames = array_filter($frames, fn($f) => ($f['type'] ?? '') === 'WIDGET_DATA_UPDATE');
 
-        $this->assertCount(1, $chartReadyFrames);
-        $extracted = array_values($chartReadyFrames);
-        $this->assertSame('w1', $extracted[0]['data']['id']);
+        $this->assertCount(1, $widgetFrames);
+        $extracted = array_values($widgetFrames);
+        $this->assertSame('w1', $extracted[0]['data']['widget_id']);
     }
 
     /**
-     * Test multi-chart response: complex prompts may produce multiple charts.
+     * Test multi-widget response: complex prompts may produce multiple widgets.
      */
-    public function testMultipleChartReadyFramesCollected(): void
+    public function testMultipleWidgetDataUpdateFramesCollected(): void
     {
         $frames = [
-            ['type' => 'chart_ready', 'data' => [
-                'id' => 'w1',
+            ['type' => 'WIDGET_DATA_UPDATE', 'data' => [
+                'widget_id' => 'w1',
                 'title' => '租赁次数',
                 'g2_spec' => ['type' => 'interval'],
             ]],
-            ['type' => 'chart_ready', 'data' => [
-                'id' => 'w2',
+            ['type' => 'WIDGET_DATA_UPDATE', 'data' => [
+                'widget_id' => 'w2',
                 'title' => '收入金额',
                 'g2_spec' => ['type' => 'line'],
             ]],
         ];
 
-        $chartReadyFrames = array_values(
-            array_filter($frames, fn($f) => ($f['type'] ?? '') === 'chart_ready'),
+        $widgetFrames = array_values(
+            array_filter($frames, fn($f) => ($f['type'] ?? '') === 'WIDGET_DATA_UPDATE'),
         );
 
-        $this->assertCount(2, $chartReadyFrames);
-        $this->assertSame('w1', $chartReadyFrames[0]['data']['id']);
-        $this->assertSame('w2', $chartReadyFrames[1]['data']['id']);
+        $this->assertCount(2, $widgetFrames);
+        $this->assertSame('w1', $widgetFrames[0]['data']['widget_id']);
+        $this->assertSame('w2', $widgetFrames[1]['data']['widget_id']);
     }
 
     /**

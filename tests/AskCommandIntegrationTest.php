@@ -21,36 +21,36 @@ class AskCommandIntegrationTest extends TestCase
     // 1. Full command flow: frame collection
     // -----------------------------------------------------------------------
 
-    public function testFullFlowCollectsOnlyChartReady(): void
+    public function testFullFlowCollectsOnlyWidgetDataUpdate(): void
     {
         $frames = $this->simulateTransact([
             ['type' => 'thinking', 'data' => ['text' => 'Analyzing...']],
             ['type' => 'sql_generated', 'data' => ['sql' => 'SELECT * FROM sales']],
-            ['type' => 'chart_ready', 'data' => [
+            ['type' => 'WIDGET_DATA_UPDATE', 'data' => [
+                'widget_id' => 'w1',
                 'sql' => 'SELECT SUM(amount) FROM sales GROUP BY month',
-                'chart_type' => 'interval',
                 'g2_spec' => ['type' => 'interval'],
             ]],
             ['type' => 'answer', 'data' => ['text' => 'Here is the chart.']],
             ['type' => 'done', 'data' => []],
         ]);
 
-        $results = $this->collectChartReady($frames);
+        $results = $this->collectWidgetDataUpdate($frames);
 
         $this->assertCount(1, $results);
         $this->assertSame('SELECT SUM(amount) FROM sales GROUP BY month', $results[0]['sql']);
-        $this->assertSame('interval', $results[0]['chart_type']);
+        $this->assertSame('interval', $results[0]['g2_spec']['type']);
     }
 
-    public function testFullFlowWithMultipleChartReady(): void
+    public function testFullFlowWithMultipleWidgetDataUpdate(): void
     {
         $frames = $this->simulateTransact([
-            ['type' => 'chart_ready', 'data' => ['sql' => 'SELECT 1', 'chart_type' => 'bar']],
+            ['type' => 'WIDGET_DATA_UPDATE', 'data' => ['widget_id' => 'w1', 'sql' => 'SELECT 1']],
             ['type' => 'delta', 'data' => ['text' => '...']],
-            ['type' => 'chart_ready', 'data' => ['sql' => 'SELECT 2', 'chart_type' => 'line']],
+            ['type' => 'WIDGET_DATA_UPDATE', 'data' => ['widget_id' => 'w2', 'sql' => 'SELECT 2']],
         ]);
 
-        $results = $this->collectChartReady($frames);
+        $results = $this->collectWidgetDataUpdate($frames);
 
         $this->assertCount(2, $results);
         $this->assertSame('SELECT 1', $results[0]['sql']);
@@ -61,13 +61,13 @@ class AskCommandIntegrationTest extends TestCase
     {
         $frames = $this->simulateTransact([
             ['type' => 'ping', 'data' => null],
-            ['type' => 'chart_ready', 'data' => ['sql' => 'SELECT 1']],
+            ['type' => 'WIDGET_DATA_UPDATE', 'data' => ['widget_id' => 'w1', 'sql' => 'SELECT 1']],
             ['type' => 'pong', 'data' => null],
         ]);
 
         // ping/pong should be filtered by SseProxy::socket, but our
-        // collection logic only picks chart_ready anyway
-        $results = $this->collectChartReady($frames);
+        // collection logic only picks WIDGET_DATA_UPDATE anyway
+        $results = $this->collectWidgetDataUpdate($frames);
 
         $this->assertCount(1, $results);
     }
@@ -328,13 +328,13 @@ class AskCommandIntegrationTest extends TestCase
     }
 
     /**
-     * Collect chart_ready frames — mirrors AskCommand::handle() logic.
+     * Collect WIDGET_DATA_UPDATE frames — mirrors AskCommand::handle() logic.
      */
-    private function collectChartReady(array $frames): array
+    private function collectWidgetDataUpdate(array $frames): array
     {
         $results = [];
         foreach ($frames as $frame) {
-            if (($frame['type'] ?? '') === 'chart_ready') {
+            if (($frame['type'] ?? '') === 'WIDGET_DATA_UPDATE') {
                 $results[] = $frame['data'];
             }
         }

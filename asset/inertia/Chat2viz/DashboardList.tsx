@@ -3,6 +3,7 @@ import { Button, Empty, Table, Tag, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { PlusOutlined } from '@ant-design/icons';
 import { getPageProps, navigate } from './adapters';
+import { ADMIN_BASE, PUBLIC_BASE } from './utils/routes';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -91,14 +92,14 @@ export default function DashboardList() {
         <div style={{ display: 'flex', gap: 8 }}>
           <Button
             size="small"
-            onClick={() => navigate(`/extends/Chat2VizDashboard/view/uid/${record.uid}`)}
+            onClick={() => navigate(`${PUBLIC_BASE}/view/uid/${record.uid}`)}
           >
             查看
           </Button>
           <Button
             size="small"
             type="primary"
-            onClick={() => navigate(`/extends/Chat2VizDashboard/edit/uid/${record.uid}`)}
+            onClick={() => navigate(`${ADMIN_BASE}/edit/uid/${record.uid}`)}
           >
             编辑
           </Button>
@@ -110,7 +111,7 @@ export default function DashboardList() {
   // ---- Create new dashboard ----
   const handleCreate = useCallback(async () => {
     try {
-      const resp = await fetch('/extends/Chat2VizDashboard/api_create', {
+      const resp = await fetch(`${ADMIN_BASE}/api_create`, {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
@@ -121,7 +122,7 @@ export default function DashboardList() {
       }
       const result = await resp.json();
       if (result.status === 1 && result.data?.uid) {
-        navigate(`/extends/Chat2VizDashboard/edit/uid/${result.data.uid}`);
+        navigate(`${ADMIN_BASE}/edit/uid/${result.data.uid}`);
       }
     } catch {
       message.error('创建仪表盘失败，请重试');
@@ -151,7 +152,7 @@ export default function DashboardList() {
           current: page || 1,
           pageSize: perPage || 20,
           showSizeChanger: false,
-          onChange: (p) => navigate(`/extends/Chat2VizDashboard/index?page=${p}`),
+          onChange: (p) => navigate(`${ADMIN_BASE}/index?page=${p}`),
         }}
       />
     </div>

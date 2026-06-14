@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { Collapse, Popconfirm, Spin, Typography } from 'antd';
+import { Alert, Collapse, Popconfirm, Skeleton, Spin, Typography } from 'antd';
 import { DeleteOutlined, EditOutlined, ReloadOutlined } from '@ant-design/icons';
 import LazyG2Renderer from './LazyG2Renderer';
 import type { Widget } from '../store/dashboardStore';
@@ -13,13 +13,23 @@ export interface WidgetCardProps {
   onTitleChange: (widgetId: string, title: string) => void;
   onRemove: (widgetId: string) => void;
   onRefresh?: (widgetId: string) => void;
+  onRegenerate?: (widgetId: string) => void;
+}
+
+/**
+ * Resolve the effective render status. Widgets without a `status` field
+ * default to 'chart' (defensive fallback for any persisted widget that
+ * predates the status field or arrived via a non-standard path).
+ */
+function effectiveStatus(widget: Widget): 'loading' | 'error' | 'chart' {
+  return widget.status ?? 'chart';
 }
 
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
-export default function WidgetCard({ widget, onTitleChange, onRemove, onRefresh }: WidgetCardProps) {
+export default function WidgetCard({ widget, onTitleChange, onRemove, onRefresh, onRegenerate }: WidgetCardProps) {
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState(widget.title);
 
@@ -47,9 +57,19 @@ export default function WidgetCard({ widget, onTitleChange, onRemove, onRefresh 
     [handleTitleConfirm],
   );
 
+  // Effective render status — legacy widgets without a status field default to 'chart'.
+  const status = effectiveStatus(widget);
+
   const hasSpec = widget.g2_spec && (
     widget.g2_spec.type || (Array.isArray((widget.g2_spec as any).children) && (widget.g2_spec as any).children.length > 0)
   );
+
+  // Shallow-merge config + data at render time. g2_spec source is NOT mutated
+  // — data is injected from the widget's own data field (store.widgets[id].data),
+  // which is the sole data source per the dashboard-schema contract.
+  const mergedSpec = widget.g2_spec
+    ? { ...widget.g2_spec, data: Array.isArray(widget.data) ? widget.data : [] }
+    : widget.g2_spec;
 
   return (
     <div className="widget-card" style={styles.card}>
@@ -77,7 +97,7 @@ export default function WidgetCard({ widget, onTitleChange, onRemove, onRefresh 
           )}
         </div>
         <div style={styles.headerActions}>
-          {onRefresh && (
+          {onRefresh && status === 'chart' && (
             <ReloadOutlined
               onClick={() => onRefresh(widget.id)}
               style={styles.iconBtn}
@@ -94,20 +114,60 @@ export default function WidgetCard({ widget, onTitleChange, onRemove, onRefresh 
         </div>
       </div>
 
-      {/* ---- Chart Area ---- */}
+      {/* ---- Chart Area — three render branches by status ---- */}
       <div style={styles.chartArea}>
-        {!hasSpec && (
+        {status === 'loading' && (
+          // DASHBOARD_INIT placeholder: skeleton frame (no spec yet)
           <div style={styles.emptyChart}>
-            <Spin tip="加载图表中..." />
+            <Skeleton active paragraph={{ rows: 4 }} />
           </div>
         )}
-        {hasSpec && widget.g2_spec && (
-          <LazyG2Renderer
-            spec={widget.g2_spec as Record<string, unknown>}
-            data={Array.isArray(widget.data) ? widget.data : []}
-          />
+
+        {status === 'error' && (
+          // WIDGET_ERROR local degradation: error card with regenerate entry.
+          // Local widget error MUST NOT surface as the global ChatPanel Alert.
+          <div style={styles.errorCard}>
+            <Alert
+              type="error"
+              showIcon
+              message="图表生成失败"
+              description={widget.sql ? undefined : '该图表数据加载失败，请尝试重新生成。'}
+              style={{ marginBottom: 8 }}
+            />
+            {onRegenerate && (
+              <Typography.Link onClick={() => onRegenerate(widget.id)}>
+                <ReloadOutlined style={{ marginRight: 4 }} />
+                重新生成
+              </Typography.Link>
+            )}
+          </div>
+        )}
+
+        {status === 'chart' && (
+          <>
+            {!hasSpec && (
+              <div style={styles.emptyChart}>
+                <Spin tip="加载图表中..." />
+              </div>
+            )}
+            {hasSpec && mergedSpec && (
+              <LazyG2Renderer
+                spec={mergedSpec as Record<string, unknown>}
+                data={Array.isArray(widget.data) ? widget.data : []}
+              />
+            )}
+          </>
         )}
       </div>
+
+      {/* ---- Truncation notice (read-only, total reported by Python) ---- */}
+      {widget.truncated && typeof widget.total === 'number' && (
+        <div style={styles.truncationNotice}>
+          <Typography.Text type="warning" style={{ fontSize: 12 }}>
+            已截断，共 {widget.total} 行
+          </Typography.Text>
+        </div>
+      )}
 
       {/* ---- Footer ---- */}
       <div style={styles.footer}>
@@ -200,6 +260,20 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
     height: '100%',
     minHeight: 200,
+  },
+  errorCard: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: '100%',
+    minHeight: 200,
+    padding: 12,
+  },
+  truncationNotice: {
+    padding: '4px 12px',
+    background: '#fffbe6',
+    borderBottom: '1px solid #fff1b8',
   },
   footer: {
     borderTop: '1px solid #f5f5f5',

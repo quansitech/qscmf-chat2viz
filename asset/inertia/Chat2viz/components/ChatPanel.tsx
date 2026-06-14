@@ -1,5 +1,5 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
-import { Badge, Button, Collapse, Empty, Input, message, Spin, Tag, Tooltip, Typography } from 'antd';
+import { Alert, Badge, Button, Collapse, Empty, Input, message, Spin, Tag, Tooltip, Typography } from 'antd';
 import { SendOutlined, QuestionCircleOutlined, PlusOutlined } from '@ant-design/icons';
 import { useDashboardStore } from '../store/dashboardStore';
 import { useSseStream } from '../hooks/useSseStream';
@@ -74,6 +74,10 @@ export default function ChatPanel({ disabled = false }: ChatPanelProps) {
   const isLoading = useDashboardStore((s) => s.isLoading);
   const streamingState = useDashboardStore((s) => s.streamingState);
   const uid = useDashboardStore((s) => s.uid);
+  // Endpoint-level global error — the SINGLE source of truth for endpoint
+  // failures (connection/auth/stream-level errors). Widget-level local errors
+  // (WIDGET_ERROR) are surfaced inside each WidgetCard and MUST NOT set this.
+  const globalError = useDashboardStore((s) => s.error);
   const { sendQuestion, cancel } = useSseStream();
   const lastAssistantHasContent = useDashboardStore(selectLastAssistantHasContent);
 
@@ -154,6 +158,23 @@ export default function ChatPanel({ disabled = false }: ChatPanelProps) {
         </div>
       )}
 
+      {/* ---- Endpoint-level global error Alert ---- */}
+      {/* Single source of truth for store.error (endpoint failures). The
+          duplicate top-bar Tag in DashboardEdit has been removed so the two
+          never coexist. Widget-level (WIDGET_ERROR) failures are independent
+          and render only inside their WidgetCard. */}
+      {globalError && (
+        <div style={styles.errorAlertWrap}>
+          <Alert
+            type="error"
+            showIcon
+            message={globalError}
+            closable
+            onClose={() => useDashboardStore.setState({ error: '' })}
+          />
+        </div>
+      )}
+
       {/* ---- Header with New Conversation button ---- */}
       {hasMessages && (
         <div style={styles.panelHeader}>
@@ -202,10 +223,11 @@ export default function ChatPanel({ disabled = false }: ChatPanelProps) {
 
         <AiStepsIndicator />
 
-        {/* Streaming errors are surfaced in the top bar (DashboardEdit) to
-            avoid duplicate display.  The top bar error is the single source
-            of truth; when streamingState resets to 'idle' (via the `done`
-            event from the backend) the user can send a new question. */}
+        {/* Endpoint-level streaming errors are surfaced via the global Alert
+            above (store.error) — the single source of truth. The legacy
+            top-bar Tag in DashboardEdit has been removed so they never
+            duplicate. When streamingState resets to 'idle' (via the `done`
+            event) the user can send a new question. */}
 
         <div ref={messagesEndRef} />
         {streamingState !== 'idle' && lastAssistantHasContent && (
@@ -326,6 +348,11 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#cf1322',
     fontSize: 13,
     textAlign: 'center' as const,
+    flexShrink: 0,
+  },
+  errorAlertWrap: {
+    padding: '8px 12px',
+    borderBottom: '1px solid #f0f0f0',
     flexShrink: 0,
   },
   panelHeader: {

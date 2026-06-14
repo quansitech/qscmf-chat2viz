@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { Button, Input, Modal, Tag, Tooltip, message } from 'antd';
 import { ArrowLeftOutlined, CloudOutlined, CloudSyncOutlined, CloudUploadOutlined } from '@ant-design/icons';
 import { getPageProps, navigate } from './adapters';
+import { ADMIN_BASE } from './utils/routes';
 import { useDashboardStore } from './store/dashboardStore';
 import type { ChatMessage, MessageStatus } from './store/dashboardStore';
 import { useDashboardDraft } from './hooks/useDashboardDraft';
@@ -49,7 +50,9 @@ export default function DashboardEdit() {
   const uid = useDashboardStore((s) => s.uid);
   const isDirty = useDashboardStore((s) => s.isDirty);
   const lastSavedAt = useDashboardStore((s) => s.lastSavedAt);
-  const error = useDashboardStore((s) => s.error);
+  // Endpoint-level store.error is rendered exclusively by ChatPanel's global
+  // Alert (design D3) — the duplicate top-bar Tag has been removed so the two
+  // never coexist. This component intentionally does not subscribe to error.
   const streamingState = useDashboardStore((s) => s.streamingState);
 
   // Initialize store from server props — re-hydrate when navigating to a
@@ -93,7 +96,7 @@ export default function DashboardEdit() {
       const uid = dashboard.uid;
       for (const w of schema.widgets) {
         if (w.id && w.sql && (!w.data || Object.keys(w.data || {}).length === 0)) {
-          fetch(`/extends/Chat2VizDashboard/api_draft_widget_data?uid=${encodeURIComponent(uid)}&widgetId=${encodeURIComponent(w.id)}`, {
+          fetch(`${ADMIN_BASE}/api_draft_widget_data?uid=${encodeURIComponent(uid)}&widgetId=${encodeURIComponent(w.id)}`, {
             credentials: 'same-origin',
           })
             .then((r) => r.json())
@@ -268,7 +271,7 @@ export default function DashboardEdit() {
             <Button
               type="text"
               icon={<ArrowLeftOutlined />}
-              onClick={() => navigate('/extends/Chat2VizDashboard/index')}
+              onClick={() => navigate(`${ADMIN_BASE}/index`)}
             />
           </Tooltip>
           <Input
@@ -285,7 +288,6 @@ export default function DashboardEdit() {
               {saveStatusText}
             </Tag>
           </Tooltip>
-          {error && <Tag color="error">{error}</Tag>}
           <Button
             onClick={saveNow}
             loading={isSaving}

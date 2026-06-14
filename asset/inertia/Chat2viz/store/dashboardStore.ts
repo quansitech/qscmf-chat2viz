@@ -4,6 +4,7 @@ import { immer } from 'zustand/middleware/immer';
 import { temporal } from 'zundo';
 import type { Draft } from 'immer';
 import { buildSchema } from '../utils/buildSchema';
+import { ADMIN_BASE } from '../utils/routes';
 
 // ---------------------------------------------------------------------------
 // Utility — safe UUID generation with fallback for non-secure contexts
@@ -34,12 +35,26 @@ export interface WidgetLayout {
   h: number;
 }
 
+/**
+ * Render-level widget status (distinct from the contract's event-level status).
+ * Event-level: pending | success | error → mapped to render-level before store write:
+ *   pending→loading, success→chart, error→error.
+ * Legacy widgets without a status field default to 'chart' (zero-regression).
+ */
+export type WidgetStatus = 'loading' | 'error' | 'chart';
+
 export interface Widget {
   id: string;
   title: string;
   g2_spec: Record<string, unknown>;
   data: Record<string, unknown>;
   sql?: string;
+  /** Render-level status driving PreviewPanel's three render branches. */
+  status?: WidgetStatus;
+  /** When true, the widget's data was truncated by the dispatcher row cap. */
+  truncated?: boolean;
+  /** Total row count reported by Python (read-only display, never recomputed). */
+  total?: number;
   refreshInterval?: number;
   /** Monotonically increasing counter set to Date.now() on manual refresh. */
   refreshKey?: number;
@@ -83,7 +98,7 @@ export type StreamingState = 'idle' | 'streaming' | 'error';
 
 export interface AiStep {
   id: string;
-  type: 'tool_start' | 'sql_ready' | 'data_ready' | 'thinking' | 'chart_ready';
+  type: 'tool_start' | 'sql_ready' | 'data_ready' | 'thinking';
   label: string;
   timestamp: string;
   completed: boolean;
@@ -113,6 +128,14 @@ export interface DashboardActions {
   addPanel: (widget: Widget) => void;
   removePanel: (widgetId: string) => void;
   updateWidget: (widgetId: string, partial: Partial<Widget>) => void;
+  /** Create a widget placeholder (status=loading, no g2_spec required). */
+  createWidgetPlaceholder: (widgetId: string, partial: Partial<Widget>) => void;
+  /** Inject data for a widget and set status=chart. */
+  updateWidgetData: (widgetId: string, data: unknown, meta?: { truncated?: boolean; total?: number; g2_spec?: Record<string, unknown> }) => void;
+  /** Mark a single widget as errored (local degradation; MUST NOT touch store.error). */
+  setWidgetError: (widgetId: string) => void;
+  /** Fallback: set any widget still loading to error (e.g. on stream done). */
+  fallbackLoadingWidgetsToError: () => void;
   updateLayout: (widgetId: string, layout: WidgetLayout) => void;
   executeAction: (action: ActionCall) => void;
   appendAnswer: (text: string) => void;
@@ -285,6 +308,68 @@ const _store = _create()(
           });
         },
 
+        // Multi-widget lifecycle actions (D5: placeholder path bypasses
+        // validateWidget since placeholders legitimately carry no g2_spec).
+        createWidgetPlaceholder: (widgetId: string, partial: Partial<Widget>) => {
+          set((state) => {
+            // Preserve any pre-existing fields (e.g. title from a prior partial),
+            // default status to 'loading', assign a layout slot.
+            const existing = state.widgets[widgetId];
+            state.widgets[widgetId] = {
+              id: widgetId,
+              title: partial.title ?? existing?.title ?? '',
+              g2_spec: partial.g2_spec ?? existing?.g2_spec ?? {},
+              data: partial.data ?? existing?.data ?? {},
+              sql: partial.sql ?? existing?.sql,
+              status: 'loading',
+              layout: partial.layout ?? existing?.layout ?? { x: 0, y: 0, w: 12, h: 6 },
+              ...(partial.refreshInterval !== undefined ? { refreshInterval: partial.refreshInterval } : {}),
+            };
+            state.isDirty = true;
+          });
+        },
+
+        updateWidgetData: (widgetId: string, data: unknown, meta?: { truncated?: boolean; total?: number; g2_spec?: Record<string, unknown> }) => {
+          set((state) => {
+            const widget = state.widgets[widgetId];
+            if (!widget) return;
+            widget.data = data as Record<string, unknown>;
+            // g2_spec is the widget config, delivered by WIDGET_DATA_UPDATE
+            // (contract §3/§7). When present it transitions loading→chart with
+            // the real spec; when absent the placeholder's spec is preserved.
+            if (meta?.g2_spec !== undefined) widget.g2_spec = meta.g2_spec;
+            widget.status = 'chart';
+            if (meta?.truncated !== undefined) widget.truncated = meta.truncated;
+            if (meta?.total !== undefined) widget.total = meta.total;
+            state.isDirty = true;
+          });
+        },
+
+        setWidgetError: (widgetId: string) => {
+          set((state) => {
+            const widget = state.widgets[widgetId];
+            if (!widget) return;
+            widget.status = 'error';
+            state.isDirty = true;
+          });
+        },
+
+        fallbackLoadingWidgetsToError: () => {
+          set((state) => {
+            let changed = false;
+            for (const w of Object.values(state.widgets)) {
+              // Event-driven cleanup: flip only true loading placeholders (lost
+              // their WIDGET_DATA_UPDATE/WIDGET_ERROR frames) to error. Fully
+              // rendered (chart) or already-errored widgets are left untouched.
+              if (w.status === 'loading') {
+                w.status = 'error';
+                changed = true;
+              }
+            }
+            if (changed) state.isDirty = true;
+          });
+        },
+
         updateLayout: (widgetId: string, layout: WidgetLayout) => {
           set((state) => {
             const widget = state.widgets[widgetId];
@@ -431,8 +516,8 @@ const _store = _create()(
     {
       limit: 50,
       partialize: (state: any) => {
-        const { widgets, title, uid } = state;
-        return { widgets, title, uid };
+        const { widgets, title, uid, isDirty } = state;
+        return { widgets, title, uid, isDirty };
       },
     },
   ),
@@ -487,8 +572,8 @@ export async function saveDashboardDraft(): Promise<void> {
 
   try {
     const url = uid
-      ? `/extends/Chat2VizDashboard/api_update/uid/${uid}`
-      : `/extends/Chat2VizDashboard/api_create`;
+      ? `${ADMIN_BASE}/api_update/uid/${uid}`
+      : `${ADMIN_BASE}/api_create`;
 
     const method = uid ? 'PUT' : 'POST';
 

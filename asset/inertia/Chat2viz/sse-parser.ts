@@ -15,10 +15,9 @@
 // Event type constants
 // ---------------------------------------------------------------------------
 
-/** The 12 standard Chat2Viz event types (single-chart conversation). */
+/** The 11 standard Chat2Viz event types (legacy single-chart conversation). */
 const STANDARD_EVENT_TYPES = [
   'answer',
-  'chart_ready',
   'sql_generated',
   'thinking',
   'thinking_done',
@@ -48,7 +47,7 @@ export type SseEventType = StandardEventType | DashboardEventType;
 // ---------------------------------------------------------------------------
 
 export interface SseEvent {
-  /** The SSE event name (e.g. "chart_ready", "action_call"). */
+  /** The SSE event name (e.g. "WIDGET_DATA_UPDATE", "action_call"). */
   type: SseEventType | string;
   /** The parsed JSON data payload. */
   data: Record<string, unknown>;

@@ -8,6 +8,7 @@ use Bootstrap\RegisterContainer;
 use Qscmf\Chat2Viz\Command\AskCommand;
 use Qscmf\Chat2Viz\Controller\Chat2VizController;
 use Qscmf\Chat2Viz\Controller\DashboardController;
+use Qscmf\Chat2Viz\Controller\PublicDashboardController;
 
 class Chat2VizServiceProvider implements Provider, LaravelProvider
 {
@@ -30,14 +31,33 @@ class Chat2VizServiceProvider implements Provider, LaravelProvider
             __DIR__ . '/../view/default/Chat2Viz'
         );
 
-        // === New: Dashboard ===
+        // === Dashboard: admin CRUD (framework-authed) + public view (extends) ===
+        // DashboardController runs under the admin module so QsController enforces
+        // login (isAdminLogin redirect + RBAC); PublicDashboardController keeps the
+        // published view + widget-data endpoints public under extends. Both reuse the
+        // Chat2VizDashboard URL name, distinguished by module:
+        //   /admin/Chat2VizDashboard   -> DashboardController       (login required)
+        //   /extends/Chat2VizDashboard -> PublicDashboardController (public)
         RegisterContainer::registerController(
-            'extends',
+            'admin',
             'Chat2VizDashboard',
             DashboardController::class
         );
 
-        // v13 Smarty templates
+        RegisterContainer::registerController(
+            'extends',
+            'Chat2VizDashboard',
+            PublicDashboardController::class
+        );
+
+        // v13 Smarty templates. edit.html / index.html already extend the Admin
+        // layout, so they render via the admin module view dir; the public view
+        // page renders via the extends module view dir.
+        $this->safeRegisterSymLink(
+            APP_PATH . 'Admin/View/default/Chat2VizDashboard',
+            __DIR__ . '/../view/default/Chat2VizDashboard'
+        );
+
         $this->safeRegisterSymLink(
             APP_PATH . 'Extends/View/default/Chat2VizDashboard',
             __DIR__ . '/../view/default/Chat2VizDashboard'

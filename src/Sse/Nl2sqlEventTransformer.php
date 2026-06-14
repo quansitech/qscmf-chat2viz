@@ -6,7 +6,13 @@ use Qscmf\SseCore\SseEvent;
 
 class Nl2sqlEventTransformer
 {
-    public function __construct(private string $phpConversationId) {}
+    /** @var callable|null */
+    private $logger;
+
+    public function __construct(private string $phpConversationId, ?callable $logger = null)
+    {
+        $this->logger = $logger;
+    }
 
     /**
      * Transform a Python NL2SQL SSE event into chat2viz format events.
@@ -24,7 +30,6 @@ class Nl2sqlEventTransformer
         return match($event->type) {
             'message_start' => $this->mapMessageStart($event),
             'content_block_delta' => $this->mapContentBlockDelta($event),
-            'chart_ready' => $this->mapChartReady($event),
             'message_stop' => [new SseEvent(type: 'done', data: [], raw: '')],
             'tool_start' => $this->mapToolStart($event),
             'tool_result' => $this->mapToolResult($event),
@@ -32,11 +37,35 @@ class Nl2sqlEventTransformer
             'data_ready' => [new SseEvent(type: 'data_preview', data: $event->data, raw: '')],
             'error' => $this->mapError($event),
             'dashboard_patch' => [new SseEvent(type: 'dashboard_patch', data: $event->data, raw: '')],
+            // multi-widget three events: 1:1 passthrough (no rename, no field add/remove,
+            // no parse, no recomputation of truncated/total)
+            'DASHBOARD_INIT', 'WIDGET_DATA_UPDATE', 'WIDGET_ERROR' => [
+                new SseEvent(type: $event->type, data: $event->data, raw: $event->raw),
+            ],
             // Skip these events (return empty array)
             'content_block_start', 'content_block_stop', 'message_delta' => [],
-            // Unknown event types are silently dropped
-            default => [],
+            // Unknown event types: log a warning and pass through (do not silently drop).
+            // Protects future/unknown events so the frontend actually receives them.
+            default => $this->mapDefaultPassthrough($event),
         };
+    }
+
+    /**
+     * Default branch: log a warning naming the event type, then pass it through
+     * unchanged. Only reaches here for events with no explicit case and not in
+     * the explicit skip list.
+     *
+     * @return SseEvent[]
+     */
+    private function mapDefaultPassthrough(SseEvent $event): array
+    {
+        if ($this->logger !== null) {
+            ($this->logger)('warning', sprintf(
+                '[chat2viz] Nl2sqlEventTransformer: passthrough unknown event type "%s"',
+                $event->type,
+            ));
+        }
+        return [new SseEvent(type: $event->type, data: $event->data, raw: $event->raw)];
     }
 
     // message_start → conversation_id — PHP is the sole authority; Python's ID is silently discarded
@@ -57,21 +86,6 @@ class Nl2sqlEventTransformer
             return [];
         }
         return [new SseEvent(type: 'answer', data: ['text' => $text], raw: '')];
-    }
-
-    // chart_ready → chart_ready (passthrough + id resolution: id > widget_id > random)
-    private function mapChartReady(SseEvent $event): array
-    {
-        $data = $event->data;
-        // Priority: id > widget_id > random fallback
-        if (isset($data['id']) && $data['id'] !== '') {
-            // Keep existing id
-        } elseif (isset($data['widget_id']) && $data['widget_id'] !== '') {
-            $data['id'] = $data['widget_id'];
-        } else {
-            $data['id'] = bin2hex(random_bytes(8));
-        }
-        return [new SseEvent(type: 'chart_ready', data: $data, raw: '')];
     }
 
     // tool_start → action_call (tool_name→action_type, tool_args→params)

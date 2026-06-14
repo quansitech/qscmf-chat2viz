@@ -53,7 +53,7 @@ class AskCommand extends \Illuminate\Console\Command
                 ],
                 'auth' => ['api_key' => $apiKey],
             ]) as $frame) {
-                if (($frame['type'] ?? '') === 'chart_ready') {
+                if (($frame['type'] ?? '') === 'WIDGET_DATA_UPDATE') {
                     $results[] = $frame['data'];
                 }
             }

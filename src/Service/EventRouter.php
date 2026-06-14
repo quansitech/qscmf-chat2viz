@@ -52,10 +52,6 @@ class EventRouter
                 $this->handleSqlGenerated($accumulator, $conversation_id, $data);
                 break;
 
-            case 'chart_ready':
-                $this->handleChartReady($accumulator, $conversation_id, $data);
-                break;
-
             case 'action_call':
                 $accumulator->accumulateActionCall($conversation_id, [
                     'action_type' => $data['action_type'] ?? '',
@@ -74,6 +70,18 @@ class EventRouter
                 if ($text !== '') {
                     $accumulator->accumulateReasoning($conversation_id, $text);
                 }
+                break;
+
+            case 'DASHBOARD_INIT':
+                $this->handleDashboardInit($accumulator, $conversation_id, $data);
+                break;
+
+            case 'WIDGET_DATA_UPDATE':
+                $this->handleWidgetDataUpdate($accumulator, $conversation_id, $data);
+                break;
+
+            case 'WIDGET_ERROR':
+                $this->handleWidgetError($accumulator, $conversation_id, $data);
                 break;
 
             default:
@@ -128,30 +136,85 @@ class EventRouter
         }
     }
 
-    private function handleChartReady(
+    /**
+     * Accumulate DASHBOARD_INIT: persist each declared widget placeholder's
+     * title/type into the conversation metadata, keyed by widget_id. Layout
+     * placeholders carry no sql/g2_spec yet — they are skeleton frames.
+     */
+    private function handleDashboardInit(
         StreamAccumulator $accumulator,
         string $conversation_id,
         array $data
     ): void {
-        $g2Spec = $data['g2_spec'] ?? null;
-        if (is_array($g2Spec)) {
-            $accumulator->accumulateG2Spec($conversation_id, $g2Spec);
+        $widgets = $data['widgets'] ?? [];
+        if (!is_array($widgets)) {
+            return;
         }
+        foreach ($widgets as $widget) {
+            if (!is_array($widget)) {
+                continue;
+            }
+            $widgetId = (string) ($widget['widget_id'] ?? $widget['id'] ?? '');
+            if ($widgetId === '') {
+                continue;
+            }
+            $payload = [];
+            if (isset($widget['title'])) {
+                $payload['title'] = $widget['title'];
+            }
+            // Skeleton widgets carry the chart kind as `chart_type` (contract §2
+            // Python emitter). Tolerate the `type` alias too. Without this the
+            // persisted skeleton silently loses its chart kind.
+            if (isset($widget['chart_type'])) {
+                $payload['chart_type'] = $widget['chart_type'];
+            } elseif (isset($widget['type'])) {
+                $payload['chart_type'] = $widget['type'];
+            }
+            $accumulator->accumulateWidgetData($conversation_id, $widgetId, $payload);
+        }
+    }
 
-        $chartType = $data['chart_type'] ?? '';
-        $widgetId = $data['id'] ?? $data['widget_id'] ?? '';
-        if ($chartType !== '' || $widgetId !== '') {
-            $accumulator->accumulateChartMeta($conversation_id, (string) $chartType, (string) $widgetId);
+    /**
+     * Accumulate WIDGET_DATA_UPDATE: store sql/data/truncated/total per widget_id.
+     * truncated/total are forwarded verbatim — never recomputed locally.
+     */
+    private function handleWidgetDataUpdate(
+        StreamAccumulator $accumulator,
+        string $conversation_id,
+        array $data
+    ): void {
+        $widgetId = (string) ($data['widget_id'] ?? $data['id'] ?? '');
+        if ($widgetId === '') {
+            return;
         }
+        $payload = [];
+        foreach (['sql', 'data', 'truncated', 'total', 'g2_spec', 'chart_type'] as $field) {
+            if (array_key_exists($field, $data)) {
+                $payload[$field] = $data[$field];
+            }
+        }
+        $accumulator->accumulateWidgetData($conversation_id, $widgetId, $payload);
+    }
 
-        // Merge SQL: payload.sql first, then previously accumulated sql_generated.
-        $payloadSql = $data['sql'] ?? '';
-        if (!is_string($payloadSql) || $payloadSql === '') {
-            $payloadSql = $accumulator->peekField($conversation_id, 'sql');
+    /**
+     * Accumulate WIDGET_ERROR: store the error message per widget_id.
+     */
+    private function handleWidgetError(
+        StreamAccumulator $accumulator,
+        string $conversation_id,
+        array $data
+    ): void {
+        $widgetId = (string) ($data['widget_id'] ?? $data['id'] ?? '');
+        if ($widgetId === '') {
+            return;
         }
-        if ($payloadSql !== '' && $widgetId !== '') {
-            $this->backfillWidgetSql((string) $widgetId, $payloadSql);
+        $payload = [];
+        if (isset($data['error_msg'])) {
+            $payload['error_msg'] = $data['error_msg'];
+        } elseif (isset($data['error'])) {
+            $payload['error_msg'] = $data['error'];
         }
+        $accumulator->accumulateWidgetData($conversation_id, $widgetId, $payload);
     }
 
     /**

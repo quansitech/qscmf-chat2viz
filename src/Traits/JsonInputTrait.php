@@ -8,7 +8,7 @@ namespace Qscmf\Chat2Viz\Traits;
  */
 trait JsonInputTrait
 {
-    private function parseJsonInput(): ?array
+    protected function parseJsonInput(): ?array
     {
         $contentType = (string) ($_SERVER['CONTENT_TYPE'] ?? '');
         if (stripos($contentType, 'application/json') === false) {

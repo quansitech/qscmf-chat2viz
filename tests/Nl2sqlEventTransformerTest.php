@@ -92,8 +92,9 @@ class Nl2sqlEventTransformerTest extends TestCase
         $this->assertCount(0, $result);
     }
 
-    // 5. chart_ready without id → auto-generates 16-char hex id
-    public function testChartReadyWithoutId(): void
+    // 5. chart_ready mapping removed: now falls through to default passthrough
+    //    (warning + forward), with NO synthetic id injection.
+    public function testChartReadyPassthroughDoesNotInjectId(): void
     {
         $event = $this->makeEvent('chart_ready', ['chart_type' => 'bar']);
         $result = $this->transformer->transform($event);
@@ -101,12 +102,11 @@ class Nl2sqlEventTransformerTest extends TestCase
         $this->assertCount(1, $result);
         $this->assertSame('chart_ready', $result[0]->type);
         $this->assertSame('bar', $result[0]->data['chart_type']);
-        $this->assertArrayHasKey('id', $result[0]->data);
-        $this->assertSame(16, strlen($result[0]->data['id']));
-        $this->assertMatchesRegularExpression('/^[0-9a-f]{16}$/', $result[0]->data['id']);
+        // Passthrough does NOT synthesize an id (the mapChartReady path was removed)
+        $this->assertArrayNotHasKey('id', $result[0]->data);
     }
 
-    // 6. chart_ready with existing id → preserves existing id
+    // 6. chart_ready passthrough: existing fields preserved unchanged
     public function testChartReadyWithExistingId(): void
     {
         $event = $this->makeEvent('chart_ready', ['id' => 'my-custom-id', 'chart_type' => 'line']);
@@ -118,14 +118,14 @@ class Nl2sqlEventTransformerTest extends TestCase
         $this->assertSame('line', $result[0]->data['chart_type']);
     }
 
-    public function testChartReadyWithEmptyId(): void
+    public function testChartReadyPassthroughPreservesEmptyId(): void
     {
         $event = $this->makeEvent('chart_ready', ['id' => '']);
         $result = $this->transformer->transform($event);
 
         $this->assertCount(1, $result);
-        $this->assertArrayHasKey('id', $result[0]->data);
-        $this->assertSame(16, strlen($result[0]->data['id']));
+        // Passthrough preserves the empty id verbatim (no auto-generation)
+        $this->assertSame('', $result[0]->data['id']);
     }
 
     // 7. message_stop → produces done event
@@ -295,13 +295,99 @@ class Nl2sqlEventTransformerTest extends TestCase
         $this->assertCount(0, $result);
     }
 
-    // 18. unknown event type → empty array
+    // 18. unknown event type → log warning + passthrough (default fallback, not dropped)
     public function testUnknownEventTypeDropped(): void
     {
+        $warnings = [];
+        $transformer = new Nl2sqlEventTransformer(self::PHP_CID, static function (string $level, string $message) use (&$warnings): void {
+            $warnings[] = [$level, $message];
+        });
         $event = $this->makeEvent('some_unknown_type', ['foo' => 'bar']);
+        $result = $transformer->transform($event);
+
+        // Default branch must NOT silently drop — it logs a warning and passes through
+        $this->assertCount(1, $result);
+        $this->assertSame('some_unknown_type', $result[0]->type);
+        $this->assertSame(['foo' => 'bar'], $result[0]->data);
+        // Warning recorded at the right level, mentioning the event type name
+        $this->assertCount(1, $warnings);
+        $this->assertSame('warning', $warnings[0][0]);
+        $this->assertStringContainsString('some_unknown_type', $warnings[0][1]);
+    }
+
+    // 1.1 DASHBOARD_INIT 1:1 passthrough (type + data unchanged)
+    public function testDashboardInitPassthrough(): void
+    {
+        $data = [
+            'layout' => ['cols' => 24],
+            'widgets' => [
+                ['widget_id' => 'w1', 'title' => 'A', 'type' => 'bar'],
+                ['widget_id' => 'w2', 'title' => 'B', 'type' => 'line'],
+            ],
+        ];
+        $event = $this->makeEvent('DASHBOARD_INIT', $data);
         $result = $this->transformer->transform($event);
 
-        $this->assertCount(0, $result);
+        $this->assertCount(1, $result);
+        $this->assertSame('DASHBOARD_INIT', $result[0]->type);
+        $this->assertSame($data, $result[0]->data);
+    }
+
+    // 1.2 WIDGET_DATA_UPDATE 1:1 passthrough (no recomputation of truncated/total)
+    public function testWidgetDataUpdatePassthroughPreservesTruncatedTotal(): void
+    {
+        $data = [
+            'widget_id' => 'w1',
+            'sql' => 'SELECT * FROM t',
+            'data' => [['a' => 1], ['a' => 2]],
+            'truncated' => true,
+            'total' => 2500,
+        ];
+        $event = $this->makeEvent('WIDGET_DATA_UPDATE', $data);
+        $result = $this->transformer->transform($event);
+
+        $this->assertCount(1, $result);
+        $this->assertSame('WIDGET_DATA_UPDATE', $result[0]->type);
+        // Values preserved exactly — not recomputed from the 2-row data array
+        $this->assertTrue($result[0]->data['truncated']);
+        $this->assertSame(2500, $result[0]->data['total']);
+        $this->assertSame('w1', $result[0]->data['widget_id']);
+    }
+
+    // 1.3 WIDGET_ERROR 1:1 passthrough (widget_id/error_msg unchanged)
+    public function testWidgetErrorPassthrough(): void
+    {
+        $data = ['widget_id' => 'w3', 'error_msg' => 'query timed out'];
+        $event = $this->makeEvent('WIDGET_ERROR', $data);
+        $result = $this->transformer->transform($event);
+
+        $this->assertCount(1, $result);
+        $this->assertSame('WIDGET_ERROR', $result[0]->type);
+        $this->assertSame($data, $result[0]->data);
+    }
+
+    // 1.4 default passthrough does not alter the explicit skip list
+    public function testExplicitSkipEventsStillReturnEmptyArray(): void
+    {
+        foreach (['content_block_start', 'content_block_stop', 'message_delta'] as $type) {
+            $event = $this->makeEvent($type, ['x' => 1]);
+            $result = $this->transformer->transform($event);
+            $this->assertCount(0, $result, "$type must still be skipped, not passed through");
+        }
+    }
+
+    // 1.4 default passthrough does not shadow the explicit dashboard_patch / data_ready cases
+    public function testExplicitCasesNotShadowedByDefault(): void
+    {
+        // dashboard_patch has its own 1:1 case
+        $patch = $this->makeEvent('dashboard_patch', ['patches' => []]);
+        $this->assertSame('dashboard_patch', $this->transformer->transform($patch)[0]->type);
+
+        // data_ready has its own rename case (→ data_preview), not passed through as-is
+        $dr = $this->makeEvent('data_ready', ['rows' => []]);
+        $r = $this->transformer->transform($dr);
+        $this->assertCount(1, $r);
+        $this->assertSame('data_preview', $r[0]->type);
     }
 
     // 19. comment event (isComment) → passes through unchanged
@@ -316,24 +402,26 @@ class Nl2sqlEventTransformerTest extends TestCase
         $this->assertSame($commentEvent, $result[0]);
     }
 
-    // 20. statelessness: 100 consecutive calls produce independent results
+    // 20. statelessness: 100 consecutive calls produce independent results.
+    // Uses the unified WIDGET_DATA_UPDATE passthrough (the real delivery path)
+    // to confirm the transformer accumulates no state across calls.
     public function testStatelessnessAcrossCalls(): void
     {
-        $ids = [];
+        $count = 0;
         for ($i = 0; $i < 100; $i++) {
-            $event = $this->makeEvent('chart_ready', ['chart_type' => 'bar']);
+            $event = $this->makeEvent('WIDGET_DATA_UPDATE', [
+                'widget_id' => 'w' . $i,
+                'g2_spec'   => ['type' => 'interval'],
+            ]);
             $result = $this->transformer->transform($event);
             $this->assertCount(1, $result);
-            $this->assertSame('chart_ready', $result[0]->type);
-            $ids[] = $result[0]->data['id'];
+            $this->assertSame('WIDGET_DATA_UPDATE', $result[0]->type);
+            $this->assertSame('w' . $i, $result[0]->data['widget_id']);
+            $count++;
         }
 
         // All 100 calls produced results (no state accumulation)
-        $this->assertCount(100, $ids);
-
-        // Each generated id is unique (random_bytes produces unique values)
-        $uniqueIds = array_unique($ids);
-        $this->assertCount(100, $uniqueIds);
+        $this->assertSame(100, $count);
 
         // Verify mixing event types also works without state issues
         // PHP conversation_id is always used, regardless of what Python sends

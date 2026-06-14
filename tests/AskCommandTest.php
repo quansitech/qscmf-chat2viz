@@ -15,19 +15,19 @@ use Qscmf\SseCore\SocketTransport;
  */
 class AskCommandTest extends TestCase
 {
-    // --- Frame filtering: chart_ready extraction ---
+    // --- Frame filtering: WIDGET_DATA_UPDATE extraction (unified delivery) ---
 
-    public function testOnlyChartReadyFramesCollected(): void
+    public function testOnlyWidgetDataUpdateFramesCollected(): void
     {
         $frames = [
             ['type' => 'delta', 'data' => ['text' => 'thinking...']],
-            ['type' => 'chart_ready', 'data' => ['sql' => 'SELECT 1', 'chart_type' => 'bar']],
+            ['type' => 'WIDGET_DATA_UPDATE', 'data' => ['widget_id' => 'w1', 'sql' => 'SELECT 1', 'g2_spec' => ['type' => 'interval']]],
             ['type' => 'done', 'data' => []],
         ];
 
         $results = [];
         foreach ($frames as $frame) {
-            if (($frame['type'] ?? '') === 'chart_ready') {
+            if (($frame['type'] ?? '') === 'WIDGET_DATA_UPDATE') {
                 $results[] = $frame['data'];
             }
         }
@@ -36,16 +36,16 @@ class AskCommandTest extends TestCase
         $this->assertSame('SELECT 1', $results[0]['sql']);
     }
 
-    public function testMultipleChartReadyFramesCollected(): void
+    public function testMultipleWidgetDataUpdateFramesCollected(): void
     {
         $frames = [
-            ['type' => 'chart_ready', 'data' => ['sql' => 'SELECT 1']],
-            ['type' => 'chart_ready', 'data' => ['sql' => 'SELECT 2']],
+            ['type' => 'WIDGET_DATA_UPDATE', 'data' => ['widget_id' => 'w1', 'sql' => 'SELECT 1']],
+            ['type' => 'WIDGET_DATA_UPDATE', 'data' => ['widget_id' => 'w2', 'sql' => 'SELECT 2']],
         ];
 
         $results = [];
         foreach ($frames as $frame) {
-            if (($frame['type'] ?? '') === 'chart_ready') {
+            if (($frame['type'] ?? '') === 'WIDGET_DATA_UPDATE') {
                 $results[] = $frame['data'];
             }
         }
@@ -60,7 +60,7 @@ class AskCommandTest extends TestCase
         $frames = [
             ['type' => 'ping', 'data' => null],
             ['type' => 'pong', 'data' => null],
-            ['type' => 'chart_ready', 'data' => ['sql' => 'SELECT 1']],
+            ['type' => 'WIDGET_DATA_UPDATE', 'data' => ['widget_id' => 'w1', 'sql' => 'SELECT 1']],
         ];
 
         // Simulate SseProxy::socket default mapping logic
@@ -70,7 +70,7 @@ class AskCommandTest extends TestCase
             if ($type === 'ping' || $type === 'pong') {
                 continue;
             }
-            if ($type === 'chart_ready') {
+            if ($type === 'WIDGET_DATA_UPDATE') {
                 $results[] = $frame['data'];
             }
         }
@@ -78,9 +78,9 @@ class AskCommandTest extends TestCase
         $this->assertCount(1, $results);
     }
 
-    // --- No chart_ready frames yields empty results ---
+    // --- No WIDGET_DATA_UPDATE frames yields empty results ---
 
-    public function testNoChartReadyYieldsEmptyResults(): void
+    public function testNoWidgetDataUpdateYieldsEmptyResults(): void
     {
         $frames = [
             ['type' => 'delta', 'data' => ['text' => 'thinking...']],
@@ -89,7 +89,7 @@ class AskCommandTest extends TestCase
 
         $results = [];
         foreach ($frames as $frame) {
-            if (($frame['type'] ?? '') === 'chart_ready') {
+            if (($frame['type'] ?? '') === 'WIDGET_DATA_UPDATE') {
                 $results[] = $frame['data'];
             }
         }

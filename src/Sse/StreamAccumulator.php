@@ -59,29 +59,6 @@ class StreamAccumulator
     }
 
     /**
-     * Store the G2 chart spec into the 'g2_spec' hash field (JSON string, replaces previous).
-     */
-    public function accumulateG2Spec(string $conversationId, array $g2Spec): void
-    {
-        $this->hSet($conversationId, 'g2_spec', json_encode($g2Spec, JSON_UNESCAPED_UNICODE));
-    }
-
-    /**
-     * Store chart_type and widget_id metadata fields.
-     */
-    public function accumulateChartMeta(string $conversationId, string $chartType, string $widgetId): void
-    {
-        if (!$this->ensureRedis($conversationId)) {
-            return;
-        }
-
-        $redis = $this->redis();
-        $key = $this->key($conversationId);
-        $redis->hSet($key, 'chart_type', $chartType);
-        $redis->hSet($key, 'widget_id', $widgetId);
-    }
-
-    /**
      * Append a tool call record to the 'tool_calls' JSON array hash field.
      *
      * Each call is appended to the existing array. Thread-safe via read-modify-write
@@ -136,6 +113,103 @@ class StreamAccumulator
         $calls = ($existing !== false) ? (array) json_decode($existing, true) : [];
         $calls[] = $actionCall;
         $redis->hSet($key, 'action_calls', json_encode($calls, JSON_UNESCAPED_UNICODE));
+    }
+
+    /**
+     * Accumulate multi-widget event payload (DASHBOARD_INIT / WIDGET_DATA_UPDATE /
+     * WIDGET_ERROR) into the 'widgets' hash field — a JSON object keyed by widget_id.
+     *
+     * Uses a dict-merge reducer per widget so concurrent/sequential updates for
+     * different widgets never overwrite each other, and updates for the same
+     * widget merge their fields rather than replace the whole record.
+     *
+     * Truncated/total are stored as-is (Python is the sole computation authority;
+     * this layer MUST NOT recompute them).
+     */
+    public function accumulateWidgetData(string $conversationId, string $widgetId, array $payload): void
+    {
+        if ($widgetId === '') {
+            return;
+        }
+        if (!$this->ensureRedis($conversationId)) {
+            return;
+        }
+
+        $redis = $this->redis();
+        $key = $this->key($conversationId);
+
+        $existing = $redis->hGet($key, 'widgets');
+        $widgets = ($existing !== false) ? (array) json_decode($existing, true) : [];
+        if (!is_array($widgets)) {
+            $widgets = [];
+        }
+        if (!isset($widgets[$widgetId]) || !is_array($widgets[$widgetId])) {
+            $widgets[$widgetId] = [];
+        }
+        foreach ($payload as $field => $value) {
+            $widgets[$widgetId][$field] = $value;
+        }
+
+        $redis->hSet($key, 'widgets', json_encode($widgets, JSON_UNESCAPED_UNICODE));
+    }
+
+    /**
+     * Read the accumulated widgets map (widget_id → fields) for a conversation.
+     * Returns an empty array when no multi-widget data was accumulated.
+     */
+    public function readWidgets(string $conversationId): array
+    {
+        if (!$this->redisAvailable) {
+            return [];
+        }
+        try {
+            $raw = $this->redis()->hGet($this->key($conversationId), 'widgets');
+        } catch (\Throwable $e) {
+            return [];
+        }
+        if (!is_string($raw) || $raw === '') {
+            return [];
+        }
+        $decoded = json_decode($raw, true);
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    /**
+     * Backward-compatible reader for persisted conversation metadata.
+     *
+     * Multi-widget conversations store a structured 'widgets' map. Legacy
+     * single-widget records store flat scalar/array fields (sql, g2_spec,
+     * chart_type, widget_id). This helper normalizes either shape into a
+     * widgets map without throwing — legacy flat records are treated as a
+     * single implicit widget keyed by their stored widget_id (or 'w1').
+     */
+    public static function readWidgetsMetadata(array $metadata): array
+    {
+        // Structured multi-widget record
+        if (isset($metadata['widgets']) && is_array($metadata['widgets'])) {
+            return $metadata['widgets'];
+        }
+
+        // Legacy flat single-widget record — degrade gracefully.
+        // Only normalize when at least one widget-relevant field is present.
+        $hasWidgetField = isset($metadata['sql'])
+            || isset($metadata['g2_spec'])
+            || isset($metadata['chart_type'])
+            || isset($metadata['widget_id']);
+        if (!$hasWidgetField) {
+            return [];
+        }
+
+        $widgetId = isset($metadata['widget_id']) && is_string($metadata['widget_id']) && $metadata['widget_id'] !== ''
+            ? $metadata['widget_id']
+            : 'w1';
+        $entry = [];
+        foreach (['sql', 'g2_spec', 'chart_type', 'widget_id'] as $field) {
+            if (array_key_exists($field, $metadata)) {
+                $entry[$field] = $metadata[$field];
+            }
+        }
+        return [$widgetId => $entry];
     }
 
     // -------------------------------------------------------
@@ -195,6 +269,10 @@ class StreamAccumulator
             if (isset($raw['action_calls']) && $raw['action_calls'] !== '') {
                 $decoded = json_decode($raw['action_calls'], true);
                 $metadata['action_calls'] = is_array($decoded) ? $decoded : [];
+            }
+            if (isset($raw['widgets']) && $raw['widgets'] !== '') {
+                $decoded = json_decode($raw['widgets'], true);
+                $metadata['widgets'] = is_array($decoded) ? $decoded : [];
             }
 
             return [

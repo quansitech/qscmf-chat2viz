@@ -415,6 +415,9 @@ class Chat2VizController extends GyController
     {
         return new \Qscmf\SseCore\SocketTransport([
             'socket_path' => env('CHAT2VIZ_SOCKET_PATH', '/run/chat2viz.sock'),
+            // Default 180s; overridable via CHAT2VIZ_SSE_TIMEOUT. Wired here
+            // so createSocketTransportTest's default/custom-timeout contract holds.
+            'timeout' => (int) env('CHAT2VIZ_SSE_TIMEOUT', 180),
         ]);
     }
 

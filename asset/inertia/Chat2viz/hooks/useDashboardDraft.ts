@@ -2,6 +2,7 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { Modal, message } from 'antd';
 import { useDashboardStore } from '../store/dashboardStore';
 import { buildSchema } from '../utils/buildSchema';
+import { ADMIN_BASE } from '../utils/routes';
 
 // ---------------------------------------------------------------------------
 // Debounce delays by trigger source
@@ -82,7 +83,7 @@ export function useDashboardDraft(): UseDashboardDraftReturn {
           body.force_overwrite = true;
         }
 
-        const resp = await fetch(`/extends/Chat2VizDashboard/api_update/uid/${currentUid}`, {
+        const resp = await fetch(`${ADMIN_BASE}/api_update/uid/${currentUid}`, {
           method: 'PUT',
           credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },
@@ -145,7 +146,7 @@ export function useDashboardDraft(): UseDashboardDraftReturn {
           setSaving(true);
           try {
             const resp = await fetch(
-              `/extends/Chat2VizDashboard/api_update/uid/${conflictUid}`,
+              `${ADMIN_BASE}/api_update/uid/${conflictUid}`,
               {
                 method: 'PUT',
                 credentials: 'same-origin',

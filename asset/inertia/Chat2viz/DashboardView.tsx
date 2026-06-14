@@ -6,6 +6,7 @@ import RGL, { WidthProvider, Layout } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import 'react-grid-layout/css/react-resizable.css';
 import { getPageProps, navigate } from './adapters';
+import { ADMIN_BASE, PUBLIC_BASE } from './utils/routes';
 import LazyG2Renderer from './components/LazyG2Renderer';
 import type { WidgetLayout } from './store/dashboardStore';
 
@@ -79,8 +80,8 @@ function ViewWidgetCard({ uid, dashboardStatus, widget }: ViewWidgetCardProps) {
     queryKey: ['widget-data', uid, widget.id, dashboardStatus],
     queryFn: async () => {
       const endpoint = dashboardStatus === 'published'
-        ? `/extends/Chat2VizDashboard/api_widget_data/uid/${uid}/widgetId/${widget.id}`
-        : `/extends/Chat2VizDashboard/api_draft_widget_data/uid/${uid}/widgetId/${widget.id}`;
+        ? `${PUBLIC_BASE}/api_widget_data/uid/${uid}/widgetId/${widget.id}`
+        : `${ADMIN_BASE}/api_draft_widget_data/uid/${uid}/widgetId/${widget.id}`;
       const resp = await fetch(endpoint, { credentials: 'same-origin' });
       const result = await resp.json();
       if (result.status !== 1) {
@@ -190,7 +191,7 @@ function DashboardViewInner() {
           <Button
             type="text"
             icon={<ArrowLeftOutlined />}
-            onClick={() => navigate('/extends/Chat2VizDashboard/index')}
+            onClick={() => navigate(`${ADMIN_BASE}/index`)}
           />
           <Typography.Title level={3} style={{ margin: 0 }}>
             {dashboard?.title || '仪表盘'}
