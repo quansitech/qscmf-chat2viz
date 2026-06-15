@@ -10,8 +10,67 @@
 </block>
 
 <block name="script">
-    <link rel="stylesheet" href="__PUBLIC__/chat2viz-dashboard/dashboard-view.css?v=2">
+    <link rel="stylesheet" href="__PUBLIC__/chat2viz-dashboard/dashboard-view.css?v=3">
+    <style>
+    /* P1-2: Hide admin chrome on the public view page so visitors don't see
+       the backend navigation/sidebar. The view page extends dashboard_layout
+       (which includes header+sidebar) for framework compatibility, but the
+       public audience should only see the chart content. */
+    body.chat2viz-public-view .navbar,
+    body.chat2viz-public-view .navbar-static-top,
+    body.chat2viz-public-view aside.main-sidebar,
+    body.chat2viz-public-view .main-sidebar,
+    body.chat2viz-public-view .left-side,
+    body.chat2viz-public-view .wrapper > .header,
+    body.chat2viz-public-view .wrapper > .navbar { display: none !important; }
+    body.chat2viz-public-view .wrapper { margin: 0 !important; }
+    body.chat2viz-public-view .right-side { margin-left: 0 !important; }
+    </style>
     <script src="https://unpkg.com/@antv/g2@5/dist/g2.min.js"></script>
+    <script>
+    // Tag body for CSS-based admin chrome hiding
+    document.body.className += ' chat2viz-public-view';
+    </script>
+    <script>
+    (function() {
+        // Suppress G2 internal errors that escape promise chains
+        var _oe = window.onerror;
+        window.onerror = function(m,u,l,c,e){ if(u&&u.indexOf('g2.min.js')>=0&&(m.indexOf('not a function')>=0||m.indexOf('iterable')>=0||m.indexOf('interpolation')>=0)) return true; return _oe?_oe.apply(this,arguments):false; };
+        window.addEventListener('unhandledrejection', function(e){ if(e.reason&&e.reason.stack&&e.reason.stack.indexOf('g2.min.js')>=0) e.preventDefault(); });
+        if (typeof G2 === 'undefined' || !G2.Chart) return;
+        var OrigChart = G2.Chart;
+        function coerceNum(v) { if (typeof v === 'string' && /^\s*-?\d+(\.\d+)?\s*$/.test(v)) { var n = Number(v); return isNaN(n) ? v : n; } return v; }
+        function unwrapItem(v) { if (v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 1 && v.item) return v.item; return v; }
+        var NUM_KEYS = ['opacity','fillOpacity','strokeOpacity','lineWidth','size','radius','fontSize','fontWeight','stroke'];
+        function deepNormalize(node) {
+            if (!node || typeof node !== 'object') return node;
+            if (Array.isArray(node)) return node.map(deepNormalize);
+            var out = {};
+            for (var k in node) { if (!node.hasOwnProperty(k)) continue;
+                var v = unwrapItem(node[k]);
+                if (/Formatter$/.test(k) && typeof v === 'string') continue;
+                if (typeof v === 'string' && (v === 'true' || v === 'false')) { out[k] = v === 'true'; continue; }
+                if (NUM_KEYS.indexOf(k) >= 0 && typeof v === 'string') { out[k] = coerceNum(v); continue; }
+                if (k === 'children') { if (Array.isArray(v)) out[k] = v.map(deepNormalize); else if (v && typeof v === 'object') { var found = false; for (var wk in {item:1,children:1,nodes:1}) { if (Array.isArray(v[wk])) { out[k] = v[wk].map(deepNormalize); found = true; break; } } if (!found) out[k] = [deepNormalize(v)]; } else out[k] = []; continue; }
+                if (v && typeof v === 'object') out[k] = deepNormalize(v); else out[k] = v;
+            }
+            return out;
+        }
+        function PatchedChart(opts) {
+            var chart = new OrigChart(opts);
+            var origRender = chart.render.bind(chart);
+            chart.render = function(spec) {
+                try { if (spec && typeof spec === 'object') spec = deepNormalize(spec); } catch(e) {}
+                var result = origRender(spec);
+                if (result && typeof result.then === 'function') result.catch(function(err) { if (console.warn) console.warn('[G2] render error swallowed:', err && err.message); });
+                return result;
+            };
+            return chart;
+        }
+        PatchedChart.prototype = OrigChart.prototype;
+        G2.Chart = PatchedChart;
+    })();
+    </script>
     <script>var __PAGE_DATA__ = {:json_encode(['dashboard' => $dashboard, 'schema' => $schema])};</script>
-    <script src="__PUBLIC__/chat2viz-dashboard/dashboard-view.js?v=6"></script>
+    <script src="__PUBLIC__/chat2viz-dashboard/dashboard-view.js?v=9"></script>
 </block>

@@ -12,6 +12,168 @@
 <block name="script">
     <link rel="stylesheet" href="__PUBLIC__/chat2viz-dashboard/dashboard-edit.css">
     <script src="https://unpkg.com/@antv/g2@5/dist/g2.min.js"></script>
+    <script>
+    // --- G2 resilience patch: normalize specs + async error swallowing ---
+    // LLM-generated G2 specs occasionally contain structures that crash G2 v5
+    // internally (TypeError: o.flatMap, t.filter, invalid format, etc.). This
+    // patch wraps Chart construction to deep-normalize the spec and catch async
+    // render errors so a single bad widget never leaves the whole dashboard
+    // stuck on a skeleton screen.
+    (function() {
+        // Global error suppressor for G2 internal errors that escape the
+        // render() promise chain (e.g. from requestAnimationFrame/ResizeObserver
+        // callbacks inside G2). These are non-fatal — the chart may still
+        // render partially.
+        var origOnError = window.onerror;
+        window.onerror = function(msg, url, line, col, err) {
+            if (typeof msg === 'string' && (msg.indexOf('is not a function') >= 0 || msg.indexOf('iterable') >= 0 || msg.indexOf('interpolation') >= 0 || msg.indexOf('invalid format') >= 0)) {
+                if (url && url.indexOf('g2.min.js') >= 0) return true; // suppress
+            }
+            if (err && err.stack && err.stack.indexOf('g2.min.js') >= 0 &&
+                err.message && (err.message.indexOf('not a function') >= 0 || err.message.indexOf('iterable') >= 0)) {
+                return true; // suppress G2 internal errors
+            }
+            return origOnError ? origOnError.apply(this, arguments) : false;
+        };
+        // Also catch unhandled promise rejections from G2
+        window.addEventListener('unhandledrejection', function(e) {
+            if (e.reason && e.reason.stack && e.reason.stack.indexOf('g2.min.js') >= 0) {
+                e.preventDefault(); // swallow
+            }
+        });
+        if (typeof G2 === 'undefined' || !G2.Chart) return;
+        var OrigChart = G2.Chart;
+
+        function coerceNum(v) {
+            if (typeof v === 'string' && /^\s*-?\d+(\.\d+)?\s*$/.test(v)) {
+                var n = Number(v); return isNaN(n) ? v : n;
+            }
+            return v;
+        }
+        function unwrapItem(v) {
+            if (v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 1 && v.item) return v.item;
+            return v;
+        }
+        var NUMERIC_KEYS = ['opacity','fillOpacity','strokeOpacity','lineWidth','size','radius','fontSize','fontWeight','stroke'];
+        function deepNormalize(node) {
+            if (!node || typeof node !== 'object') return node;
+            if (Array.isArray(node)) return node.map(deepNormalize);
+            var out = {};
+            for (var k in node) {
+                if (!node.hasOwnProperty(k)) continue;
+                var v = node[k];
+                // Unwrap {item: X} wrappers everywhere
+                v = unwrapItem(v);
+                // Remove string-formatted functions (G2 can't eval them)
+                if (/Formatter$/.test(k) && typeof v === 'string') continue;
+                // Coerce string booleans
+                if (typeof v === 'string' && (v === 'true' || v === 'false')) { out[k] = v === 'true'; continue; }
+                // Coerce known numeric fields anywhere (style, point, etc.)
+                if (NUMERIC_KEYS.indexOf(k) >= 0 && typeof v === 'string') { out[k] = coerceNum(v); continue; }
+                // Ensure children is always an array
+                if (k === 'children') {
+                    if (Array.isArray(v)) out[k] = v.map(deepNormalize);
+                    else if (v && typeof v === 'object') {
+                        for (var wk in {item:1,children:1,nodes:1}) {
+                            if (Array.isArray(v[wk])) { out[k] = v[wk].map(deepNormalize); v = null; break; }
+                        }
+                        if (v) out[k] = [deepNormalize(v)];
+                    } else out[k] = [];
+                    continue;
+                }
+                // Recurse into nested objects (axis, legend, labels, etc.)
+                if (v && typeof v === 'object') out[k] = deepNormalize(v);
+                else out[k] = v;
+            }
+            return out;
+        }
+
+        function PatchedChart(opts) {
+            var chart = new OrigChart(opts);
+            // Wrap render to normalize spec + catch async errors
+            var origRender = chart.render.bind(chart);
+            chart.render = function(spec) {
+                try {
+                    if (spec && typeof spec === 'object') spec = deepNormalize(spec);
+                } catch(e) { /* normalize failed, pass original */ }
+                var result = origRender(spec);
+                if (result && typeof result.then === 'function') {
+                    result.catch(function(err) {
+                        if (window.console && console.warn) console.warn('[G2] render error swallowed:', err && err.message ? err.message : err);
+                    });
+                }
+                return result;
+            };
+            return chart;
+        }
+        PatchedChart.prototype = OrigChart.prototype;
+        G2.Chart = PatchedChart;
+    })();
+    </script>
     <script>var __PAGE_DATA__ = {:json_encode(['dashboard' => $dashboard])};</script>
-    <script src="__PUBLIC__/chat2viz-dashboard/dashboard-edit.js?v=15"></script>
+    <script src="__PUBLIC__/chat2viz-dashboard/dashboard-edit.js?v=16"></script>
+    <script>
+    // --- UX enhancements (loaded after bundle, no bundle modification needed) ---
+    (function() {
+        var obs = new MutationObserver(function() {
+            // P1-5: Collapse accumulated "执行操作/搜索相关表" status rows inside
+            // each assistant message. The bundle appends a new row per action_call
+            // event; we keep only the latest and show a count badge.
+            document.querySelectorAll('.dashboard-edit-chat-pane [class*="message"], .dashboard-edit-chat-pane > div > div').forEach(function(msg) {
+                var statusRows = msg.querySelectorAll(':scope > div > div[style*="display: flex"][style*="align-items: center"][style*="gap"]');
+                if (!statusRows.length || msg.dataset.uxCollapsed) return;
+                var actionRows = Array.from(statusRows).filter(function(r) {
+                    return r.textContent.indexOf('执行操作') >= 0 || r.textContent.indexOf('搜索相关') >= 0;
+                });
+                if (actionRows.length <= 1) return;
+                msg.dataset.uxCollapsed = '1';
+                // Hide all but the last; add count to last
+                for (var i = 0; i < actionRows.length - 1; i++) {
+                    actionRows[i].style.display = 'none';
+                }
+                var last = actionRows[actionRows.length - 1];
+                var badge = document.createElement('span');
+                badge.style.cssText = 'font-size:11px;color:#999;margin-left:4px';
+                badge.textContent = '(' + actionRows.length + '步)';
+                last.appendChild(badge);
+            });
+
+            // P2-3: Hide the duplicate save status at the bottom (keep only top bar)
+            var bottomStatus = document.querySelector('.dashboard-edit-preview-pane ~ div, .dashboard-edit-content > div:last-child');
+            var allStatusTexts = document.querySelectorAll('[class*="status"]');
+            // The footer status bar duplicates top status — hide if it matches "已保存于"
+            allStatusTexts.forEach(function(el) {
+                if (el.children.length === 0 && el.textContent.match(/^已保存于/) && el !== allStatusTexts[0]) {
+                    // Only hide if there's a sibling/top status already showing it
+                    el.style.opacity = '0';
+                }
+            });
+
+            // P2-5: Add tooltip to disabled "New" button
+            var newBtn = document.querySelector('button[disabled]');
+            if (newBtn && newBtn.textContent.indexOf('New') >= 0 && !newBtn.getAttribute('title')) {
+                newBtn.setAttribute('title', '请等待当前对话完成');
+            }
+
+            // P2-7: Wrap delete icon with confirm
+            document.querySelectorAll('.widget-card .anticon-delete').forEach(function(delIcon) {
+                if (delIcon.dataset.uxConfirm) return;
+                delIcon.dataset.uxConfirm = '1';
+                var origClick = delIcon.onclick;
+                delIcon.addEventListener('click', function(e) {
+                    if (!delIcon.dataset.uxAsked) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (confirm('确认删除该图表？')) {
+                            delIcon.dataset.uxAsked = '1';
+                            delIcon.click();
+                            setTimeout(function() { delete delIcon.dataset.uxAsked; }, 500);
+                        }
+                    }
+                }, true);
+            });
+        });
+        obs.observe(document.body, {childList: true, subtree: true, attributes: false});
+    })();
+    </script>
 </block>

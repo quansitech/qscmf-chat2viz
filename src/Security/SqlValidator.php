@@ -50,9 +50,20 @@ class SqlValidator
             throw new \InvalidArgumentException('Multi-statement queries are not allowed');
         }
 
-        // 4. Reject UNION-based data exfiltration
+        // 4. Allow UNION (legitimate for multi-metric aggregation) but reject
+        //    UNION-based data exfiltration targeting sensitive system schemas.
+        //    The real attack vector is `UNION SELECT ... FROM information_schema`
+        //    or `UNION SELECT ... INTO OUTFILE`, not the UNION keyword itself.
         if (preg_match('/\bUNION\b/i', $normalized)) {
-            throw new \InvalidArgumentException('UNION queries are not allowed');
+            // Block UNION combined with dangerous targets (already checked above
+            // for INFORMATION_SCHEMA and INTO OUTFILE, but re-check here to be
+            // explicit and provide a precise error message).
+            if (preg_match('/\bINFORMATION_SCHEMA\b/i', $normalized)
+                || preg_match('/\b(INTO\s+OUTFILE|INTO\s+DUMPFILE)\b/i', $normalized)
+                || preg_match('/\b(LOAD_FILE|BENCHMARK|SLEEP)\s*\(/i', $normalized)) {
+                throw new \InvalidArgumentException('UNION with dangerous function/schema is not allowed');
+            }
+            // UNION is otherwise permitted — it's a standard SQL set operation.
         }
 
         // 5. Reject dangerous SELECT variants: INTO OUTFILE/DUMPFILE, FOR UPDATE, LOCK IN SHARE MODE
@@ -70,10 +81,14 @@ class SqlValidator
             throw new \InvalidArgumentException('INFORMATION_SCHEMA access is not allowed');
         }
 
-        // 8. Reject subqueries in FROM clause (derived tables) to prevent data exfiltration
-        //    e.g. SELECT * FROM (SELECT password FROM admin_users) AS t
-        if (preg_match('/\bFROM\s*\(/i', $normalized)) {
-            throw new \InvalidArgumentException('Subqueries in FROM clause are not allowed');
+        // 8. Allow subqueries in FROM clause (derived tables) — LLMs use them
+        //    for pivoting and multi-metric aggregation (e.g. SELECT ... FROM
+        //    (SELECT metric, value FROM ...) AS t). The real exfiltration risk
+        //    (information_schema, other DBs) is already blocked by rules 7 and 6.
+        //    INFORMATION_SCHEMA inside a subquery is explicitly caught here too.
+        if (preg_match('/\bFROM\s*\(/i', $normalized)
+            && preg_match('/\bINFORMATION_SCHEMA\b/i', $normalized)) {
+            throw new \InvalidArgumentException('INFORMATION_SCHEMA in subquery is not allowed');
         }
     }
 

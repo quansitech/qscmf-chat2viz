@@ -32,7 +32,13 @@ class ThinkModelDashboardRepository implements DashboardRepositoryInterface
         $where = [];
         $safeFilters = $this->filterWhitelist($filters);
         foreach ($safeFilters as $key => $value) {
-            $where[$key] = $value;
+            if ($key === 'title_like') {
+                // LIKE search — use ThinkPHP EXP syntax for safety
+                $escaped = addslashes($value);
+                $where['title'] = ['LIKE', '%' . $escaped . '%'];
+            } else {
+                $where[$key] = $value;
+            }
         }
 
         $model = M($table);

@@ -37,7 +37,9 @@ class ConversationValidator
         }
 
         $conversation_id = $input['conversation_id'] ?? null;
-        if ($conversation_id !== null && !preg_match(self::CONVERSATION_ID_PATTERN, (string) $conversation_id)) {
+        // An empty string means "no conversation yet" — treat it the same as
+        // null so the controller can auto-generate one, rather than rejecting.
+        if ($conversation_id !== null && $conversation_id !== '' && !preg_match(self::CONVERSATION_ID_PATTERN, (string) $conversation_id)) {
             return ['status' => 0, 'info' => '无效的会话ID'];
         }
 

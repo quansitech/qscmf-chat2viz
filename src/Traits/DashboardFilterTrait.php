@@ -35,6 +35,11 @@ trait DashboardFilterTrait
             $safe['created_by'] = (int) $filters['created_by'];
         }
 
+        // Title search (LIKE match) — sanitized to prevent SQL injection
+        if (isset($filters['title_like']) && is_string($filters['title_like']) && trim($filters['title_like']) !== '') {
+            $safe['title_like'] = trim($filters['title_like']);
+        }
+
         return $safe;
     }
 }

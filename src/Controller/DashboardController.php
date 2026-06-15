@@ -23,7 +23,17 @@ class DashboardController extends BaseDashboardController
     {
         $page = max(1, (int) I('get.page', 1));
         $perPage = 20;
-        $result = $this->repo->list($page, $perPage);
+        // Support status filter via query param (P1-4: list page filtering)
+        $filters = [];
+        $dashboardStatus = I('get.dashboard_status');
+        if ($dashboardStatus !== null && $dashboardStatus !== '') {
+            $filters['dashboard_status'] = $dashboardStatus;
+        }
+        $titleSearch = I('get.q');
+        if ($titleSearch !== null && $titleSearch !== '') {
+            $filters['title_like'] = $titleSearch;
+        }
+        $result = $this->repo->list($page, $perPage, $filters);
         $this->renderer->renderList($result['items'], $result['total'], $page, $perPage);
     }
 
@@ -49,6 +59,12 @@ class DashboardController extends BaseDashboardController
         $status = I('get.status');
         if ($status !== null && $status !== '') {
             $filters['status'] = $status;
+        }
+        // Business status filter (draft/published/archived) — distinct from
+        // the technical ``status`` tinyint column.
+        $dashboardStatus = I('get.dashboard_status');
+        if ($dashboardStatus !== null && $dashboardStatus !== '') {
+            $filters['dashboard_status'] = $dashboardStatus;
         }
         $createdBy = I('get.created_by');
         if ($createdBy !== null && $createdBy !== '') {
@@ -105,6 +121,38 @@ class DashboardController extends BaseDashboardController
             if ($dashboard === null) {
                 $this->ajaxReturn(['status' => 0, 'info' => '仪表盘不存在']);
                 return;
+            }
+            // Strip g2_spec to minimal safe structure (type+encode+title+children)
+            // to prevent any LLM-generated exotic fields from crashing G2 v5.
+            $schemaRaw = $dashboard['current_schema'] ?? null;
+            if (is_string($schemaRaw)) {
+                $schema = json_decode($schemaRaw, true);
+                if (is_array($schema) && isset($schema['widgets'])) {
+                    foreach ($schema['widgets'] as &$w) {
+                        if (isset($w['g2_spec']) && is_array($w['g2_spec'])) {
+                            $spec = $w['g2_spec'];
+                            $type = isset($spec['type']) ? $spec['type'] : 'interval';
+                            if ($type === 'view' || $type === 'composite') $type = 'interval';
+                            $clean = ['type' => $type];
+                            if (isset($spec['title'])) $clean['title'] = $spec['title'];
+                            // Keep encode with string-only x/y
+                            if (isset($spec['encode']) && is_array($spec['encode'])) {
+                                $enc = [];
+                                foreach (['x','y','color','size','shape'] as $ch) {
+                                    if (isset($spec['encode'][$ch])) {
+                                        $val = $spec['encode'][$ch];
+                                        if (is_array($val)) $val = isset($val[0]) ? $val[0] : 'count';
+                                        $enc[$ch] = (string)$val;
+                                    }
+                                }
+                                if (!empty($enc)) $clean['encode'] = $enc;
+                            }
+                            $w['g2_spec'] = $clean;
+                        }
+                    }
+                    unset($w);
+                    $dashboard['current_schema'] = $schema;
+                }
             }
             $this->ajaxReturn(['status' => 1, 'data' => $dashboard]);
         } catch (DashboardNotFoundException $e) {

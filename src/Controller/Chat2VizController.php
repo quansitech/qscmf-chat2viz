@@ -280,6 +280,53 @@ class Chat2VizController extends GyController
             $msgRepo = AdapterFactory::createMessageRepository();
             $messages = $msgRepo->findConversationHistory($conversationId);
 
+            // Strip g2_spec inside message metadata to ONLY type+encode+title.
+            // The frontend populates React state from these specs; any extra
+            // fields (transform, children, axis, labels, style) from older LLM
+            // runs crash G2 v5. We keep it minimal to match the cleaned DB schema.
+            foreach ($messages as &$msg) {
+                $meta = $msg['metadata'] ?? null;
+                if (is_string($meta)) {
+                    $decoded = json_decode($meta, true);
+                    if (is_array($decoded)) {
+                        $meta = $decoded;
+                    }
+                }
+                if (is_array($meta) && isset($meta['widgets']) && is_array($meta['widgets'])) {
+                    foreach ($meta['widgets'] as &$w) {
+                        if (is_array($w) && isset($w['g2_spec']) && is_array($w['g2_spec'])) {
+                            $spec = $w['g2_spec'];
+                            // Determine chart type, fallback to interval
+                            $type = isset($spec['type']) ? $spec['type'] : 'interval';
+                            // Avoid 'view' type (needs children) — downgrade to interval
+                            if ($type === 'view' || $type === 'composite') $type = 'interval';
+                            // Extract encode, ensure x and y are strings (not arrays)
+                            $encode = [];
+                            if (isset($spec['encode']) && is_array($spec['encode'])) {
+                                foreach (['x', 'y', 'color', 'size', 'shape'] as $ch) {
+                                    if (isset($spec['encode'][$ch])) {
+                                        $val = $spec['encode'][$ch];
+                                        if (is_array($val)) $val = isset($val[0]) ? $val[0] : 'count';
+                                        $encode[$ch] = (string)$val;
+                                    }
+                                }
+                            }
+                            // Rebuild minimal spec
+                            $clean = ['type' => $type];
+                            if (isset($spec['title'])) $clean['title'] = $spec['title'];
+                            if (!empty($encode)) $clean['encode'] = $encode;
+                            $w['g2_spec'] = $clean;
+                        }
+                    }
+                    if (is_string($msg['metadata'] ?? null)) {
+                        $msg['metadata'] = json_encode($meta, JSON_UNESCAPED_UNICODE);
+                    } else {
+                        $msg['metadata'] = $meta;
+                    }
+                }
+            }
+            unset($msg);
+
             $this->ajaxReturn(['status' => 1, 'data' => [
                 'conversation_id' => $conversationId,
                 'messages'        => $messages,
