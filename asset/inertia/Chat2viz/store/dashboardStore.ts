@@ -47,7 +47,9 @@ export interface Widget {
   id: string;
   title: string;
   g2_spec: Record<string, unknown>;
-  data: Record<string, unknown>;
+  /** Canonical bare rows array (Row[]). Envelopes are never stored here;
+   *  updateWidgetData is the sole normalization boundary. */
+  data: Record<string, unknown>[];
   sql?: string;
   /** Render-level status driving PreviewPanel's three render branches. */
   status?: WidgetStatus;
@@ -130,8 +132,9 @@ export interface DashboardActions {
   updateWidget: (widgetId: string, partial: Partial<Widget>) => void;
   /** Create a widget placeholder (status=loading, no g2_spec required). */
   createWidgetPlaceholder: (widgetId: string, partial: Partial<Widget>) => void;
-  /** Inject data for a widget and set status=chart. */
-  updateWidgetData: (widgetId: string, data: unknown, meta?: { truncated?: boolean; total?: number; g2_spec?: Record<string, unknown> }) => void;
+  /** Inject data for a widget. Status is DERIVED from data + spec (not hardcoded).
+   *  `data` is normalized to bare Row[] at this boundary (envelope {rows} unwrapped). */
+  updateWidgetData: (widgetId: string, data: unknown, meta?: { truncated?: boolean; total?: number; g2_spec?: Record<string, unknown>; sql?: string }) => void;
   /** Mark a single widget as errored (local degradation; MUST NOT touch store.error). */
   setWidgetError: (widgetId: string) => void;
   /** Fallback: set any widget still loading to error (e.g. on stream done). */
@@ -194,8 +197,39 @@ type SetFn = (fn: (draft: Draft<DashboardState>) => void) => void;
 type GetFn = () => DashboardState;
 
 // ---------------------------------------------------------------------------
-// Encode summary extractor -- flat {channel: field_name} from g2_spec.encode
+// Unified chart-existence helper (DESIGN_BASIS #7)
+//
+// Single source of truth for "does this spec render a chart". Shared by
+// updateWidgetData (status derivation), getDashboardContext (chart type
+// inference), G2Renderer, and WidgetCard. A spec is a valid chart iff it has
+// `type` OR `mark` (G2 v5 mark style) OR a non-empty `children` array.
 // ---------------------------------------------------------------------------
+
+export function hasChartSpec(spec: unknown): boolean {
+  if (!spec || typeof spec !== 'object') return false;
+  const s = spec as Record<string, unknown>;
+  if (typeof s.type === 'string' && s.type !== '') return true;
+  if (typeof s.mark === 'string' && s.mark !== '') return true;
+  if (Array.isArray(s.children) && s.children.length > 0) return true;
+  return false;
+}
+
+/**
+ * Normalize widget data to a bare Row[] at the store write boundary
+ * (DESIGN_BASIS #2 / D2). Envelope `{rows, columns}` → `.rows`; bare array
+ * passthrough; anything else → `[]` (defensive, never throws).
+ * `columns` is metadata and dropped (G2 infers columns from rows).
+ */
+export function normalizeRows(data: unknown): Record<string, unknown>[] {
+  if (Array.isArray(data)) return data as Record<string, unknown>[];
+  if (data !== null && typeof data === 'object' && !Array.isArray(data)) {
+    const maybeRows = (data as Record<string, unknown>).rows;
+    if (Array.isArray(maybeRows)) return maybeRows as Record<string, unknown>[];
+  }
+  return [];
+}
+
+
 
 function extractEncodeSummary(
   encode: Record<string, unknown>,
@@ -319,7 +353,7 @@ const _store = _create()(
               id: widgetId,
               title: partial.title ?? existing?.title ?? '',
               g2_spec: partial.g2_spec ?? existing?.g2_spec ?? {},
-              data: partial.data ?? existing?.data ?? {},
+              data: partial.data ?? existing?.data ?? [],
               sql: partial.sql ?? existing?.sql,
               status: 'loading',
               layout: partial.layout ?? existing?.layout ?? { x: 0, y: 0, w: 12, h: 6 },
@@ -329,16 +363,32 @@ const _store = _create()(
           });
         },
 
-        updateWidgetData: (widgetId: string, data: unknown, meta?: { truncated?: boolean; total?: number; g2_spec?: Record<string, unknown> }) => {
+        updateWidgetData: (widgetId: string, data: unknown, meta?: { truncated?: boolean; total?: number; g2_spec?: Record<string, unknown>; sql?: string }) => {
           set((state) => {
             const widget = state.widgets[widgetId];
             if (!widget) return;
-            widget.data = data as Record<string, unknown>;
+            // DESIGN_BASIS #2: this is the SOLE normalization boundary. Envelope
+            // {rows,columns} → bare Row[]; bare array passthrough; else []. The
+            // canonical store form is always a bare array (never an envelope).
+            const rows = normalizeRows(data);
+            widget.data = rows;
             // g2_spec is the widget config, delivered by WIDGET_DATA_UPDATE
             // (contract §3/§7). When present it transitions loading→chart with
             // the real spec; when absent the placeholder's spec is preserved.
             if (meta?.g2_spec !== undefined) widget.g2_spec = meta.g2_spec;
-            widget.status = 'chart';
+            // DESIGN_BASIS #4/#5: sql is widget config (must persist). SSE
+            // WIDGET_DATA_UPDATE carries the widget's sql in its envelope; bind
+            // it here so buildSchema serializes it for HTTP re-fetch / publish.
+            if (typeof meta?.sql === 'string' && meta.sql !== '') widget.sql = meta.sql;
+            // DESIGN_BASIS #7: status is DERIVED from data + spec, not hardcoded.
+            // Empty rows or no valid spec → stay 'loading' (watchdog falls back
+            // to error if no real frame ever arrives); real data + valid spec →
+            // 'chart'. setWidgetError explicitly sets 'error' independently.
+            if (rows.length > 0 && hasChartSpec(widget.g2_spec)) {
+              widget.status = 'chart';
+            } else {
+              widget.status = 'loading';
+            }
             if (meta?.truncated !== undefined) widget.truncated = meta.truncated;
             if (meta?.total !== undefined) widget.total = meta.total;
             state.isDirty = true;
@@ -457,9 +507,12 @@ const _store = _create()(
           // Python NL2SQL service expects widgets as a dict keyed by id, not an array.
           const widgetDict: Record<string, unknown> = {};
           for (const w of Object.values(widgets) as Widget[]) {
-            // Derive chart type from g2_spec (G2 mark: interval->bar, line->line, etc.)
+            // DESIGN_BASIS #7: chart type inference MUST use the same validity
+            // judgment as the render layer (hasChartSpec). Invalid spec →
+            // 'unknown'; valid spec → mark ?? type.
+            const validSpec = hasChartSpec(w.g2_spec);
             const mark = (w.g2_spec?.mark ?? w.g2_spec?.type) as string | undefined;
-            const chartType = mark || 'unknown';
+            const chartType = validSpec ? (mark || 'unknown') : 'unknown';
             // Extract encode channel summary: {channel: field_name}
             const encodeSpec = w.g2_spec?.encode as Record<string, unknown> | undefined;
             const encodeSummary: Record<string, string> | null = encodeSpec

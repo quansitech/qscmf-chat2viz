@@ -38,7 +38,10 @@ class Nl2sqlEventTransformer
             'error' => $this->mapError($event),
             'dashboard_patch' => [new SseEvent(type: 'dashboard_patch', data: $event->data, raw: '')],
             // multi-widget three events: 1:1 passthrough (no rename, no field add/remove,
-            // no parse, no recomputation of truncated/total)
+            // no parse, no recomputation of truncated/total). The WIDGET_DATA_UPDATE
+            // envelope {rows, columns} + sql + g2_spec flows verbatim to the frontend
+            // store boundary; normalization (envelope → bare Row[]) happens in the
+            // React store, NOT in this PHP passthrough layer.
             'DASHBOARD_INIT', 'WIDGET_DATA_UPDATE', 'WIDGET_ERROR' => [
                 new SseEvent(type: $event->type, data: $event->data, raw: $event->raw),
             ],

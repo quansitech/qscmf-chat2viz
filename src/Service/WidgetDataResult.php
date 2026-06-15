@@ -9,6 +9,8 @@ namespace Qscmf\Chat2Viz\Service;
  */
 class WidgetDataResult
 {
+    /** @var array<array<string,mixed>> Bare rows array — the canonical widget
+     *  data form delivered directly to the frontend (never an envelope). */
     public readonly array $rows;
     public readonly bool $cached;
     public readonly ?int $executionTimeMs;

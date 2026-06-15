@@ -174,7 +174,7 @@ class ThinkModelDashboardRepository implements DashboardRepositoryInterface
         return $affected !== false;
     }
 
-    public function publish(string $uid, ?int $publishedBy = null): array
+    public function publish(string $uid, ?int $publishedBy = null, string $title = ''): array
     {
         $dashboard = $this->findByUid($uid);
         if ($dashboard === null) {
@@ -211,6 +211,18 @@ class ThinkModelDashboardRepository implements DashboardRepositoryInterface
                 throw new DashboardNotFoundException($uid);
             }
 
+            // Persist the publish-dialog title (§5) BEFORE the version snapshot.
+            // A non-empty title updates the dashboard row so the published view,
+            // <title> tag and <h1> reflect the user-supplied title. Empty title
+            // leaves the stored value untouched (no clobber of prior edits).
+            $rowUpdate = [
+                'published_version_id' => null, // set below after insert
+                'dashboard_status' => 'published',
+            ];
+            if (is_string($title) && trim($title) !== '') {
+                $rowUpdate['title'] = trim($title);
+            }
+
             $maxVersion = M(self::TABLE_VERSIONS)
                 ->where(['dashboard_id' => $dashboardId])
                 ->max('version');
@@ -233,12 +245,10 @@ class ThinkModelDashboardRepository implements DashboardRepositoryInterface
                 throw new DashboardException('Failed to create dashboard version');
             }
 
+            $rowUpdate['published_version_id'] = $versionId;
             $transModel
                 ->where(['uid' => $uid])
-                ->save([
-                    'published_version_id' => $versionId,
-                    'dashboard_status' => 'published',
-                ]);
+                ->save($rowUpdate);
 
             $transModel->commit();
         } catch (DashboardException $e) {

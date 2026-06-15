@@ -220,7 +220,16 @@ class DashboardController extends BaseDashboardController
             }
             if (!$this->checkOwnershipAndReject($existing)) return;
 
-            $version = $this->repo->publish($uid);
+            // Publish dialog (§5) submits the title in the JSON body. Persist it
+            // alongside the version snapshot so the published view reflects the
+            // user-supplied title. Empty/missing title leaves the stored value.
+            $title = '';
+            $jsonBody = $this->parseJsonInput();
+            if (is_array($jsonBody) && isset($jsonBody['title']) && is_string($jsonBody['title'])) {
+                $title = trim($jsonBody['title']);
+            }
+
+            $version = $this->repo->publish($uid, null, $title);
             $this->ajaxReturn(['status' => 1, 'data' => $version]);
         } catch (DashboardNotFoundException $e) {
             $this->ajaxReturn(['status' => 0, 'info' => '仪表盘不存在']);
@@ -289,6 +298,8 @@ class DashboardController extends BaseDashboardController
             if (!$this->checkOwnershipAndReject($existing)) return;
 
             $result = $this->getWidgetDataService()->queryDraftWidgetData($uid, $widgetId);
+            // Canonical form: `data` is a BARE rows array (not an envelope).
+            // The view page and edit-reload both consume this shape directly.
             $this->ajaxReturn(['status' => 1, 'data' => $result->rows]);
         } catch (DashboardNotFoundException $e) {
             $this->ajaxReturn(['status' => 0, 'info' => '仪表盘不存在']);

@@ -350,10 +350,17 @@ function dispatchEvent(event: SseEvent | null): boolean {
         // g2_spec is the widget's config, delivered via this event (contract §3/§7).
         // Forward it so the widget transitions loading→chart with its real spec.
         const g2Spec = obj<Record<string, unknown>>(event.data.g2_spec);
+        // sql is widget config (DESIGN_BASIS #4/#5). The SSE WIDGET_DATA_UPDATE
+        // envelope carries this widget's sql (contract §3); bind it to the widget
+        // so buildSchema persists it for HTTP re-fetch and publish. Without this,
+        // store.widget.sql stays undefined → schema omits sql → api_widget_data
+        // returns "组件不存在或未配置数据查询" on view/reload.
+        const sql = str(event.data.sql);
         useDashboardStore.getState().updateWidgetData(widgetId, event.data.data, {
           truncated: bool(event.data.truncated, undefined),
           total: typeof event.data.total === 'number' ? event.data.total : undefined,
           ...(Object.keys(g2Spec).length > 0 ? { g2_spec: g2Spec } : {}),
+          ...(sql ? { sql } : {}),
         });
         clearWidgetLoading(widgetId);
       }
@@ -479,6 +486,22 @@ function dispatchEvent(event: SseEvent | null): boolean {
             lastAssistant.metadata.sql = sql;
           }
         });
+        // DESIGN_BASIS #4/#5 (defensive): sql_generated is conversation-level.
+        // WIDGET_DATA_UPDATE.sql is the primary binding path (case above), but
+        // when the agent emits sql_generated WITHOUT a follow-up
+        // WIDGET_DATA_UPDATE (observed on multi-widget planning prompts), the
+        // widget's sql would stay undefined → buildSchema omits sql → HTTP
+        // re-fetch / publish fail with "组件不存在或未配置数据查询".
+        //
+        // Bind to the SOLE widget lacking sql. Only when exactly one candidate
+        // exists (the common single-chart J0 case) — never guess across a
+        // multi-widget dashboard where attribution is ambiguous.
+        const cur = useDashboardStore.getState();
+        const widgets = Object.values(cur.widgets) as Widget[];
+        const sqlLess = widgets.filter((w) => typeof w.sql !== 'string' || w.sql === '');
+        if (sqlLess.length === 1) {
+          cur.setSql(sqlLess[0].id, sql);
+        }
       }
       break;
     }

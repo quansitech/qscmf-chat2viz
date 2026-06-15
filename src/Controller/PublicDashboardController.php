@@ -79,6 +79,7 @@ class PublicDashboardController extends BaseDashboardController
 
         try {
             $result = $this->getWidgetDataService()->queryPublicWidgetData($uid, $widgetId, $clientIp);
+            // Canonical form: `data` is a BARE rows array (not an envelope).
             $this->ajaxReturn(['status' => 1, 'data' => $result->rows]);
         } catch (DashboardNotFoundException $e) {
             $this->ajaxReturn(['status' => 0, 'info' => '仪表盘不存在']);

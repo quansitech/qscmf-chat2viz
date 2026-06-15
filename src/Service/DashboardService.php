@@ -108,10 +108,11 @@ class DashboardService
      *
      * @param string $uid Dashboard UID
      * @param int|null $user_id Current user ID for ownership check
+     * @param string $title Optional publish-dialog title (§5); '' leaves stored title
      * @return array Created version record
      * @throws DashboardException When ownership check fails
      */
-    public function publish(string $uid, ?int $user_id): array
+    public function publish(string $uid, ?int $user_id, string $title = ''): array
     {
         $existing = $this->repo->findByUid($uid);
         if ($existing === null) {
@@ -121,7 +122,7 @@ class DashboardService
             throw new DashboardException('无权操作');
         }
 
-        return $this->repo->publish($uid, $user_id);
+        return $this->repo->publish($uid, $user_id, $title);
     }
 
     /**

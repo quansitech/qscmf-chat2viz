@@ -42,11 +42,16 @@ interface DashboardRepositoryInterface
     /**
      * Publish a dashboard: snapshot current_schema (strip g2_spec.data) as a version.
      *
+     * When a non-empty title is supplied (publish dialog §5), it is persisted to
+     * the dashboard row BEFORE the version snapshot so the published view, <title>
+     * tag and <h1> all reflect the user-supplied title (DESIGN_BASIS #5).
+     *
      * @param string $uid Dashboard UID
      * @param int|null $publishedBy User ID of the publisher (falls back to created_by)
+     * @param string $title Optional publish-dialog title; '' leaves the stored title unchanged
      * @return array The created version record as plain array
      */
-    public function publish(string $uid, ?int $publishedBy = null): array;
+    public function publish(string $uid, ?int $publishedBy = null, string $title = ''): array;
 
     /**
      * Get the published schema for a dashboard.

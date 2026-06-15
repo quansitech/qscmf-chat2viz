@@ -3,7 +3,7 @@ import { Button, Input, Modal, Tag, Tooltip, message } from 'antd';
 import { ArrowLeftOutlined, CloudOutlined, CloudSyncOutlined, CloudUploadOutlined } from '@ant-design/icons';
 import { getPageProps, navigate } from './adapters';
 import { ADMIN_BASE } from './utils/routes';
-import { useDashboardStore } from './store/dashboardStore';
+import { useDashboardStore, normalizeRows } from './store/dashboardStore';
 import type { ChatMessage, MessageStatus } from './store/dashboardStore';
 import { useDashboardDraft } from './hooks/useDashboardDraft';
 import ChatPanel from './components/ChatPanel';
@@ -83,7 +83,11 @@ export default function DashboardEdit() {
             id: w.id,
             title: w.title || '未命名',
             g2_spec: w.g2_spec || {},
-            data: w.data || {},
+            // DESIGN_BASIS #2: normalize at the hydration boundary too. A
+            // schema persisted before the store-normalization fix may carry a
+            // {rows, columns} envelope here; normalizeRows unwraps it to the
+            // canonical bare Row[] form so the canvas never sees an envelope.
+            data: normalizeRows(w.data),
             sql: w.sql,
             refreshInterval: w.refreshInterval,
             layout: w.layout || { x: 0, y: 0, w: 12, h: 6 },
@@ -92,17 +96,22 @@ export default function DashboardEdit() {
       }
       useDashboardStore.setState({ widgets: widgetsMap });
 
-      // Fetch data for widgets that have SQL but no data
+      // Fetch data for widgets that have SQL but no data (DESIGN_BASIS #4/#6).
+      // edit-reload MUST write a BARE array to store (not a reverse-wrapped
+      // envelope), converging to the same Row[] form as the view page.
       const uid = dashboard.uid;
       for (const w of schema.widgets) {
-        if (w.id && w.sql && (!w.data || Object.keys(w.data || {}).length === 0)) {
+        const hasData = Array.isArray(w.data) && w.data.length > 0;
+        if (w.id && w.sql && !hasData) {
           fetch(`${ADMIN_BASE}/api_draft_widget_data?uid=${encodeURIComponent(uid)}&widgetId=${encodeURIComponent(w.id)}`, {
             credentials: 'same-origin',
           })
             .then((r) => r.json())
             .then((result) => {
               if (result.status === 1 && Array.isArray(result.data) && result.data.length > 0) {
-                useDashboardStore.getState().updateWidget(w.id, { data: { rows: result.data as Record<string, unknown>[] } });
+                // NOTE: updateWidget is NOT the normalization boundary — caller
+                // MUST pass a bare array. HTTP returns bare rows already.
+                useDashboardStore.getState().updateWidget(w.id, { data: result.data as Record<string, unknown>[] });
               }
             })
             .catch(() => { /* non-critical */ });

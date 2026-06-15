@@ -8,6 +8,8 @@ import 'react-grid-layout/css/react-resizable.css';
 import { getPageProps, navigate } from './adapters';
 import { ADMIN_BASE, PUBLIC_BASE } from './utils/routes';
 import LazyG2Renderer from './components/LazyG2Renderer';
+import WidgetTable from './components/WidgetTable';
+import { hasChartSpec } from './store/dashboardStore';
 import type { WidgetLayout } from './store/dashboardStore';
 
 // ---------------------------------------------------------------------------
@@ -96,11 +98,12 @@ function ViewWidgetCard({ uid, dashboardStatus, widget }: ViewWidgetCardProps) {
       : {}),
   });
 
-  const hasSpec =
-    widget.g2_spec &&
-    (widget.g2_spec.type ||
-      (Array.isArray((widget.g2_spec as Record<string, unknown>).children) &&
-        ((widget.g2_spec as Record<string, unknown>).children as unknown[]).length > 0));
+  // Unified chart-existence judgment (DESIGN_BASIS #7): type OR mark OR children.
+  const hasSpec = hasChartSpec(widget.g2_spec);
+
+  // G2 v5 has no `composition.table` mark — route table specs to the native
+  // renderer to avoid "Unknown Component" + a blank widget (mirrors WidgetCard).
+  const isTable = widget.g2_spec?.type === 'table';
 
   return (
     <div style={styles.widgetCard}>
@@ -124,7 +127,13 @@ function ViewWidgetCard({ uid, dashboardStatus, widget }: ViewWidgetCardProps) {
             <Spin tip="加载中..." />
           </div>
         )}
-        {!isError && !isLoading && hasSpec && widget.g2_spec && (
+        {!isError && !isLoading && hasSpec && widget.g2_spec && isTable && (
+          <WidgetTable
+            spec={widget.g2_spec}
+            data={Array.isArray(data) ? data : []}
+          />
+        )}
+        {!isError && !isLoading && hasSpec && widget.g2_spec && !isTable && (
           <LazyG2Renderer
             spec={widget.g2_spec}
             data={data}

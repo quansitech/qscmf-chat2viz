@@ -32,7 +32,7 @@ class ServiceTest extends TestCase
             public function create(array $data): array { return []; }
             public function update(string $uid, array $data): array { return []; }
             public function archive(string $uid): bool { return true; }
-            public function publish(string $uid, ?int $publishedBy = null): array { return []; }
+            public function publish(string $uid, ?int $publishedBy = null, string $title = ''): array { return []; }
             public function getPublishedSchema(string $uid): ?array { return null; }
             public function getVersions(string $uid, int $page = 1, int $perPage = 20): array { return []; }
             public function updateWidgetSql(string $uid, string $widgetId, string $sql): void {}
@@ -52,7 +52,7 @@ class ServiceTest extends TestCase
             public function create(array $data): array { return []; }
             public function update(string $uid, array $data): array { return []; }
             public function archive(string $uid): bool { return true; }
-            public function publish(string $uid, ?int $publishedBy = null): array { return []; }
+            public function publish(string $uid, ?int $publishedBy = null, string $title = ''): array { return []; }
             public function getPublishedSchema(string $uid): ?array { return null; }
             public function getVersions(string $uid, int $page = 1, int $perPage = 20): array { return []; }
             public function updateWidgetSql(string $uid, string $widgetId, string $sql): void {}
@@ -77,7 +77,7 @@ class ServiceTest extends TestCase
             public function create(array $data): array { $this->captured = $data; return $data; }
             public function update(string $uid, array $data): array { return []; }
             public function archive(string $uid): bool { return true; }
-            public function publish(string $uid, ?int $publishedBy = null): array { return []; }
+            public function publish(string $uid, ?int $publishedBy = null, string $title = ''): array { return []; }
             public function getPublishedSchema(string $uid): ?array { return null; }
             public function getVersions(string $uid, int $page = 1, int $perPage = 20): array { return []; }
             public function updateWidgetSql(string $uid, string $widgetId, string $sql): void {}
@@ -98,7 +98,7 @@ class ServiceTest extends TestCase
             public function create(array $data): array { return $data; }
             public function update(string $uid, array $data): array { return []; }
             public function archive(string $uid): bool { return true; }
-            public function publish(string $uid, ?int $publishedBy = null): array { return []; }
+            public function publish(string $uid, ?int $publishedBy = null, string $title = ''): array { return []; }
             public function getPublishedSchema(string $uid): ?array { return null; }
             public function getVersions(string $uid, int $page = 1, int $perPage = 20): array { return []; }
             public function updateWidgetSql(string $uid, string $widgetId, string $sql): void {}
@@ -147,7 +147,7 @@ class ServiceTest extends TestCase
             public function create(array $data): array { return []; }
             public function update(string $uid, array $data): array { return []; }
             public function archive(string $uid): bool { return true; }
-            public function publish(string $uid, ?int $publishedBy = null): array { return []; }
+            public function publish(string $uid, ?int $publishedBy = null, string $title = ''): array { return []; }
             public function getPublishedSchema(string $uid): ?array { return null; }
             public function getVersions(string $uid, int $page = 1, int $perPage = 20): array { return []; }
             public function updateWidgetSql(string $uid, string $widgetId, string $sql): void {}
@@ -174,7 +174,7 @@ class ServiceTest extends TestCase
             public function create(array $data): array { return []; }
             public function update(string $uid, array $data): array { return []; }
             public function archive(string $uid): bool { return true; }
-            public function publish(string $uid, ?int $publishedBy = null): array { return []; }
+            public function publish(string $uid, ?int $publishedBy = null, string $title = ''): array { return []; }
             public function getPublishedSchema(string $uid): ?array { return null; }
             public function getVersions(string $uid, int $page = 1, int $perPage = 20): array { return []; }
             public function updateWidgetSql(string $uid, string $widgetId, string $sql): void {}
@@ -249,7 +249,7 @@ class ServiceTest extends TestCase
             public function create(array $data): array { return []; }
             public function update(string $uid, array $data): array { return []; }
             public function archive(string $uid): bool { return true; }
-            public function publish(string $uid, ?int $publishedBy = null): array { return []; }
+            public function publish(string $uid, ?int $publishedBy = null, string $title = ''): array { return []; }
             public function getPublishedSchema(string $uid): ?array { return null; }
             public function getVersions(string $uid, int $page = 1, int $perPage = 20): array { return []; }
             public function updateWidgetSql(string $uid, string $widgetId, string $sql): void {
@@ -277,7 +277,7 @@ class ServiceTest extends TestCase
             public function create(array $data): array { return []; }
             public function update(string $uid, array $data): array { return []; }
             public function archive(string $uid): bool { return true; }
-            public function publish(string $uid, ?int $publishedBy = null): array { return []; }
+            public function publish(string $uid, ?int $publishedBy = null, string $title = ''): array { return []; }
             public function getPublishedSchema(string $uid): ?array { return null; }
             public function getVersions(string $uid, int $page = 1, int $perPage = 20): array { return []; }
             public function updateWidgetSql(string $uid, string $widgetId, string $sql): void { $this->called = true; }
@@ -288,5 +288,70 @@ class ServiceTest extends TestCase
         $router->backfillWidgetSql('widget-1', 'SELECT 1');
 
         $this->assertFalse($repo->called);
+    }
+
+    /**
+     * J5 (§5): publish dialog title MUST flow through to the repository so the
+     * published view's <title>/<h1> reflect the user-supplied title. Regression
+     * guard for the api_publish → repo->publish(title) wiring.
+     */
+    public function testDashboardServicePublishForwardsTitleToRepository(): void
+    {
+        $captured = [];
+        $repo = new class($captured) implements \Qscmf\Chat2Viz\Repository\DashboardRepositoryInterface {
+            public array $captured;
+            public function __construct(array &$c) { $this->captured = &$c; }
+            public function list(int $page, int $perPage, array $filters = []): array { return []; }
+            public function findByUid(string $uid): ?array { return ['uid' => $uid, 'id' => 1, 'created_by' => 7]; }
+            public function create(array $data): array { return []; }
+            public function update(string $uid, array $data): array { return []; }
+            public function archive(string $uid): bool { return true; }
+            public function publish(string $uid, ?int $publishedBy = null, string $title = ''): array {
+                $this->captured = ['uid' => $uid, 'publishedBy' => $publishedBy, 'title' => $title];
+                return ['version' => 1];
+            }
+            public function getPublishedSchema(string $uid): ?array { return null; }
+            public function getVersions(string $uid, int $page = 1, int $perPage = 20): array { return []; }
+            public function updateWidgetSql(string $uid, string $widgetId, string $sql): void {}
+            public function executeRawQuery(string $sql): array { return []; }
+        };
+
+        $service = new DashboardService($repo);
+        $service->publish('uid-xyz', 7, 'QA-Round3-系统测试仪表盘');
+
+        $this->assertSame('uid-xyz', $captured['uid']);
+        $this->assertSame(7, $captured['publishedBy']);
+        $this->assertSame('QA-Round3-系统测试仪表盘', $captured['title']);
+    }
+
+    /**
+     * J5: empty title MUST NOT clobber the stored title. The repo receives an
+     * empty string and decides to leave the row unchanged.
+     */
+    public function testDashboardServicePublishEmptyTitleIsForwardedAsEmpty(): void
+    {
+        $captured = [];
+        $repo = new class($captured) implements \Qscmf\Chat2Viz\Repository\DashboardRepositoryInterface {
+            public array $captured;
+            public function __construct(array &$c) { $this->captured = &$c; }
+            public function list(int $page, int $perPage, array $filters = []): array { return []; }
+            public function findByUid(string $uid): ?array { return ['uid' => $uid, 'id' => 1, 'created_by' => 7]; }
+            public function create(array $data): array { return []; }
+            public function update(string $uid, array $data): array { return []; }
+            public function archive(string $uid): bool { return true; }
+            public function publish(string $uid, ?int $publishedBy = null, string $title = ''): array {
+                $this->captured['title'] = $title;
+                return ['version' => 1];
+            }
+            public function getPublishedSchema(string $uid): ?array { return null; }
+            public function getVersions(string $uid, int $page = 1, int $perPage = 20): array { return []; }
+            public function updateWidgetSql(string $uid, string $widgetId, string $sql): void {}
+            public function executeRawQuery(string $sql): array { return []; }
+        };
+
+        $service = new DashboardService($repo);
+        $service->publish('uid-xyz', 7);
+
+        $this->assertSame('', $captured['title']);
     }
 }

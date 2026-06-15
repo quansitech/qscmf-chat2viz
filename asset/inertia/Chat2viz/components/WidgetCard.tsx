@@ -2,6 +2,8 @@ import { useState, useCallback } from 'react';
 import { Alert, Collapse, Popconfirm, Skeleton, Spin, Typography } from 'antd';
 import { DeleteOutlined, EditOutlined, ReloadOutlined } from '@ant-design/icons';
 import LazyG2Renderer from './LazyG2Renderer';
+import WidgetTable from './WidgetTable';
+import { hasChartSpec } from '../store/dashboardStore';
 import type { Widget } from '../store/dashboardStore';
 
 // ---------------------------------------------------------------------------
@@ -60,13 +62,18 @@ export default function WidgetCard({ widget, onTitleChange, onRemove, onRefresh,
   // Effective render status — legacy widgets without a status field default to 'chart'.
   const status = effectiveStatus(widget);
 
-  const hasSpec = widget.g2_spec && (
-    widget.g2_spec.type || (Array.isArray((widget.g2_spec as any).children) && (widget.g2_spec as any).children.length > 0)
-  );
+  // Unified chart-existence judgment (DESIGN_BASIS #7): type OR mark OR children.
+  const hasSpec = hasChartSpec(widget.g2_spec);
+
+  // G2 v5 has no `composition.table` mark — route table specs to the native
+  // renderer to avoid "Unknown Component" + a blank widget.
+  const isTable = widget.g2_spec?.type === 'table';
 
   // Shallow-merge config + data at render time. g2_spec source is NOT mutated
   // — data is injected from the widget's own data field (store.widgets[id].data),
-  // which is the sole data source per the dashboard-schema contract.
+  // which is the sole data source per the dashboard-schema contract. After store
+  // normalization widget.data is always a bare array; the Array.isArray guard
+  // is defensive for any non-store hydration path.
   const mergedSpec = widget.g2_spec
     ? { ...widget.g2_spec, data: Array.isArray(widget.data) ? widget.data : [] }
     : widget.g2_spec;
@@ -150,7 +157,13 @@ export default function WidgetCard({ widget, onTitleChange, onRemove, onRefresh,
                 <Spin tip="加载图表中..." />
               </div>
             )}
-            {hasSpec && mergedSpec && (
+            {hasSpec && mergedSpec && isTable && (
+              <WidgetTable
+                spec={widget.g2_spec as Record<string, unknown>}
+                data={Array.isArray(widget.data) ? widget.data : []}
+              />
+            )}
+            {hasSpec && mergedSpec && !isTable && (
               <LazyG2Renderer
                 spec={mergedSpec as Record<string, unknown>}
                 data={Array.isArray(widget.data) ? widget.data : []}

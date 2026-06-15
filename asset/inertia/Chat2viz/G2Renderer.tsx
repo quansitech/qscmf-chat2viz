@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback } from 'react';
+import { hasChartSpec } from './store/dashboardStore';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -65,14 +66,8 @@ function determineUpdateLevel(
 // ---------------------------------------------------------------------------
 // Chart validation helper
 // ---------------------------------------------------------------------------
-
-function hasChartSpec(spec: Record<string, unknown>): boolean {
-  if (!spec || typeof spec !== 'object') return false;
-  if (spec.type) return true;
-  const children = spec.children;
-  if (Array.isArray(children) && children.length > 0) return true;
-  return false;
-}
+// hasChartSpec is imported from the store (single source of truth, DESIGN_BASIS #7).
+// Valid chart iff spec.type OR spec.mark OR non-empty children array.
 
 /**
  * Sanitize chart data for G2 consumption.

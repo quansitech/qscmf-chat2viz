@@ -113,7 +113,7 @@ class EloquentDashboardRepository implements DashboardRepositoryInterface
         return $dashboard->update(['dashboard_status' => 'archived']);
     }
 
-    public function publish(string $uid, ?int $publishedBy = null): array
+    public function publish(string $uid, ?int $publishedBy = null, string $title = ''): array
     {
         $dashboard = Dashboard::where('uid', $uid)->first();
         if ($dashboard === null) {
@@ -131,8 +131,9 @@ class EloquentDashboardRepository implements DashboardRepositoryInterface
 
         // 3-5. Transaction: lock, compute version, insert, update
         $effectivePublishedBy = $publishedBy ?? $dashboard->created_by;
+        $trimmedTitle = is_string($title) ? trim($title) : '';
 
-        $versionArray = DB::transaction(function () use ($dashboard, $schema, $effectivePublishedBy) {
+        $versionArray = DB::transaction(function () use ($dashboard, $schema, $effectivePublishedBy, $trimmedTitle) {
             // Pessimistic lock to prevent concurrent publish race
             $locked = Dashboard::where('id', $dashboard->id)
                 ->lockForUpdate()
@@ -154,10 +155,16 @@ class EloquentDashboardRepository implements DashboardRepositoryInterface
                 'published_by' => $effectivePublishedBy,
             ]);
 
-            $locked->update([
+            // Persist the publish-dialog title (§5) alongside the snapshot so
+            // the published view/title/<h1> reflect the user-supplied title.
+            $rowUpdate = [
                 'published_version_id' => $version->id,
                 'dashboard_status' => 'published',
-            ]);
+            ];
+            if ($trimmedTitle !== '') {
+                $rowUpdate['title'] = $trimmedTitle;
+            }
+            $locked->update($rowUpdate);
 
             return $version->toArray();
         });
