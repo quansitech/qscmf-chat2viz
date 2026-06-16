@@ -33,6 +33,16 @@ class SpecNormalizer
      */
     public static function normalizeSchema(array $schema): array
     {
+        // Gate: when spec validation is ON (default), specs are already valid at
+        // DB write time — normalization is a no-op pass-through.
+        // When OFF (rollback), full normalization runs.
+        // (spec-typed-contract: encode-normalize gate, Decision 7)
+        $enabled = getenv('CHAT2VIZ_SPEC_VALIDATION_ENABLED');
+        $enabled = ($enabled === false) ? true : strtolower($enabled) !== 'false';
+        if ($enabled) {
+            return $schema; // pass-through — specs already validated
+        }
+
         if (!isset($schema['widgets']) || !is_array($schema['widgets'])) {
             return $schema;
         }

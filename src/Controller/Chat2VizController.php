@@ -16,6 +16,7 @@ use Qscmf\Chat2Viz\Sse\StreamAccumulator;
 use Qscmf\Chat2Viz\Traits\JsonInputTrait;
 use Qscmf\Chat2Viz\Traits\UuidTrait;
 use Qscmf\Chat2Viz\Validator\ConversationValidator;
+use Qscmf\Chat2Viz\Validator\FeedbackValidator;
 
 class Chat2VizController extends GyController
 {
@@ -471,5 +472,86 @@ class Chat2VizController extends GyController
     private function logError(string $tag, string $detail): void
     {
         \Think\Log::write(sprintf('[chat2viz] %s | %s', $tag, $detail), \Think\Log::ERR);
+    }
+
+    // -------------------------------------------------------
+    // Feedback API (LLM optimization: collect user feedback for skill sedimentation)
+    // -------------------------------------------------------
+
+    /**
+     * POST /extends/Chat2Viz/api_feedback
+     *
+     * Collects user feedback (thumbs up/down + optional comment) and implicit
+     * signals (regenerated, widget_deleted, sql_edited) for the AI answer.
+     * Stored in qs_chat2viz_feedback_records, read by the Python skill_curator.
+     *
+     * Binary feedback only — NO star ratings (adversarial review consensus).
+     */
+    public function api_feedback()
+    {
+        $input = $this->parseJsonInput();
+        $validation = FeedbackValidator::validate($input);
+        if ($validation !== null) {
+            $this->ajaxReturn($validation);
+            return;
+        }
+
+        $messageId = trim((string) ($input['message_id'] ?? ''));
+        $conversationId = trim((string) ($input['conversation_id'] ?? ''));
+        $turnIndex = isset($input['turn_index']) ? (int) $input['turn_index'] : null;
+        $question = trim((string) ($input['question'] ?? ''));
+        $answerText = trim((string) ($input['answer_text'] ?? ''));
+        $answerWidgets = $input['answer_widgets'] ?? null;
+        $thumbs = $input['thumbs'] ?? null;
+        $comment = trim((string) ($input['comment'] ?? ''));
+        $implicitSignals = $input['implicit_signals'] ?? null;
+        $industry = trim((string) ($input['industry'] ?? ''));
+
+        // Fetch the question/answer from the message if not provided
+        if ($question === '' || $answerText === '') {
+            $msg = M('chat2viz_conversation_messages')->where(['id' => $messageId])->find();
+            if ($msg) {
+                if ($question === '') {
+                    // Find the preceding user message
+                    $userMsg = M('chat2viz_conversation_messages')
+                        ->where([
+                            'conversation_id' => $msg['conversation_id'],
+                            'role' => 'user',
+                            'id' => ['LT', $messageId],
+                        ])
+                        ->order('id DESC')
+                        ->find();
+                    $question = $userMsg ? trim((string) $userMsg['content']) : '';
+                }
+                if ($answerText === '') {
+                    $answerText = trim((string) ($msg['content'] ?? ''));
+                }
+                if ($conversationId === '') {
+                    $conversationId = trim((string) ($msg['conversation_id'] ?? ''));
+                }
+            }
+        }
+
+        $data = [
+            'message_id' => $messageId,
+            'conversation_id' => $conversationId !== '' ? $conversationId : null,
+            'turn_index' => $turnIndex,
+            'question' => $question,
+            'answer_text' => $answerText,
+            'answer_widgets' => $answerWidgets ? json_encode($answerWidgets, JSON_UNESCAPED_UNICODE) : null,
+            'thumbs' => $thumbs,
+            'comment' => $comment !== '' ? $comment : null,
+            'implicit_signals' => $implicitSignals ? json_encode($implicitSignals, JSON_UNESCAPED_UNICODE) : null,
+            'industry' => $industry !== '' ? $industry : null,
+        ];
+
+        $id = M('chat2viz_feedback_records')->add($data);
+        if ($id === false) {
+            $this->logError('feedback_save_failed', 'message_id=' . $messageId);
+            $this->ajaxReturn(['status' => 0, 'info' => '反馈保存失败']);
+            return;
+        }
+
+        $this->ajaxReturn(['status' => 1, 'info' => '感谢您的反馈', 'data' => ['id' => $id]]);
     }
 }

@@ -7,6 +7,11 @@
   var conversationId = null;
   var chartInstances = {};
   var serviceUnavailable = false;
+  // Feedback / implicit tracking state
+  var convId = '';
+  var lastMessageId = null;
+  var feedbackUrl = '/extends/Chat2Viz/api_feedback';
+  var industryOverride = '';  // '' = auto-detect
 
   // --- Socket Health Check ---
   function checkSocketHealth() {
@@ -128,6 +133,16 @@
     var html = '';
     html += '<div style="padding:24px;max-width:900px;margin:0 auto">';
     html += '<h2>智能分析</h2>';
+    // Industry override dropdown (manual override of auto-detected industry)
+    html += '<div style="margin-bottom:12px;font-size:13px;color:#666">';
+    html += '行业：<select id="chat2viz-industry" style="padding:2px 6px">';
+    html += '<option value="">自动识别</option>';
+    html += '<option value="ecommerce"' + (industryOverride === 'ecommerce' ? ' selected' : '') + '>电商零售</option>';
+    html += '<option value="saas"' + (industryOverride === 'saas' ? ' selected' : '') + '>SaaS 软件</option>';
+    html += '<option value="manufacturing"' + (industryOverride === 'manufacturing' ? ' selected' : '') + '>制造业</option>';
+    html += '<option value="finance"' + (industryOverride === 'finance' ? ' selected' : '') + '>金融</option>';
+    html += '</select>';
+    html += '</div>';
 
     html += '<div id="chat2viz-messages">';
     for (var i = 0; i < messages.length; i++) {
@@ -148,6 +163,15 @@
         }
         if (m.status) {
           html += '<div id="chat2viz-status-' + i + '" style="margin-top:4px;color:#1890ff;font-size:12px">' + escapeHtml(m.status) + '</div>';
+        }
+        // Feedback controls (👍/👎 + optional comment) — only for completed AI messages
+        if (m.messageId && !m.streaming) {
+          html += '<div id="chat2viz-feedback-' + i + '" style="margin-top:6px;display:flex;align-items:center;gap:8px;font-size:13px">';
+          html += '<span style="color:#999">这个回答有帮助吗？</span>';
+          html += '<button data-feedback="up" data-msg="' + m.messageId + '" data-idx="' + i + '" style="border:none;background:none;cursor:pointer;font-size:16px;padding:2px 4px" title="有帮助">👍</button>';
+          html += '<button data-feedback="down" data-msg="' + m.messageId + '" data-idx="' + i + '" style="border:none;background:none;cursor:pointer;font-size:16px;padding:2px 4px" title="需改进">👎</button>';
+          html += '<span style="color:#bbb;font-size:11px">反馈用于改进 AI 质量</span>';
+          html += '</div>';
         }
         html += '</div>';
       } else if (m.role === 'error') {
@@ -177,6 +201,45 @@
         if (!loading) window.__chat2viz_ask();
       });
     }
+    // Wire feedback buttons (👍/👎)
+    var fbBtns = document.querySelectorAll('[data-feedback]');
+    for (var j = 0; j < fbBtns.length; j++) {
+      fbBtns[j].addEventListener('click', function (ev) {
+        var thumbs = ev.target.getAttribute('data-feedback');
+        var msgId = ev.target.getAttribute('data-msg');
+        sendFeedback({ message_id: msgId, thumbs: thumbs, conversation_id: convId });
+        // Visual feedback
+        ev.target.style.opacity = '1';
+        var siblings = ev.target.parentNode.querySelectorAll('[data-feedback]');
+        for (var k = 0; k < siblings.length; k++) {
+          if (siblings[k] !== ev.target) siblings[k].style.opacity = '0.3';
+        }
+      });
+    }
+  }
+
+  // --- Feedback submission ---
+  function sendFeedback(payload) {
+    try {
+      var xhr = new XMLHttpRequest();
+      xhr.open('POST', feedbackUrl, true);
+      xhr.setRequestHeader('Content-Type', 'application/json');
+      xhr.send(JSON.stringify(payload));
+    } catch (e) {
+      // Silent failure — feedback is best-effort, must not disrupt the UI
+    }
+  }
+
+  // --- Implicit signal tracking ---
+  var lastQuestion = '';
+  var lastQuestionTime = 0;
+  function trackImplicit(signal) {
+    if (!lastMessageId) return;
+    sendFeedback({
+      message_id: lastMessageId,
+      conversation_id: convId,
+      implicit_signals: signal
+    });
   }
 
   function renderCharts() {
@@ -207,6 +270,12 @@
   function callStreamEndpoint(question) {
     var payload = { question: question };
     if (conversationId) payload.conversation_id = conversationId;
+    // Read industry override from dropdown (empty = auto-detect)
+    var indEl = document.getElementById('chat2viz-industry');
+    if (indEl) {
+      industryOverride = indEl.value;
+      if (industryOverride) payload.industry = industryOverride;
+    }
 
     var streamEndedCleanly = false;
     var msgIdx = -1;
@@ -215,7 +284,9 @@
       switch (type) {
         case 'message_start':
           if (data.conversation_id) conversationId = data.conversation_id;
-          messages.push({ role: 'ai', content: '', sql: null, g2_spec: null, status: '', dataInfo: '' });
+          if (data.conversation_id) convId = data.conversation_id;
+          if (data.message_id) lastMessageId = data.message_id;
+          messages.push({ role: 'ai', content: '', sql: null, g2_spec: null, status: '', dataInfo: '', streaming: true, messageId: data.message_id || null });
           msgIdx = messages.length - 1;
           render();
           break;
@@ -273,6 +344,7 @@
           if (msgIdx >= 0) {
             messages[msgIdx].status = '';
             messages[msgIdx].complete = true;
+            messages[msgIdx].streaming = false;  // show feedback buttons
           }
           loading = false;
           render();
@@ -450,6 +522,14 @@
     if (!input) return;
     var q = input.value.trim();
     if (!q || loading) return;
+
+    // Implicit feedback: detect re-ask within 30s (user likely dissatisfied)
+    var now = Date.now();
+    if (lastQuestion === q && (now - lastQuestionTime) < 30000) {
+      trackImplicit({ regenerated: true });
+    }
+    lastQuestion = q;
+    lastQuestionTime = now;
 
     messages.push({ role: 'user', content: q });
     loading = true;

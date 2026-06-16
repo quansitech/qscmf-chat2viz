@@ -41,77 +41,12 @@
                 e.preventDefault(); // swallow
             }
         });
-        if (typeof G2 === 'undefined' || !G2.Chart) return;
-        var OrigChart = G2.Chart;
-
-        function coerceNum(v) {
-            if (typeof v === 'string' && /^\s*-?\d+(\.\d+)?\s*$/.test(v)) {
-                var n = Number(v); return isNaN(n) ? v : n;
-            }
-            return v;
-        }
-        function unwrapItem(v) {
-            if (v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 1 && v.item) return v.item;
-            return v;
-        }
-        var NUMERIC_KEYS = ['opacity','fillOpacity','strokeOpacity','lineWidth','size','radius','fontSize','fontWeight','stroke'];
-        function deepNormalize(node) {
-            if (!node || typeof node !== 'object') return node;
-            if (Array.isArray(node)) return node.map(deepNormalize);
-            var out = {};
-            for (var k in node) {
-                if (!node.hasOwnProperty(k)) continue;
-                var v = node[k];
-                // Unwrap {item: X} wrappers everywhere
-                v = unwrapItem(v);
-                // Remove string-formatted functions (G2 can't eval them)
-                if (/Formatter$/.test(k) && typeof v === 'string') continue;
-                // Coerce string booleans
-                if (typeof v === 'string' && (v === 'true' || v === 'false')) { out[k] = v === 'true'; continue; }
-                // Coerce known numeric fields anywhere (style, point, etc.)
-                if (NUMERIC_KEYS.indexOf(k) >= 0 && typeof v === 'string') { out[k] = coerceNum(v); continue; }
-                // Ensure children is always an array
-                if (k === 'children') {
-                    if (Array.isArray(v)) out[k] = v.map(deepNormalize);
-                    else if (v && typeof v === 'object') {
-                        for (var wk in {item:1,children:1,nodes:1}) {
-                            if (Array.isArray(v[wk])) { out[k] = v[wk].map(deepNormalize); v = null; break; }
-                        }
-                        if (v) out[k] = [deepNormalize(v)];
-                    } else out[k] = [];
-                    continue;
-                }
-                // Recurse into nested objects (axis, legend, labels, etc.)
-                if (v && typeof v === 'object') out[k] = deepNormalize(v);
-                else out[k] = v;
-            }
-            return out;
-        }
-
-        function PatchedChart(opts) {
-            var chart = new OrigChart(opts);
-            // Wrap render to normalize spec + catch async errors
-            var origRender = chart.render.bind(chart);
-            chart.render = function(spec) {
-                try {
-                    if (spec && typeof spec === 'object') spec = deepNormalize(spec);
-                } catch(e) { /* normalize failed, pass original */ }
-                var result = origRender(spec);
-                if (result && typeof result.then === 'function') {
-                    result.catch(function(err) {
-                        if (window.console && console.warn) console.warn('[G2] render error swallowed:', err && err.message ? err.message : err);
-                    });
-                }
-                return result;
-            };
-            return chart;
-        }
-        PatchedChart.prototype = OrigChart.prototype;
-        G2.Chart = PatchedChart;
+        // deepNormalize / PatchedChart removed (spec-typed-contract Phase C):
+        // specs are validated at commit_widget ingress; no heal-on-read needed.
     })();
     </script>
     <script>var __PAGE_DATA__ = {:json_encode(['dashboard' => $dashboard])};</script>
-    <script src="__PUBLIC__/chat2viz-dashboard/dashboard-edit.js?v=16"></script>
+    <script src="__PUBLIC__/chat2viz-dashboard/dashboard-edit.js?v=17"></script>
     <script>
     // --- UX enhancements (loaded after bundle, no bundle modification needed) ---
     (function() {

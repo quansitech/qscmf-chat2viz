@@ -122,38 +122,10 @@ class DashboardController extends BaseDashboardController
                 $this->ajaxReturn(['status' => 0, 'info' => '仪表盘不存在']);
                 return;
             }
-            // Strip g2_spec to minimal safe structure (type+encode+title+children)
-            // to prevent any LLM-generated exotic fields from crashing G2 v5.
-            $schemaRaw = $dashboard['current_schema'] ?? null;
-            if (is_string($schemaRaw)) {
-                $schema = json_decode($schemaRaw, true);
-                if (is_array($schema) && isset($schema['widgets'])) {
-                    foreach ($schema['widgets'] as &$w) {
-                        if (isset($w['g2_spec']) && is_array($w['g2_spec'])) {
-                            $spec = $w['g2_spec'];
-                            $type = isset($spec['type']) ? $spec['type'] : 'interval';
-                            if ($type === 'view' || $type === 'composite') $type = 'interval';
-                            $clean = ['type' => $type];
-                            if (isset($spec['title'])) $clean['title'] = $spec['title'];
-                            // Keep encode with string-only x/y
-                            if (isset($spec['encode']) && is_array($spec['encode'])) {
-                                $enc = [];
-                                foreach (['x','y','color','size','shape'] as $ch) {
-                                    if (isset($spec['encode'][$ch])) {
-                                        $val = $spec['encode'][$ch];
-                                        if (is_array($val)) $val = isset($val[0]) ? $val[0] : 'count';
-                                        $enc[$ch] = (string)$val;
-                                    }
-                                }
-                                if (!empty($enc)) $clean['encode'] = $enc;
-                            }
-                            $w['g2_spec'] = $clean;
-                        }
-                    }
-                    unset($w);
-                    $dashboard['current_schema'] = $schema;
-                }
-            }
+            // g2_spec is returned as stored — no stripping.
+            // Specs are validated at commit_widget ingress (spec-typed-contract),
+            // so the DB only contains valid specs. The old strip-to-type+encode+title
+            // logic caused silent data loss (dropping transform/scale/etc) and is removed.
             $this->ajaxReturn(['status' => 1, 'data' => $dashboard]);
         } catch (DashboardNotFoundException $e) {
             $this->ajaxReturn(['status' => 0, 'info' => '仪表盘不存在']);
@@ -193,6 +165,28 @@ class DashboardController extends BaseDashboardController
                 return;
             }
             if (!$this->checkOwnershipAndReject($existing)) return;
+
+            // Validate widget g2_spec structure via Python validate-spec endpoint.
+            // (spec-typed-contract: dashboard-schema Requirement — all spec-write
+            // paths validate). 2s timeout, fail-open on unavailable (blocking all
+            // manual edits when Python is down is worse than the rare dirty-edit risk).
+            if (isset($input['current_schema']['widgets'])) {
+                $pythonHost = getenv('CHAT2VIZ_PYTHON_HOST') ?: 'http://localhost:7860';
+                $apiKey = getenv('CHAT2VIZ_API_KEY') ?: 'local-test-key-not-secure';
+                foreach ($input['current_schema']['widgets'] as $w) {
+                    if (isset($w['g2_spec']) && is_array($w['g2_spec'])) {
+                        $validated = $this->validateSpecViaPython(
+                            $pythonHost, $apiKey, $w['g2_spec']
+                        );
+                        if ($validated === false) {
+                            // Validation explicitly failed (not a timeout) → reject
+                            $this->ajaxReturn(['status' => 0, 'info' => '图表规格校验失败，请检查 g2_spec 结构']);
+                            return;
+                        }
+                        // $validated === null → timeout/unavailable → fail-open (continue)
+                    }
+                }
+            }
 
             $dashboard = $this->getDashboardService()->update($uid, $input, $this->getCurrentUserId());
             $this->ajaxReturn(['status' => 1, 'data' => $dashboard]);
@@ -364,5 +358,52 @@ class DashboardController extends BaseDashboardController
             ));
             $this->ajaxReturn(['status' => 0, 'info' => '数据查询失败']);
         }
+    }
+
+    /**
+     * Validate a g2_spec via the Python /internal/validate-spec endpoint.
+     *
+     * Returns:
+     *   true  — spec is valid
+     *   false — spec is invalid (caller should reject)
+     *   null  — endpoint unavailable/timeout (caller should fail-open)
+     *
+     * (spec-typed-contract: dashboard-schema — all spec-write paths validate)
+     */
+    private function validateSpecViaPython(string $host, string $apiKey, array $spec): ?bool
+    {
+        $url = rtrim($host, '/') . '/api/v1/internal/validate-spec';
+        $payload = json_encode(['spec' => $spec]);
+
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL => $url,
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => $payload,
+            CURLOPT_HTTPHEADER => [
+                'Content-Type: application/json',
+                'X-API-Key: ' . $apiKey,
+            ],
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 2, // 2s hard timeout — fail-open if Python is slow/down
+            CURLOPT_CONNECTTIMEOUT => 1,
+        ]);
+
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $errno = curl_errno($ch);
+        curl_close($ch);
+
+        // Timeout or connection error → fail-open (return null)
+        if ($errno !== 0 || $httpCode !== 200) {
+            return null;
+        }
+
+        $data = json_decode($response, true);
+        if (!is_array($data) || !isset($data['valid'])) {
+            return null; // unexpected response → fail-open
+        }
+
+        return $data['valid'] === true;
     }
 }
