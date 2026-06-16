@@ -55,6 +55,8 @@ interface DashboardViewPageProps {
   schema: {
     widgets?: SchemaWidget[];
   };
+  /** Feature flag: show the per-widget "查询语句" panel (CHAT2VIZ_SHOW_SQL). */
+  show_sql?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -75,9 +77,10 @@ interface ViewWidgetCardProps {
   uid: string;
   dashboardStatus: string;
   widget: SchemaWidget;
+  showSql?: boolean;
 }
 
-function ViewWidgetCard({ uid, dashboardStatus, widget }: ViewWidgetCardProps) {
+function ViewWidgetCard({ uid, dashboardStatus, widget, showSql = false }: ViewWidgetCardProps) {
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ['widget-data', uid, widget.id, dashboardStatus],
     queryFn: async () => {
@@ -147,7 +150,7 @@ function ViewWidgetCard({ uid, dashboardStatus, widget }: ViewWidgetCardProps) {
       </div>
 
       {/* Footer */}
-      {widget.sql && (
+      {showSql && widget.sql && (
         <div style={styles.footer}>
           <Collapse
             ghost
@@ -173,7 +176,7 @@ function ViewWidgetCard({ uid, dashboardStatus, widget }: ViewWidgetCardProps) {
 // ---------------------------------------------------------------------------
 
 function DashboardViewInner() {
-  const { dashboard, schema } = getPageProps<DashboardViewPageProps>();
+  const { dashboard, schema, show_sql = false } = getPageProps<DashboardViewPageProps>();
 
   const widgets = useMemo(() => schema?.widgets ?? [], [schema]);
   const hasWidgets = widgets.length > 0;
@@ -223,7 +226,7 @@ function DashboardViewInner() {
             >
               {widgets.map((w) => (
                 <div key={w.id}>
-                  <ViewWidgetCard uid={dashboard.uid} dashboardStatus={dashboard.dashboard_status} widget={w} />
+                  <ViewWidgetCard uid={dashboard.uid} dashboardStatus={dashboard.dashboard_status} widget={w} showSql={show_sql} />
                 </div>
               ))}
             </ResponsiveGridLayout>

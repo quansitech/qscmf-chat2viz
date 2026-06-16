@@ -8,6 +8,7 @@ import type {
   DashboardPatch,
 } from '../store/dashboardStore';
 import { parseSseEvent, type SseEvent } from '../sse-parser';
+import { planActionCall, findInProgressToolStep } from '../utils/aiSteps';
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -386,13 +387,42 @@ function dispatchEvent(event: SseEvent | null): boolean {
       };
       store.executeAction(action);
       const toolLabel = getToolLabel(action.action_type);
-      store.addAiStep({
-        id: generateStepId(),
-        type: 'tool_start',
-        label: toolLabel,
-        timestamp: generateId(),
-        completed: false,
-      });
+      // First real frame — flip 'submitted' → 'streaming'.
+      useDashboardStore.getState().markStreaming();
+      // De-duplicate tool steps so the indicator shows a single processing row
+      // instead of appending a new badge per action_call event (the
+      // "不断追加工具执行过程" anti-pattern). Same-type repeat calls collapse
+      // onto one row; a different tool completes the prior one first.
+      const decision = planActionCall(
+        useDashboardStore.getState().aiSteps,
+        action.action_type,
+        toolLabel,
+        () => ({
+          id: generateStepId(),
+          type: 'tool_start' as const,
+          label: toolLabel,
+          timestamp: generateId(),
+          completed: false,
+        }),
+      );
+      const st = useDashboardStore.getState();
+      if (decision.kind === 'refresh') {
+        // Same-type repeat: reset the existing row to "freshly processing" so
+        // its spinner visibly restarts, without adding a new row.
+        st.completeAiStep(decision.id);
+        st.addAiStep({
+          id: generateStepId(),
+          type: 'tool_start',
+          label: toolLabel,
+          timestamp: generateId(),
+          completed: false,
+        });
+      } else {
+        if (decision.kind === 'completeAndAdd' && decision.completeId) {
+          st.completeAiStep(decision.completeId);
+        }
+        st.addAiStep(decision.step);
+      }
       break;
     }
 
@@ -402,6 +432,14 @@ function dispatchEvent(event: SseEvent | null): boolean {
         result: event.data.result,
       };
       applyActionResult(result);
+      // Complete the most recent in-progress tool step so its spinner stops and
+      // it settles into the (green) completed state. Previously this never
+      // happened, so tool steps stayed "processing" forever and accumulated.
+      const s = useDashboardStore.getState();
+      const inProgress = findInProgressToolStep(s.aiSteps);
+      if (inProgress) {
+        s.completeAiStep(inProgress.id);
+      }
       break;
     }
 
@@ -435,6 +473,8 @@ function dispatchEvent(event: SseEvent | null): boolean {
     }
 
     case 'answer': {
+      // First real frame — flip 'submitted' → 'streaming'.
+      useDashboardStore.getState().markStreaming();
       store.appendAnswer(str(event.data.text));
       break;
     }

@@ -26,6 +26,19 @@ class SmartyRenderer implements PageRendererInterface
         return (fn () => $this->{$method}(...$args))->call($this->controller);
     }
 
+    /**
+     * Read the show_sql feature flag from the environment.
+     *
+     * Default: hidden (false). Set CHAT2VIZ_SHOW_SQL=true to display the
+     * per-widget "查询语句" panel — typically for debugging.
+     *
+     * Declared public static so it can be unit-tested without a controller.
+     */
+    public static function showSql(): bool
+    {
+        return filter_var(env('CHAT2VIZ_SHOW_SQL', false), FILTER_VALIDATE_BOOLEAN);
+    }
+
     public function renderList(array $dashboards, int $total, int $page, int $perPage): mixed
     {
         // NOTE: display() uses action name as template name (index→index.html, edit→edit.html)
@@ -49,6 +62,7 @@ class SmartyRenderer implements PageRendererInterface
 
         $this->callProtected('assign', 'meta_title', $dashboard ? '编辑仪表盘' : '新建仪表盘');
         $this->callProtected('assign', 'dashboard', $dashboard);
+        $this->callProtected('assign', 'show_sql', self::showSql());
         $this->callProtected('display');
         return null;
     }
@@ -58,6 +72,7 @@ class SmartyRenderer implements PageRendererInterface
         $this->callProtected('assign', 'meta_title', $dashboard['title'] ?? '仪表盘');
         $this->callProtected('assign', 'dashboard', $dashboard);
         $this->callProtected('assign', 'schema', $schema);
+        $this->callProtected('assign', 'show_sql', self::showSql());
         // Explicitly target view.html template
         // NOTE: Must pass 'view' because display() defaults to ACTION_NAME which is 'view'
         $this->callProtected('display', 'view');

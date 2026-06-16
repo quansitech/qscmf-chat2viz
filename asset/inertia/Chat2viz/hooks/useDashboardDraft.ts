@@ -268,8 +268,10 @@ export function useDashboardDraft(): UseDashboardDraftReturn {
       // Only react when isDirty transitions from false to true
       if (prevState.isDirty || !state.isDirty) return;
 
-      // Suppress auto-save during SSE streaming — save once after completion.
-      if (state.streamingState === 'streaming') return;
+      // Suppress auto-save while an ask is in flight — covers both the
+      // 'submitted' (pre-first-frame) and 'streaming' phases. The full result
+      // is persisted once after completion via the flush subscription below.
+      if (state.streamingState !== 'idle') return;
 
       // Determine the source by comparing what changed
       let source: SaveSource = 'ai'; // default for SSE-driven changes
@@ -292,7 +294,9 @@ export function useDashboardDraft(): UseDashboardDraftReturn {
 
   useEffect(() => {
     const unsubscribe = useDashboardStore.subscribe((state, prevState) => {
-      if (prevState.streamingState !== 'streaming' || state.streamingState === 'streaming') return;
+      // Fire once when an in-flight ask ends (any non-idle → idle transition),
+      // covering 'submitted' → idle and 'streaming' → idle.
+      if (prevState.streamingState === 'idle' || state.streamingState !== 'idle') return;
       // Streaming just ended — if there are unsaved changes, flush now.
       if (state.isDirty) {
         saveRef.current('ai');

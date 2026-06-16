@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Button, Input, Modal, Tag, Tooltip, message } from 'antd';
-import { ArrowLeftOutlined, CloudOutlined, CloudSyncOutlined, CloudUploadOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, CloudOutlined, CloudSyncOutlined, CloudUploadOutlined, MessageOutlined } from '@ant-design/icons';
+import { useQueries, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { getPageProps, navigate } from './adapters';
 import { ADMIN_BASE } from './utils/routes';
 import { useDashboardStore, normalizeRows } from './store/dashboardStore';
@@ -9,6 +10,48 @@ import { useDashboardDraft } from './hooks/useDashboardDraft';
 import ChatPanel from './components/ChatPanel';
 import PreviewPanel from './components/PreviewPanel';
 import PublishDialog from './components/PublishDialog';
+import { createSemaphore } from './utils/concurrency';
+
+// ---------------------------------------------------------------------------
+// QueryClient — scoped to the edit page (mirrors DashboardView). Used only for
+// the two pure-HTTP scenarios: re-fetching widget data when reopening a saved
+// dashboard, and single-widget manual refresh. SSE remains the single source
+// of truth during a live stream; query results write back to the store via
+// onSuccess, so there is never a dual-source conflict.
+// ---------------------------------------------------------------------------
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 5 * 60 * 1000, // 5 minutes
+      retry: 1,
+      refetchOnWindowFocus: false,
+    },
+  },
+});
+
+/**
+ * Shared concurrency cap (6) wrapping every widget-data HTTP request on this
+ * page. react-query already de-dupes by key and honors the 5min staleTime; this
+ * semaphore is a defensive backstop that protects the backend DB connection
+ * pool and aligns with the browser's HTTP/1.1 per-origin connection ceiling.
+ */
+const limitWidgetFetch = createSemaphore(6);
+
+/** Fetch a single widget's draft data. Returns bare Row[] (throws on API error). */
+async function fetchWidgetData(uid: string, widgetId: string): Promise<Record<string, unknown>[]> {
+  return limitWidgetFetch(async () => {
+    const resp = await fetch(
+      `${ADMIN_BASE}/api_draft_widget_data?uid=${encodeURIComponent(uid)}&widgetId=${encodeURIComponent(widgetId)}`,
+      { credentials: 'same-origin' },
+    );
+    const result = await resp.json();
+    if (result.status !== 1) {
+      throw new Error(result.info || '图表数据加载失败');
+    }
+    return Array.isArray(result.data) ? (result.data as Record<string, unknown>[]) : [];
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -23,6 +66,8 @@ interface DashboardData {
 
 interface DashboardEditProps {
   dashboard: DashboardData | null;
+  /** Feature flag: show the per-widget "查询语句" panel (CHAT2VIZ_SHOW_SQL). */
+  show_sql?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -44,7 +89,15 @@ function useThrottledAction(action: () => void, delayMs: number) {
 // ---------------------------------------------------------------------------
 
 export default function DashboardEdit() {
-  const { dashboard } = getPageProps<DashboardEditProps>();
+  return (
+    <QueryClientProvider client={queryClient}>
+      <DashboardEditInner />
+    </QueryClientProvider>
+  );
+}
+
+function DashboardEditInner() {
+  const { dashboard, show_sql = false } = getPageProps<DashboardEditProps>();
 
   const title = useDashboardStore((s) => s.title);
   const uid = useDashboardStore((s) => s.uid);
@@ -54,6 +107,43 @@ export default function DashboardEdit() {
   // Alert (design D3) — the duplicate top-bar Tag has been removed so the two
   // never coexist. This component intentionally does not subscribe to error.
   const streamingState = useDashboardStore((s) => s.streamingState);
+
+  // ---- HTTP widget-data hydration (reopening a saved dashboard) ----
+  // The hydrate effect (below) records which widgets need an HTTP data fetch
+  // (persisted sql, no inline data) and bumps fetchToken. useQueries then
+  // issues them with bounded concurrency (semaphore) + per-key caching. Only
+  // the keys present here are ever requested; SSE stays the single source of
+  // truth during live streaming and never overlaps these keys.
+  const pendingFetchRef = useRef<{ uid: string; widgetId: string }[]>([]);
+  const [fetchToken, setFetchToken] = useState(0);
+  const fetchTargets = pendingFetchRef.current;
+
+  const widgetQueries = useQueries({
+    queries: fetchTargets.map(({ uid: wUid, widgetId }) => ({
+      queryKey: ['widget-data', wUid, widgetId, 'draft'],
+      // fetchWidgetData is internally throttled by the shared 6-wide semaphore;
+      // react-query de-dupes by key + honors the 5min staleTime on top.
+      queryFn: () => fetchWidgetData(wUid, widgetId),
+      staleTime: 5 * 60 * 1000,
+      enabled: fetchToken > 0,
+    })),
+  });
+
+  // Write fetched rows back into the store (one-way query → store).
+  const fetchedSignature = widgetQueries.map((q) => q.dataUpdatedAt).join(',');
+  useEffect(() => {
+    fetchTargets.forEach(({ widgetId }, i) => {
+      const q = widgetQueries[i];
+      if (q?.isSuccess && Array.isArray(q.data) && q.data.length > 0) {
+        useDashboardStore.getState().updateWidget(widgetId, {
+          data: q.data as Record<string, unknown>[],
+        });
+      }
+    });
+    // widgetQueries identity changes per render; depend on the data-update
+    // signature + fetchToken instead.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetchedSignature, fetchToken]);
 
   // Initialize store from server props — re-hydrate when navigating to a
   // different dashboard (Inertia client-side navigation in v14/v15) or on
@@ -96,27 +186,19 @@ export default function DashboardEdit() {
       }
       useDashboardStore.setState({ widgets: widgetsMap });
 
-      // Fetch data for widgets that have SQL but no data (DESIGN_BASIS #4/#6).
-      // edit-reload MUST write a BARE array to store (not a reverse-wrapped
-      // envelope), converging to the same Row[] form as the view page.
-      const uid = dashboard.uid;
+      // Record which widgets need their data fetched over HTTP (those with a
+      // persisted sql but no inline data). The WidgetDataFetcher hook below
+      // issues these requests with bounded concurrency + caching; SSE remains
+      // the source of truth during live streaming and never touches this path.
+      const needsFetch: { uid: string; widgetId: string }[] = [];
       for (const w of schema.widgets) {
         const hasData = Array.isArray(w.data) && w.data.length > 0;
         if (w.id && w.sql && !hasData) {
-          fetch(`${ADMIN_BASE}/api_draft_widget_data?uid=${encodeURIComponent(uid)}&widgetId=${encodeURIComponent(w.id)}`, {
-            credentials: 'same-origin',
-          })
-            .then((r) => r.json())
-            .then((result) => {
-              if (result.status === 1 && Array.isArray(result.data) && result.data.length > 0) {
-                // NOTE: updateWidget is NOT the normalization boundary — caller
-                // MUST pass a bare array. HTTP returns bare rows already.
-                useDashboardStore.getState().updateWidget(w.id, { data: result.data as Record<string, unknown>[] });
-              }
-            })
-            .catch(() => { /* non-critical */ });
+          needsFetch.push({ uid: dashboard.uid, widgetId: w.id });
         }
       }
+      pendingFetchRef.current = needsFetch;
+      setFetchToken((t) => t + 1);
     }
   }, [dashboard?.uid]);
 
@@ -125,15 +207,26 @@ export default function DashboardEdit() {
     if (!dashboard?.uid) return;
 
     const store = useDashboardStore.getState();
-    // Skip if messages already loaded for this conversation
-    if (store.conversationId && store.messages.length > 0) return;
+    // Skip if messages already loaded for this conversation — already hydrated.
+    if (store.conversationId && store.messages.length > 0) {
+      useDashboardStore.setState({ historyStatus: 'ready' });
+      return;
+    }
+
+    // Mark history as loading so the chat panel can disable send + show a
+    // spinner until the conversation is hydrated.
+    useDashboardStore.setState({ historyStatus: 'loading' });
 
     fetch(`/extends/Chat2Viz/api_conversation_history?uid=${encodeURIComponent(dashboard.uid)}`, {
       credentials: 'same-origin',
     })
       .then((r) => r.json())
       .then((result) => {
-        if (result.status !== 1 || !result.data?.messages?.length) return;
+        if (result.status !== 1 || !result.data?.messages?.length) {
+          // No history (new dashboard) — ready, not error.
+          useDashboardStore.setState({ historyStatus: 'ready' });
+          return;
+        }
 
         const conversationId = result.data.conversation_id
           ? String(result.data.conversation_id)
@@ -162,14 +255,22 @@ export default function DashboardEdit() {
             };
           });
 
-        const update: Partial<import('./store/dashboardStore').DashboardState> = { messages: msgs };
+        const update: Partial<import('./store/dashboardStore').DashboardState> = {
+          messages: msgs,
+          historyStatus: 'ready',
+        };
         if (conversationId) {
           update.conversationId = conversationId;
         }
         useDashboardStore.setState(update);
       })
       .catch(() => {
-        // Non-critical: conversation history is best-effort
+        // Non-critical: conversation history is best-effort. Surface as ready
+        // (not error) so the user can still ask new questions, but tell the
+        // user the history failed to load (otherwise the empty chat looks like
+        // a bug rather than a network failure).
+        useDashboardStore.setState({ historyStatus: 'ready' });
+        message.warning('对话历史加载失败，已开始新对话。你仍可以继续提问。', 4);
       });
   }, [dashboard?.uid]);
 
@@ -219,6 +320,10 @@ export default function DashboardEdit() {
 
   // ---- Publish dialog state ----
   const [publishVisible, setPublishVisible] = useState(false);
+
+  // ---- Chat pane collapse (lets the preview fill the width, approximating
+  // the published view; restored by clicking the floating button) ----
+  const [chatCollapsed, setChatCollapsed] = useState(false);
 
   // ---- Socket health check ----
   const [socketAvailable, setSocketAvailable] = useState(true);
@@ -313,13 +418,43 @@ export default function DashboardEdit() {
 
       {/* ---- Main Content: Dual-pane ---- */}
       <div className="dashboard-edit-content" style={styles.content}>
-        <div className="dashboard-edit-chat-pane" style={styles.chatPane}>
-          <ChatPanel disabled={!socketAvailable} />
-        </div>
+        {!chatCollapsed && (
+          <div className="dashboard-edit-chat-pane" style={styles.chatPane}>
+            <ChatPanel disabled={!socketAvailable} showSql={show_sql} />
+          </div>
+        )}
+        {/* Collapse toggle sits on the chat/preview divider line (vertical
+            center), so it never overlaps the ChatPanel header's "New" button
+            which lives at the top-right of the pane. */}
+        {!chatCollapsed && (
+          <Tooltip title="收起对话区（预览发布效果）">
+            <Button
+              className="chat-collapse-btn"
+              size="small"
+              shape="circle"
+              icon={<MessageOutlined />}
+              onClick={() => setChatCollapsed(true)}
+              style={styles.collapseBtn}
+            />
+          </Tooltip>
+        )}
         <div className="dashboard-edit-preview-pane" style={styles.previewPane}>
-          <PreviewPanel />
+          <PreviewPanel showSql={show_sql} />
         </div>
       </div>
+
+      {/* Floating button to restore the chat pane when collapsed */}
+      {chatCollapsed && (
+        <Tooltip title="展开对话区" placement="left">
+          <Button
+            type="primary"
+            shape="circle"
+            icon={<MessageOutlined />}
+            onClick={() => setChatCollapsed(false)}
+            style={styles.fab}
+          />
+        </Tooltip>
+      )}
 
       {/* ---- Publish Dialog ---- */}
       <PublishDialog
@@ -394,6 +529,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flex: 1,
     minHeight: 0,
+    position: 'relative', // anchor for the collapse toggle on the divider
   },
   chatPane: {
     width: '30%',
@@ -401,6 +537,27 @@ const styles: Record<string, React.CSSProperties> = {
     maxWidth: 480,
     flexShrink: 0,
   },
+  // Collapse toggle: pinned to the chat/preview divider, vertically centered.
+  // Lives on the content layer (NOT inside ChatPanel) so it never overlaps the
+  // "New" button at the pane's top-right. The chat pane width is
+  // clamp(320px, 30%, 480px), so its right edge (the divider) sits at exactly
+  // that offset from the content's left edge — clamp() keeps the button there.
+  collapseBtn: {
+    position: 'absolute',
+    top: '50%',
+    left: 'clamp(320px, 30%, 480px)',
+    transform: 'translate(-50%, -50%)',
+    zIndex: 20,
+    background: '#fff',
+    boxShadow: '0 1px 4px rgba(0,0,0,0.15)',
+  } as React.CSSProperties,
+  fab: {
+    position: 'fixed',
+    right: 24,
+    bottom: 64,
+    zIndex: 1000,
+    boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+  } as React.CSSProperties,
   previewPane: {
     flex: 1,
     minWidth: 0,
@@ -427,6 +584,11 @@ const responsiveCss = `
   }
   .dashboard-edit-preview-pane {
     height: 55vh;
+  }
+  /* The collapse/floating-button affordance is desktop-only; on mobile the
+     panes already stack so collapsing would hide chat entirely. */
+  .chat-collapse-btn {
+    display: none !important;
   }
 }
 `;

@@ -1,11 +1,13 @@
 import { useCallback, useMemo, useState } from 'react';
 import { Empty, Spin, Typography } from 'antd';
 import { LayoutOutlined } from '@ant-design/icons';
+import { useQueryClient } from '@tanstack/react-query';
 import RGL, { WidthProvider, Layout } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import 'react-grid-layout/css/react-resizable.css';
 import WidgetCard from './WidgetCard';
 import { useDashboardStore } from '../store/dashboardStore';
+import { ADMIN_BASE } from '../utils/routes';
 import type { Widget, WidgetLayout } from '../store/dashboardStore';
 
 // ---------------------------------------------------------------------------
@@ -26,13 +28,20 @@ const COMPACT_TYPE: ('vertical' | 'horizontal' | null) = 'vertical';
 // Component
 // ---------------------------------------------------------------------------
 
-export default function PreviewPanel() {
+interface PreviewPanelProps {
+  /** Feature flag: show the per-widget "查询语句" panel (CHAT2VIZ_SHOW_SQL). */
+  showSql?: boolean;
+}
+
+export default function PreviewPanel({ showSql = false }: PreviewPanelProps) {
   const widgets = useDashboardStore((s) => s.widgets);
   const updateWidget = useDashboardStore((s) => s.updateWidget);
   const updateLayout = useDashboardStore((s) => s.updateLayout);
   const removePanel = useDashboardStore((s) => s.removePanel);
   const streamingState = useDashboardStore((s) => s.streamingState);
-
+  const uid = useDashboardStore((s) => s.uid);
+  const queryClient = useQueryClient();
+  const [refreshing, setRefreshing] = useState<Record<string, boolean>>({});
   const [dragging, setDragging] = useState(false);
 
   const widgetList = useMemo(() => Object.values(widgets) as Widget[], [widgets]);
@@ -83,13 +92,44 @@ export default function PreviewPanel() {
   );
 
   const handleRefresh = useCallback(
-    (widgetId: string) => {
-      // Use a dedicated refreshKey counter to trigger data re-fetch without
-      // corrupting the refreshInterval field (which stores seconds, not timestamps).
-      updateWidget(widgetId, { refreshKey: Date.now() });
+    async (widgetId: string) => {
+      if (!uid) return;
+      // Refresh ONLY this widget — invalidate its single query key and refetch.
+      // The backend api_draft_widget_data filters strictly by widgetId, so no
+      // other widget is touched (previously refreshKey was set but never read).
+      setRefreshing((r) => ({ ...r, [widgetId]: true }));
+      try {
+        const resp = await fetch(
+          `${ADMIN_BASE}/api_draft_widget_data?uid=${encodeURIComponent(uid)}&widgetId=${encodeURIComponent(widgetId)}`,
+          { credentials: 'same-origin' },
+        );
+        const result = await resp.json();
+        if (result.status === 1 && Array.isArray(result.data)) {
+          updateWidget(widgetId, { data: result.data as Record<string, unknown>[] });
+        }
+        // Also drop this key from the react-query cache so the next hydration
+        // re-fetches fresh data instead of serving the stale 5min entry.
+        queryClient.removeQueries({ queryKey: ['widget-data', uid, widgetId, 'draft'] });
+      } catch {
+        // Non-fatal: leave the existing data in place.
+      } finally {
+        setRefreshing((r) => {
+          const next = { ...r };
+          delete next[widgetId];
+          return next;
+        });
+      }
     },
-    [updateWidget],
+    [uid, updateWidget, queryClient],
   );
+
+  // ---- Regenerate (error-state widget) ----
+  const handleRegenerate = useCallback((_widgetId: string) => {
+    // Placeholder: regeneration requires a new SSE ask. For now, just clear the
+    // error so the skeleton re-shows; a future iteration can re-issue the last
+    // question scoped to this widget.
+    updateWidget(_widgetId, { status: 'loading' });
+  }, [updateWidget]);
 
   // ---- Empty state ----
   if (!hasWidgets) {
@@ -132,6 +172,9 @@ export default function PreviewPanel() {
               onTitleChange={handleTitleChange}
               onRemove={handleRemove}
               onRefresh={handleRefresh}
+              onRegenerate={handleRegenerate}
+              refreshing={!!refreshing[w.id]}
+              showSql={showSql}
             />
           </div>
         ))}

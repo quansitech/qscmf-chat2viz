@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
-import { Alert, Collapse, Popconfirm, Skeleton, Spin, Typography } from 'antd';
-import { DeleteOutlined, EditOutlined, ReloadOutlined } from '@ant-design/icons';
+import { Alert, Collapse, Popconfirm, Skeleton, Spin, Tooltip, Typography } from 'antd';
+import { DeleteOutlined, EditOutlined, LoadingOutlined, ReloadOutlined } from '@ant-design/icons';
 import LazyG2Renderer from './LazyG2Renderer';
 import WidgetTable from './WidgetTable';
 import { hasChartSpec } from '../store/dashboardStore';
@@ -16,6 +16,10 @@ export interface WidgetCardProps {
   onRemove: (widgetId: string) => void;
   onRefresh?: (widgetId: string) => void;
   onRegenerate?: (widgetId: string) => void;
+  /** True while this widget's data is being re-fetched on manual refresh. */
+  refreshing?: boolean;
+  /** Feature flag: show the "查询语句" panel (CHAT2VIZ_SHOW_SQL). */
+  showSql?: boolean;
 }
 
 /**
@@ -31,7 +35,7 @@ function effectiveStatus(widget: Widget): 'loading' | 'error' | 'chart' {
 // Component
 // ---------------------------------------------------------------------------
 
-export default function WidgetCard({ widget, onTitleChange, onRemove, onRefresh, onRegenerate }: WidgetCardProps) {
+export default function WidgetCard({ widget, onTitleChange, onRemove, onRefresh, onRegenerate, refreshing = false, showSql = false }: WidgetCardProps) {
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState(widget.title);
 
@@ -105,10 +109,16 @@ export default function WidgetCard({ widget, onTitleChange, onRemove, onRefresh,
         </div>
         <div style={styles.headerActions}>
           {onRefresh && status === 'chart' && (
-            <ReloadOutlined
-              onClick={() => onRefresh(widget.id)}
-              style={styles.iconBtn}
-            />
+            <Tooltip title="刷新该图表数据">
+              {refreshing ? (
+                <LoadingOutlined style={styles.iconBtn} spin />
+              ) : (
+                <ReloadOutlined
+                  onClick={() => onRefresh(widget.id)}
+                  style={styles.iconBtn}
+                />
+              )}
+            </Tooltip>
           )}
           <Popconfirm
             title="确定移除该图表？"
@@ -184,7 +194,7 @@ export default function WidgetCard({ widget, onTitleChange, onRemove, onRefresh,
 
       {/* ---- Footer ---- */}
       <div style={styles.footer}>
-        {widget.sql ? (
+        {showSql && widget.sql ? (
           <Collapse
             ghost
             size="small"

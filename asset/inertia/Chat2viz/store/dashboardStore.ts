@@ -5,6 +5,7 @@ import { temporal } from 'zundo';
 import type { Draft } from 'immer';
 import { buildSchema } from '../utils/buildSchema';
 import { ADMIN_BASE } from '../utils/routes';
+import { suggestHeight } from '../utils/suggestHeight';
 
 // ---------------------------------------------------------------------------
 // Utility — safe UUID generation with fallback for non-secure contexts
@@ -96,7 +97,30 @@ export interface ChatMessage {
   };
 }
 
-export type StreamingState = 'idle' | 'streaming' | 'error';
+/**
+ * Conversation streaming status. Drives AI-step indicators and auto-save edges.
+ *
+ * - 'idle'      — ready, no request in flight
+ * - 'submitted' — request sent, awaiting the FIRST SSE frame (the "thinking"
+ *                 phase before any token/tool arrives). Semantically part of a
+ *                 stream; auto-save suppression treats both 'submitted' and
+ *                 'streaming' as active (see useDashboardDraft, which keys off
+ *                 `!== 'idle'`).
+ * - 'streaming' — SSE frames are arriving (answer text and/or tool calls).
+ * - 'error'     — the request failed.
+ *
+ * NOTE: the literal 'streaming' MUST be preserved verbatim — useDashboardDraft's
+ * stream-end edge detection depends on it. 'submitted' is purely additive.
+ */
+export type StreamingState = 'idle' | 'submitted' | 'streaming' | 'error';
+
+/**
+ * Session-level history hydration status — orthogonal to StreamingState (which
+ * tracks a single ask). Drives the initial "loading history" gate so the chat
+ * panel can disable send + show a spinner until the conversation is loaded.
+ * Not part of the temporal partialize whitelist, so it never enters undo state.
+ */
+export type HistoryStatus = 'idle' | 'loading' | 'ready' | 'error';
 
 export interface AiStep {
   id: string;
@@ -114,6 +138,8 @@ export interface DashboardState {
   messages: ChatMessage[];
   isLoading: boolean;
   streamingState: StreamingState;
+  /** Session-level history hydration status (orthogonal to streamingState). */
+  historyStatus: HistoryStatus;
   aiSteps: AiStep[];
   error: string;
   autoSaveEnabled: boolean;
@@ -145,6 +171,8 @@ export interface DashboardActions {
   setSql: (widgetId: string, sql: string) => void;
   setError: (error: string) => void;
   completeConversation: () => void;
+  /** Transition from 'submitted' to 'streaming' on the first real SSE frame. */
+  markStreaming: () => void;
   saveDraft: () => Promise<void>;
   setConversationId: (id: string) => void;
   resetConversation: () => void;
@@ -173,6 +201,7 @@ const initialState: DashboardState = {
   messages: [],
   isLoading: false,
   streamingState: 'idle' as StreamingState,
+  historyStatus: 'idle' as HistoryStatus,
   aiSteps: [] as AiStep[],
   error: '',
   autoSaveEnabled: true,
@@ -276,7 +305,9 @@ const _store = _create()(
         startConversation: (question: string) => {
           set((state) => {
             state.isLoading = true;
-            state.streamingState = 'streaming';
+            // 'submitted' = request sent, awaiting first frame. Transitions to
+            // 'streaming' on the first answer/action frame (markStreaming).
+            state.streamingState = 'submitted';
             state.aiSteps = [];
             state.error = '';
             state.messages.push({
@@ -311,6 +342,15 @@ const _store = _create()(
             state.isLoading = false;
             state.streamingState = 'idle';
             state.aiSteps = [];
+          });
+        },
+
+        markStreaming: () => {
+          set((state) => {
+            // Only flip 'submitted' → 'streaming'; never override 'error'/'idle'.
+            if (state.streamingState === 'submitted') {
+              state.streamingState = 'streaming';
+            }
           });
         },
 
@@ -349,6 +389,18 @@ const _store = _create()(
             // Preserve any pre-existing fields (e.g. title from a prior partial),
             // default status to 'loading', assign a layout slot.
             const existing = state.widgets[widgetId];
+            const baseLayout = partial.layout ?? existing?.layout;
+            const spec = partial.g2_spec ?? existing?.g2_spec ?? {};
+            const data = partial.data ?? existing?.data ?? [];
+            // Content-aware default height: when no layout was provided, derive
+            // a sensible h from the spec/data instead of the flat 6. Existing
+            // persisted layouts are honored as-is.
+            const layout = baseLayout ?? {
+              x: 0,
+              y: 0,
+              w: 12,
+              h: suggestHeight({ spec, data }),
+            };
             state.widgets[widgetId] = {
               id: widgetId,
               title: partial.title ?? existing?.title ?? '',
@@ -356,7 +408,7 @@ const _store = _create()(
               data: partial.data ?? existing?.data ?? [],
               sql: partial.sql ?? existing?.sql,
               status: 'loading',
-              layout: partial.layout ?? existing?.layout ?? { x: 0, y: 0, w: 12, h: 6 },
+              layout,
               ...(partial.refreshInterval !== undefined ? { refreshInterval: partial.refreshInterval } : {}),
             };
             state.isDirty = true;

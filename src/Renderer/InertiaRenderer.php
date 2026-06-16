@@ -9,6 +9,19 @@ namespace Qscmf\Chat2Viz\Renderer;
  */
 class InertiaRenderer implements PageRendererInterface
 {
+    /**
+     * Read the show_sql feature flag from the environment.
+     *
+     * Default: hidden (false). Set CHAT2VIZ_SHOW_SQL=true to display the
+     * per-widget "查询语句" panel — typically for debugging.
+     *
+     * Declared public static so it can be unit-tested without Inertia boot.
+     */
+    public static function showSql(): bool
+    {
+        return filter_var(getenv('CHAT2VIZ_SHOW_SQL') ?: env('CHAT2VIZ_SHOW_SQL', false), FILTER_VALIDATE_BOOLEAN);
+    }
+
     public function renderList(array $dashboards, int $total, int $page, int $perPage): mixed
     {
         return \Qscmf\Lib\Inertia\Inertia::render('Chat2viz/DashboardList', [
@@ -23,6 +36,7 @@ class InertiaRenderer implements PageRendererInterface
     {
         return \Qscmf\Lib\Inertia\Inertia::render('Chat2viz/DashboardEdit', [
             'dashboard' => $dashboard,
+            'show_sql'  => self::showSql(),
         ]);
     }
 
@@ -31,6 +45,7 @@ class InertiaRenderer implements PageRendererInterface
         return \Qscmf\Lib\Inertia\Inertia::render('Chat2viz/DashboardShow', [
             'dashboard' => $dashboard,
             'schema'    => $schema,
+            'show_sql'  => self::showSql(),
         ]);
     }
 }

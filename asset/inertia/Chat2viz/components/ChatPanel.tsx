@@ -1,5 +1,5 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
-import { Alert, Badge, Button, Collapse, Empty, Input, message, Spin, Tag, Tooltip, Typography } from 'antd';
+import { Alert, Badge, Button, Collapse, Empty, Input, message, Modal, Spin, Tag, Tooltip, Typography } from 'antd';
 import { SendOutlined, QuestionCircleOutlined, PlusOutlined } from '@ant-design/icons';
 import { useDashboardStore } from '../store/dashboardStore';
 import { useSseStream } from '../hooks/useSseStream';
@@ -15,9 +15,9 @@ const EXAMPLE_QUESTIONS = [
   '订单金额排名前10的客户有哪些？',
 ];
 
-// Static keyframe CSS for the typing cursor — defined once at module level
-// to avoid re-injecting a <style> element on every render.
-const TYPING_CURSOR_CSS = `@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} } .typing-cursor { animation: blink 1s step-end infinite; display: inline; } .typing-cursor::after { content: '|'; }`;
+// Static keyframe CSS for the typing cursor + the three-dot thinking indicator
+// — defined once at module level to avoid re-injecting a <style> per render.
+const TYPING_CURSOR_CSS = `@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} } .typing-cursor { animation: blink 1s step-end infinite; display: inline; } .typing-cursor::after { content: '|'; } @keyframes typingDot { 0%,60%,100%{opacity:.25; transform: translateY(0)} 30%{opacity:1; transform: translateY(-2px)} } .typing-dots span { display:inline-block; width:5px; height:5px; margin:0 1px; border-radius:50%; background:#888; animation: typingDot 1.2s infinite; } .typing-dots span:nth-child(2){animation-delay:.2s} .typing-dots span:nth-child(3){animation-delay:.4s}`;
 
 /** Selector: does the last assistant message have content? */
 function selectLastAssistantHasContent(s: { messages: ChatMessage[] }): boolean {
@@ -34,17 +34,20 @@ function AiStepsIndicator() {
   const aiSteps = useDashboardStore((s) => s.aiSteps);
   const streamingState = useDashboardStore((s) => s.streamingState);
 
-  if (streamingState === 'idle' || aiSteps.length === 0) {
-    if (streamingState !== 'idle') {
-      return (
-        <div style={styles.loadingIndicator}>
-          <Spin size="small" />
-          <Typography.Text type="secondary" style={{ marginLeft: 8 }}>分析中...</Typography.Text>
-        </div>
-      );
-    }
-    return null;
+  // 'submitted' = request sent, awaiting the first frame. Show the three-dot
+  // "thinking" indicator. Once streaming begins, step badges (or the typing
+  // cursor) take over.
+  if (streamingState === 'submitted' || (streamingState !== 'idle' && aiSteps.length === 0)) {
+    return (
+      <div style={styles.loadingIndicator}>
+        <span className="typing-dots"><span /><span /><span /></span>
+        <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
+          {streamingState === 'submitted' ? '思考中...' : '分析中...'}
+        </Typography.Text>
+      </div>
+    );
   }
+  if (streamingState === 'idle') return null;
 
   return (
     <div style={styles.aiStepsContainer}>
@@ -67,12 +70,15 @@ function AiStepsIndicator() {
 
 interface ChatPanelProps {
   disabled?: boolean;
+  /** Feature flag: show the "查询语句" panel in assistant bubbles (env-driven). */
+  showSql?: boolean;
 }
 
-export default function ChatPanel({ disabled = false }: ChatPanelProps) {
+export default function ChatPanel({ disabled = false, showSql = false }: ChatPanelProps) {
   const messages = useDashboardStore((s) => s.messages);
   const isLoading = useDashboardStore((s) => s.isLoading);
   const streamingState = useDashboardStore((s) => s.streamingState);
+  const historyStatus = useDashboardStore((s) => s.historyStatus);
   const uid = useDashboardStore((s) => s.uid);
   // Endpoint-level global error — the SINGLE source of truth for endpoint
   // failures (connection/auth/stream-level errors). Widget-level local errors
@@ -84,9 +90,20 @@ export default function ChatPanel({ disabled = false }: ChatPanelProps) {
   const [inputValue, setInputValue] = useState('');
   const [newConvLoading, setNewConvLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const textAreaRef = useRef<{ focus: () => void; resizableTextArea?: { textArea: HTMLTextAreaElement } } | null>(null);
 
-  // ---- New Conversation ----
-  const handleNewConversation = useCallback(async () => {
+  /** Refocus the input so the user can keep typing the next question. */
+  const refocusInput = useCallback(() => {
+    // antd TextArea exposes focus() on its ref; defer to next tick so the
+    // post-send state settle (input cleared, height reset) lands first.
+    setTimeout(() => textAreaRef.current?.focus(), 0);
+  }, []);
+
+  // History still loading → block sending until the conversation is hydrated.
+  const historyLoading = historyStatus === 'loading';
+
+  // ---- New Conversation (with confirm: charts preserved, chat cleared) ----
+  const performNewConversation = useCallback(async () => {
     if (!uid || streamingState !== 'idle') return;
     setNewConvLoading(true);
     try {
@@ -101,9 +118,11 @@ export default function ChatPanel({ disabled = false }: ChatPanelProps) {
         useDashboardStore.getState().resetConversation();
         if (result.data?.conversation_id) {
           useDashboardStore.getState().setConversationId(
-            String(result.data.conversation_id),
+            String(result.data?.conversation_id),
           );
         }
+        message.success('已开始新对话，已生成的图表保留。', 2);
+        refocusInput();
       } else {
         message.error(result.info || 'Failed to create new conversation');
       }
@@ -112,7 +131,21 @@ export default function ChatPanel({ disabled = false }: ChatPanelProps) {
     } finally {
       setNewConvLoading(false);
     }
-  }, [uid, streamingState]);
+  }, [uid, streamingState, refocusInput]);
+
+  const handleNewConversation = useCallback(() => {
+    if (!uid || streamingState !== 'idle') return;
+    // Confirm before clearing: charts stay, but the conversation history is
+    // discarded and cannot be recovered — guard against accidental clicks.
+    Modal.confirm({
+      title: '开始新对话？',
+      content: '当前对话记录将被清空，已生成的图表会保留。此操作无法撤销。',
+      okText: '开始新对话',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: performNewConversation,
+    });
+  }, [uid, streamingState, performNewConversation]);
 
   // ---- Auto-scroll to bottom on new messages ----
   useEffect(() => {
@@ -125,7 +158,10 @@ export default function ChatPanel({ disabled = false }: ChatPanelProps) {
     if (!question || isLoading) return;
     setInputValue('');
     sendQuestion(question);
-  }, [inputValue, isLoading, sendQuestion]);
+    // Keep focus in the input so the user can immediately type the next
+    // follow-up question (industry convention for chat inputs).
+    refocusInput();
+  }, [inputValue, isLoading, sendQuestion, refocusInput]);
 
   // ---- Enter to send, Shift+Enter for newline ----
   const handleKeyDown = useCallback(
@@ -155,6 +191,14 @@ export default function ChatPanel({ disabled = false }: ChatPanelProps) {
       {disabled && (
         <div style={styles.disabledBanner}>
           分析服务不可用，请检查后端服务状态
+        </div>
+      )}
+
+      {/* ---- History hydration loader (session init) ---- */}
+      {historyLoading && (
+        <div style={styles.historyLoader}>
+          <Spin size="small" />
+          <Typography.Text type="secondary" style={{ marginLeft: 8 }}>正在加载对话历史...</Typography.Text>
         </div>
       )}
 
@@ -218,7 +262,7 @@ export default function ChatPanel({ disabled = false }: ChatPanelProps) {
         )}
 
         {messages.map((msg) => (
-          <MessageBubble key={msg.id} message={msg} />
+          <MessageBubble key={msg.id} message={msg} showSql={showSql} />
         ))}
 
         <AiStepsIndicator />
@@ -242,9 +286,10 @@ export default function ChatPanel({ disabled = false }: ChatPanelProps) {
           onChange={(e) => setInputValue(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="输入你的问题...（回车发送，Shift+回车换行）"
-          autoSize={{ minRows: 1, maxRows: 4 }}
+          autoSize={{ minRows: 1, maxRows: 6 }}
           style={styles.textArea}
           disabled={disabled}
+          ref={textAreaRef as any}
         />
         <Button
           type={streamingState === 'idle' ? 'primary' : 'default'}
@@ -252,7 +297,7 @@ export default function ChatPanel({ disabled = false }: ChatPanelProps) {
           onClick={streamingState !== 'idle' ? cancel : handleSend}
           danger={streamingState !== 'idle'}
           style={styles.sendBtn}
-          disabled={disabled || (streamingState === 'idle' && !inputValue.trim())}
+          disabled={disabled || historyLoading || (streamingState === 'idle' && !inputValue.trim())}
         >
           {streamingState !== 'idle' ? '停止' : '发送'}
         </Button>
@@ -267,9 +312,10 @@ export default function ChatPanel({ disabled = false }: ChatPanelProps) {
 
 interface MessageBubbleProps {
   message: ChatMessage;
+  showSql?: boolean;
 }
 
-function MessageBubble({ message }: MessageBubbleProps) {
+function MessageBubble({ message, showSql = false }: MessageBubbleProps) {
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
 
@@ -307,8 +353,8 @@ function MessageBubble({ message }: MessageBubbleProps) {
           </div>
         )}
 
-        {/* SQL collapse */}
-        {message.metadata?.sql && (
+        {/* SQL collapse — hidden unless the CHAT2VIZ_SHOW_SQL feature flag is on */}
+        {showSql && message.metadata?.sql && (
           <Collapse
             ghost
             size="small"
@@ -348,6 +394,14 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#cf1322',
     fontSize: 13,
     textAlign: 'center' as const,
+    flexShrink: 0,
+  },
+  historyLoader: {
+    display: 'flex',
+    alignItems: 'center',
+    padding: '8px 16px',
+    background: '#fafafa',
+    borderBottom: '1px solid #f0f0f0',
     flexShrink: 0,
   },
   errorAlertWrap: {
