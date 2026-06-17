@@ -33,31 +33,52 @@ function selectLastAssistantHasContent(s: { messages: ChatMessage[] }): boolean 
 function AiStepsIndicator() {
   const aiSteps = useDashboardStore((s) => s.aiSteps);
   const streamingState = useDashboardStore((s) => s.streamingState);
+  // Whether the last assistant message has real answer text yet.
+  const assistantHasContent = useDashboardStore((s) => {
+    const msgs = s.messages;
+    const last = [...msgs].reverse().find((m) => m.role === 'assistant');
+    return !!last?.content;
+  });
 
-  // 'submitted' = request sent, awaiting the first frame. Show the three-dot
-  // "thinking" indicator. Once streaming begins, step badges (or the typing
-  // cursor) take over.
-  if (streamingState === 'submitted' || (streamingState !== 'idle' && aiSteps.length === 0)) {
+  // Keep the three-dot indicator until the FIRST answer text arrives — tool
+  // calls (search_objects etc.) often arrive before any visible answer, and
+  // swapping to step badges prematurely makes the UI look empty/jumpy.
+  // Also show it while waiting for the first frame (submitted, no steps yet).
+  const awaitingFirstAnswer = streamingState !== 'idle' && !assistantHasContent;
+  if (streamingState === 'submitted' || awaitingFirstAnswer) {
     return (
       <div style={styles.loadingIndicator}>
         <span className="typing-dots"><span /><span /><span /></span>
-        <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
-          {streamingState === 'submitted' ? '思考中...' : '分析中...'}
-        </Typography.Text>
       </div>
     );
   }
   if (streamingState === 'idle') return null;
 
+  // Deduplicate tool steps by label: the backend often repeats the same tool
+  // (e.g. search_objects multiple times), and each repeat currently produces a
+  // new step row. Collapse to ONE row per label, keeping the LAST occurrence
+  // (so its processing/completed state is the most recent). This renders a
+  // single "搜索相关表..." regardless of how many times the tool fires.
+  const seen = new Map<string, typeof aiSteps[number]>();
+  for (const step of aiSteps) {
+    if (step.type === 'tool_start') {
+      seen.set(step.label, step); // last-write-wins per label
+    }
+  }
+  const dedupedSteps = aiSteps.filter((step) => {
+    if (step.type !== 'tool_start') return true;
+    return seen.get(step.label) === step; // keep only the last occurrence per label
+  });
+
   return (
     <div style={styles.aiStepsContainer}>
-      {aiSteps.map((step, i) => (
+      {dedupedSteps.map((step, i) => (
         <div key={step.id} style={styles.aiStep}>
           <Badge status={step.completed ? 'success' : 'processing'} />
           <Typography.Text type={step.completed ? 'secondary' : undefined} style={{ fontSize: 12 }}>
             {step.label}
           </Typography.Text>
-          {i === aiSteps.length - 1 && !step.completed && <Spin size="small" style={{ marginLeft: 4 }} />}
+          {i === dedupedSteps.length - 1 && !step.completed && <Spin size="small" style={{ marginLeft: 4 }} />}
         </div>
       ))}
     </div>
@@ -328,6 +349,14 @@ function MessageBubble({ message, showSql = false }: MessageBubbleProps) {
   const status = message.message_status;
 
   if (isSystem) return null;
+
+  // The last assistant message is created empty by startConversation() as a
+  // write-target for appendAnswer(). While it has no content yet, the
+  // AiStepsIndicator (three-dot / step badges) is the SINGLE loading affordance
+  // — skip the empty grey bubble so the two never coexist.
+  if (!isUser && isLastAssistant && !message.content && streamingState !== 'idle') {
+    return null;
+  }
 
   // Copy the assistant answer text. Only enabled when not streaming and there
   // is content — a common affordance for chat answers.

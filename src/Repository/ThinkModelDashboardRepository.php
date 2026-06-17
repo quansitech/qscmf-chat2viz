@@ -15,6 +15,7 @@ class ThinkModelDashboardRepository implements DashboardRepositoryInterface
     use DashboardFilterTrait;
     private const TABLE_DASHBOARDS = 'chat2viz_dashboards';
     private const TABLE_VERSIONS = 'chat2viz_dashboard_versions';
+    private const TABLE_CONVERSATIONS = 'chat2viz_conversations';
     private const TABLE_MESSAGES = 'chat2viz_conversation_messages';
 
     /**
@@ -180,8 +181,66 @@ class ThinkModelDashboardRepository implements DashboardRepositoryInterface
         return $affected !== false;
     }
 
-    public function publish(string $uid, ?int $publishedBy = null, string $title = ''): array
+
+    /**
+     * Permanently delete a dashboard and all its dependent data.
+     *
+     * Cascades within a transaction, child tables first:
+     *   versions (by dashboard_id)
+     *   -> conversation_messages (by conversation_id of this dashboard conversations)
+     *   -> conversations (by dashboard_uid)
+     *   -> dashboards (by uid)
+     *
+     * Throws DashboardNotFoundException when the dashboard does not exist, so the
+     * caller can distinguish nothing to delete from a real failure (mirrors update()).
+     */
+    public function delete(string $uid): bool
     {
+        $dashboard = $this->findByUid($uid);
+        if ($dashboard === null) {
+            throw new DashboardNotFoundException($uid);
+        }
+
+        $dashboardId = (int) $dashboard['id'];
+
+        // Collect conversation ids of this dashboard so we can purge their messages.
+        $conversations = M(self::TABLE_CONVERSATIONS)
+            ->where(['dashboard_uid' => $uid])
+            ->field('id')
+            ->select();
+        $conversationIds = [];
+        if (is_array($conversations)) {
+            foreach ($conversations as $row) {
+                if (isset($row['id'])) {
+                    $conversationIds[] = (int) $row['id'];
+                }
+            }
+        }
+
+        $transModel = M(self::TABLE_DASHBOARDS);
+        $transModel->startTrans();
+        try {
+            M(self::TABLE_VERSIONS)->where(['dashboard_id' => $dashboardId])->delete();
+
+            if (!empty($conversationIds)) {
+                M(self::TABLE_MESSAGES)->where(['conversation_id' => ['IN', $conversationIds]])->delete();
+            }
+            M(self::TABLE_CONVERSATIONS)->where(['dashboard_uid' => $uid])->delete();
+
+            $affected = M(self::TABLE_DASHBOARDS)->where(['uid' => $uid])->delete();
+
+            $transModel->commit();
+            return $affected !== false && (int) $affected > 0;
+        } catch (\Think\Exception $e) {
+            $transModel->rollback();
+            throw new DashboardException($e->getMessage(), 0, $e);
+        } catch (\Exception $e) {
+            $transModel->rollback();
+            throw new DashboardException($e->getMessage(), 0, $e);
+        }
+    }
+
+    public function publish(string $uid, ?int $publishedBy = null, string $title = ''): array    {
         $dashboard = $this->findByUid($uid);
         if ($dashboard === null) {
             throw new DashboardNotFoundException($uid);

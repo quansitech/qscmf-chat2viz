@@ -40,6 +40,15 @@ interface DashboardRepositoryInterface
     public function archive(string $uid): bool;
 
     /**
+     * Permanently delete a dashboard and its dependent data (cascades to
+     * versions, conversations and messages within a transaction). Irreversible.
+     *
+     * @return bool True if the dashboard row was deleted
+     * @throws DashboardNotFoundException When the dashboard does not exist
+     */
+    public function delete(string $uid): bool;
+
+    /**
      * Publish a dashboard: snapshot current_schema (strip g2_spec.data) as a version.
      *
      * When a non-empty title is supplied (publish dialog §5), it is persisted to

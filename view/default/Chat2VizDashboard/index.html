@@ -1,43 +1,9 @@
 <extend name="Admin@default/common/dashboard_layout" />
 
-<block name="content">
-    <section class="content-header clearfix">
-        <h1 class="pull-left">{$meta_title}</h1>
-    </section>
-    <section class="content">
-        <!-- P1-4: Filter bar for dashboard list -->
-        <div id="dashboard-filter-bar" style="margin-bottom: 12px; display: flex; gap: 8px; align-items: center;">
-            <select id="filter-status" onchange="applyListFilter()" style="height: 34px; padding: 0 8px; border: 1px solid #d9d9d9; border-radius: 4px;">
-                <option value="">全部状态</option>
-                <option value="draft">草稿</option>
-                <option value="published">已发布</option>
-                <option value="archived">已归档</option>
-            </select>
-            <input type="text" id="filter-search" placeholder="搜索标题..." onkeypress="if(event.key==='Enter')applyListFilter()" style="height: 34px; padding: 0 12px; border: 1px solid #d9d9d9; border-radius: 4px; flex: 1; max-width: 300px;">
-            <button onclick="applyListFilter()" style="height: 34px; padding: 0 16px; background: #1890ff; color: #fff; border: none; border-radius: 4px; cursor: pointer;">筛选</button>
-        </div>
-        <div id="dashboard-list-app"></div>
-    </section>
-</block>
-
-<block name="script">
-    <script>var __PAGE_DATA__ = {:json_encode(['dashboards' => $dashboards, 'total' => $total, 'page' => $page, 'perPage' => $perPage])};</script>
-    <script src="__PUBLIC__/chat2viz-dashboard/dashboard-list.js?v=3"></script>
-    <script>
-    function applyListFilter() {
-        var status = document.getElementById('filter-status').value;
-        var q = document.getElementById('filter-search').value;
-        var params = new URLSearchParams();
-        if (status) params.set('dashboard_status', status);
-        if (q) params.set('q', q);
-        var qs = params.toString();
-        window.location.href = window.location.pathname + (qs ? '?' + qs : '');
-    }
-    // Restore filter state from URL
-    (function() {
-        var p = new URLSearchParams(window.location.search);
-        if (p.get('dashboard_status')) document.getElementById('filter-status').value = p.get('dashboard_status');
-        if (p.get('q')) document.getElementById('filter-search').value = p.get('q');
-    })();
-    </script>
-</block>
+<!--
+    NO-OP placeholder. The dashboard list page is rendered by
+    Qscmf\Builder\ListBuilder (DashboardController::index()), which displays
+    its own Layout/Admin/list.html template. This file is never loaded during
+    normal list rendering. Do NOT add content here. To change the list, edit
+    DashboardController::index().
+-->

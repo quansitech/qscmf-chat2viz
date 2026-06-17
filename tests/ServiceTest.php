@@ -32,6 +32,7 @@ class ServiceTest extends TestCase
             public function create(array $data): array { return []; }
             public function update(string $uid, array $data): array { return []; }
             public function archive(string $uid): bool { return true; }
+            public function delete(string $uid): bool { return true; }
             public function publish(string $uid, ?int $publishedBy = null, string $title = ''): array { return []; }
             public function getPublishedSchema(string $uid): ?array { return null; }
             public function getVersions(string $uid, int $page = 1, int $perPage = 20): array { return []; }
@@ -52,6 +53,7 @@ class ServiceTest extends TestCase
             public function create(array $data): array { return []; }
             public function update(string $uid, array $data): array { return []; }
             public function archive(string $uid): bool { return true; }
+            public function delete(string $uid): bool { return true; }
             public function publish(string $uid, ?int $publishedBy = null, string $title = ''): array { return []; }
             public function getPublishedSchema(string $uid): ?array { return null; }
             public function getVersions(string $uid, int $page = 1, int $perPage = 20): array { return []; }
@@ -77,6 +79,7 @@ class ServiceTest extends TestCase
             public function create(array $data): array { $this->captured = $data; return $data; }
             public function update(string $uid, array $data): array { return []; }
             public function archive(string $uid): bool { return true; }
+            public function delete(string $uid): bool { return true; }
             public function publish(string $uid, ?int $publishedBy = null, string $title = ''): array { return []; }
             public function getPublishedSchema(string $uid): ?array { return null; }
             public function getVersions(string $uid, int $page = 1, int $perPage = 20): array { return []; }
@@ -98,6 +101,7 @@ class ServiceTest extends TestCase
             public function create(array $data): array { return $data; }
             public function update(string $uid, array $data): array { return []; }
             public function archive(string $uid): bool { return true; }
+            public function delete(string $uid): bool { return true; }
             public function publish(string $uid, ?int $publishedBy = null, string $title = ''): array { return []; }
             public function getPublishedSchema(string $uid): ?array { return null; }
             public function getVersions(string $uid, int $page = 1, int $perPage = 20): array { return []; }
@@ -147,6 +151,7 @@ class ServiceTest extends TestCase
             public function create(array $data): array { return []; }
             public function update(string $uid, array $data): array { return []; }
             public function archive(string $uid): bool { return true; }
+            public function delete(string $uid): bool { return true; }
             public function publish(string $uid, ?int $publishedBy = null, string $title = ''): array { return []; }
             public function getPublishedSchema(string $uid): ?array { return null; }
             public function getVersions(string $uid, int $page = 1, int $perPage = 20): array { return []; }
@@ -174,6 +179,7 @@ class ServiceTest extends TestCase
             public function create(array $data): array { return []; }
             public function update(string $uid, array $data): array { return []; }
             public function archive(string $uid): bool { return true; }
+            public function delete(string $uid): bool { return true; }
             public function publish(string $uid, ?int $publishedBy = null, string $title = ''): array { return []; }
             public function getPublishedSchema(string $uid): ?array { return null; }
             public function getVersions(string $uid, int $page = 1, int $perPage = 20): array { return []; }
@@ -249,6 +255,7 @@ class ServiceTest extends TestCase
             public function create(array $data): array { return []; }
             public function update(string $uid, array $data): array { return []; }
             public function archive(string $uid): bool { return true; }
+            public function delete(string $uid): bool { return true; }
             public function publish(string $uid, ?int $publishedBy = null, string $title = ''): array { return []; }
             public function getPublishedSchema(string $uid): ?array { return null; }
             public function getVersions(string $uid, int $page = 1, int $perPage = 20): array { return []; }
@@ -277,6 +284,7 @@ class ServiceTest extends TestCase
             public function create(array $data): array { return []; }
             public function update(string $uid, array $data): array { return []; }
             public function archive(string $uid): bool { return true; }
+            public function delete(string $uid): bool { return true; }
             public function publish(string $uid, ?int $publishedBy = null, string $title = ''): array { return []; }
             public function getPublishedSchema(string $uid): ?array { return null; }
             public function getVersions(string $uid, int $page = 1, int $perPage = 20): array { return []; }
@@ -306,6 +314,7 @@ class ServiceTest extends TestCase
             public function create(array $data): array { return []; }
             public function update(string $uid, array $data): array { return []; }
             public function archive(string $uid): bool { return true; }
+            public function delete(string $uid): bool { return true; }
             public function publish(string $uid, ?int $publishedBy = null, string $title = ''): array {
                 $this->captured = ['uid' => $uid, 'publishedBy' => $publishedBy, 'title' => $title];
                 return ['version' => 1];
@@ -339,6 +348,7 @@ class ServiceTest extends TestCase
             public function create(array $data): array { return []; }
             public function update(string $uid, array $data): array { return []; }
             public function archive(string $uid): bool { return true; }
+            public function delete(string $uid): bool { return true; }
             public function publish(string $uid, ?int $publishedBy = null, string $title = ''): array {
                 $this->captured['title'] = $title;
                 return ['version' => 1];

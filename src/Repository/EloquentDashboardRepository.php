@@ -5,6 +5,8 @@ namespace Qscmf\Chat2Viz\Repository;
 use Qscmf\Chat2Viz\Exception\DashboardException;
 use Qscmf\Chat2Viz\Exception\DashboardNotFoundException;
 use Qscmf\Chat2Viz\Model\Dashboard;
+use Qscmf\Chat2Viz\Model\Conversation;
+use Qscmf\Chat2Viz\Model\ConversationMessage;
 use Qscmf\Chat2Viz\Model\DashboardVersion;
 use Qscmf\Chat2Viz\Traits\DashboardFilterTrait;
 use Qscmf\Chat2Viz\Traits\UuidTrait;
@@ -113,8 +115,40 @@ class EloquentDashboardRepository implements DashboardRepositoryInterface
         return $dashboard->update(['dashboard_status' => 'archived']);
     }
 
-    public function publish(string $uid, ?int $publishedBy = null, string $title = ''): array
+    /**
+     * Permanently delete a dashboard and all its dependent data.
+     *
+     * Cascades within a transaction, child tables first:
+     *   versions (by dashboard_id)
+     *   -> conversation_messages (by conversation_id of this dashboard's conversations)
+     *   -> conversations (by dashboard_uid)
+     *   -> dashboards (by uid)
+     *
+     * Throws DashboardNotFoundException when the dashboard does not exist.
+     */
+    public function delete(string $uid): bool
     {
+        $dashboard = Dashboard::where('uid', $uid)->first();
+        if ($dashboard === null) {
+            throw new DashboardNotFoundException($uid);
+        }
+
+        $dashboardId = $dashboard->id;
+        $conversationIds = Conversation::where('dashboard_uid', $uid)->pluck('id')->all();
+
+        return DB::transaction(function () use ($uid, $dashboardId, $conversationIds, $dashboard) {
+            DashboardVersion::where('dashboard_id', $dashboardId)->delete();
+
+            if (!empty($conversationIds)) {
+                ConversationMessage::whereIn('conversation_id', $conversationIds)->delete();
+            }
+            Conversation::where('dashboard_uid', $uid)->delete();
+
+            return (bool) $dashboard->delete();
+        });
+    }
+
+    public function publish(string $uid, ?int $publishedBy = null, string $title = ''): array    {
         $dashboard = Dashboard::where('uid', $uid)->first();
         if ($dashboard === null) {
             throw new DashboardNotFoundException($uid);

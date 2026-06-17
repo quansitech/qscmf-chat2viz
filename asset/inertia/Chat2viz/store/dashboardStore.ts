@@ -185,6 +185,9 @@ export interface DashboardActions {
   getDashboardContext: () => object;
   addAiStep: (step: AiStep) => void;
   completeAiStep: (stepId: string) => void;
+  /** Bump an in-progress step's timestamp so its spinner restarts, without
+   *  completing it (no ghost row) and without adding a new row. */
+  refreshAiStep: (stepId: string) => void;
   clearAiSteps: () => void;
 }
 
@@ -643,6 +646,12 @@ const _store = _create()(
           });
         },
 
+        refreshAiStep: (stepId: string) => {
+          set((state) => {
+            const step = state.aiSteps.find((s) => s.id === stepId);
+            if (step) step.timestamp = new Date().toISOString();
+          });
+        },
         clearAiSteps: () => {
           set((state) => {
             state.aiSteps = [];

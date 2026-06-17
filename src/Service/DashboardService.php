@@ -104,8 +104,29 @@ class DashboardService
     }
 
     /**
-     * Publish a dashboard (create version snapshot).
+     * Permanently delete a dashboard and its dependent data.
      *
+     * Unlike archive(), this is irreversible. Cascades to versions, conversations
+     * and conversation messages at the repository layer.
+     *
+     * @throws DashboardNotFoundException When the dashboard does not exist
+     * @throws DashboardException When ownership check fails
+     */
+    public function delete(string $uid, ?int $user_id): bool
+    {
+        $existing = $this->repo->findByUid($uid);
+        if ($existing === null) {
+            throw new DashboardNotFoundException($uid);
+        }
+        if (!$this->checkOwnership($existing, $user_id)) {
+            throw new DashboardException('无权操作');
+        }
+
+        return $this->repo->delete($uid);
+    }
+
+    /**
+     * Publish a dashboard (create version snapshot).     *
      * @param string $uid Dashboard UID
      * @param int|null $user_id Current user ID for ownership check
      * @param string $title Optional publish-dialog title (§5); '' leaves stored title

@@ -23,7 +23,6 @@ class DashboardController extends BaseDashboardController
     {
         $page = max(1, (int) I('get.page', 1));
         $perPage = 20;
-        // Support status filter via query param (P1-4: list page filtering)
         $filters = [];
         $dashboardStatus = I('get.dashboard_status');
         if ($dashboardStatus !== null && $dashboardStatus !== '') {
@@ -34,7 +33,61 @@ class DashboardController extends BaseDashboardController
             $filters['title_like'] = $titleSearch;
         }
         $result = $this->repo->list($page, $perPage, $filters);
-        $this->renderer->renderList($result['items'], $result['total'], $page, $perPage);
+
+        $statusOptions = [
+            '' => '全部',
+            'draft' => '草稿',
+            'published' => '已发布',
+            'archived' => '已归档',
+        ];
+
+        $builder = new \Qscmf\Builder\ListBuilder();
+        $builder->setMetaTitle('仪表盘')
+            ->addTopButton('addnew', [
+                'title' => '新增仪表盘',
+                'href'  => U(MODULE_NAME . '/' . CONTROLLER_NAME . '/edit'),
+            ])
+            ->addSearchItem('dashboard_status', 'select', '发布状态', $statusOptions)
+            ->addSearchItem('q', 'text', '标题')
+            ->addTableColumn('title', '标题')
+            ->addTableColumn('dashboard_status', '发布状态', 'fun', self::class . '::statusLabel(__data_id__)')
+            ->addTableColumn('created_at', '创建时间', 'datetime')
+            ->addTableColumn('right_button', '操作', 'btn')
+            ->setTableDataList($result['items'])
+            ->setTableDataListKey('uid')
+            ->setTableDataPage($this->buildPagination((int) $result['total'], $perPage))
+            ->addRightButton('edit')
+            ->addRightButton('self', [
+                'title' => '查看',
+                'class' => 'default',
+                'href'  => '/extends/Chat2VizDashboard/view/uid/__data_id__',
+            ])
+            ->addRightButton('delete')
+            ->build();
+    }
+
+    /**
+     * Render the dashboard_status enum as a Bootstrap label for ListBuilder's
+     * "fun" column type. Returns raw HTML (ListBuilder does not escape fun output).
+     */
+    public static function statusLabel(string $value): string
+    {
+        static $map = [
+            'draft'     => '<span class="label label-default">草稿</span>',
+            'published' => '<span class="label label-success">已发布</span>',
+            'archived'  => '<span class="label label-warning">已归档</span>',
+        ];
+        return $map[$value] ?? htmlspecialchars($value);
+    }
+
+    /**
+     * Build the framework pagination data for ListBuilder. GyPage::show() returns
+     * an ARRAY; QsPage reads current page from $_GET['page'] (VAR_PAGE config).
+     */
+    private function buildPagination(int $total, int $perPage): array
+    {
+        $pageObj = new \Gy_Library\GyPage($total, $perPage);
+        return $pageObj->show();
     }
 
     public function edit()
@@ -44,6 +97,51 @@ class DashboardController extends BaseDashboardController
         $this->renderer->renderEdit($dashboard);
     }
 
+    /**
+     * ListBuilder delete entry point: AJAX GET delete?ids=<uid> with confirm.
+     * Supports single uid (right button) or comma batch (top-button bulk).
+     */
+    public function delete()
+    {
+        $ids = I('get.ids', '');
+        if ($ids === '') {
+            $this->error('请选择要删除的数据');
+            return;
+        }
+
+        $uids = array_filter(array_map('strval', explode(',', (string) $ids)));
+        $userId = $this->getCurrentUserId();
+        $service = $this->getDashboardService();
+
+        $failed = [];
+        foreach ($uids as $uid) {
+            if (!self::validateUuid($uid)) {
+                $failed[] = $uid;
+                continue;
+            }
+            try {
+                $existing = $this->repo->findByUid($uid);
+                if ($existing === null) {
+                    continue;
+                }
+                if (!$service->checkOwnership($existing, $userId)) {
+                    $failed[] = $uid;
+                    continue;
+                }
+                $service->delete($uid, $userId);
+            } catch (\Exception $e) {
+                $this->logError('delete failed', sprintf('uid=%s err=%s', $uid, $e->getMessage()));
+                $failed[] = $uid;
+            }
+        }
+
+        if (!empty($failed)) {
+            $this->error('部分数据删除失败或无权操作：' . implode(',', $failed));
+            return;
+        }
+
+        $this->success('删除成功', U(MODULE_NAME . '/' . CONTROLLER_NAME . '/index'));
+    }
     // -------------------------------------------------------
     // CRUD API methods (return JSON)
     // -------------------------------------------------------
@@ -236,6 +334,40 @@ class DashboardController extends BaseDashboardController
         }
     }
 
+    public function api_delete()
+    {
+        if (!$this->requireMethod('DELETE')) return;
+
+        $uid = (string) I('get.uid', '');
+        if ($uid === '') {
+            $this->ajaxReturn(['status' => 0, 'info' => '缺少仪表盘ID']);
+            return;
+        }
+        if (!self::validateUuid($uid)) {
+            $this->ajaxReturn(['status' => 0, 'info' => '无效的仪表盘ID']);
+            return;
+        }
+
+        try {
+            $existing = $this->repo->findByUid($uid);
+            if ($existing === null) {
+                $this->ajaxReturn(['status' => 0, 'info' => '仪表盘不存在']);
+                return;
+            }
+            if (!$this->checkOwnershipAndReject($existing)) return;
+
+            $this->getDashboardService()->delete($uid, $this->getCurrentUserId());
+            $this->ajaxReturn(['status' => 1, 'data' => ['uid' => $uid]]);
+        } catch (DashboardNotFoundException $e) {
+            $this->ajaxReturn(['status' => 0, 'info' => '仪表盘不存在']);
+        } catch (DashboardException $e) {
+            $this->logError('api_delete failed', $e->getMessage());
+            $this->ajaxReturn(['status' => 0, 'info' => $e->getMessage()]);
+        } catch (\Exception $e) {
+            $this->logError('api_delete failed', $e->getMessage());
+            $this->ajaxReturn(['status' => 0, 'info' => '删除失败']);
+        }
+    }
     // -------------------------------------------------------
     // Publish API
     // -------------------------------------------------------

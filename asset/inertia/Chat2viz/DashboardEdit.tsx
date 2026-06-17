@@ -427,14 +427,21 @@ function DashboardEditInner() {
             center), so it never overlaps the ChatPanel header's "New" button
             which lives at the top-right of the pane. */}
         {!chatCollapsed && (
-          <Tooltip title="收起对话区（预览发布效果）">
+          <Tooltip title={streamingState !== 'idle' ? '对话进行中，暂不可收起' : '收起对话区（预览发布效果）'}>
             <Button
               className="chat-collapse-btn"
-              size="small"
               shape="circle"
               icon={<MessageOutlined />}
               onClick={() => setChatCollapsed(true)}
-              style={styles.collapseBtn}
+              disabled={streamingState !== 'idle'}
+              style={{
+                ...styles.collapseBtn,
+                width: 36,
+                height: 36,
+                minWidth: 36,
+                opacity: streamingState !== 'idle' ? 0.4 : 1,
+                cursor: streamingState !== 'idle' ? 'not-allowed' : 'pointer',
+              }}
             />
           </Tooltip>
         )}
@@ -451,7 +458,12 @@ function DashboardEditInner() {
             shape="circle"
             icon={<MessageOutlined />}
             onClick={() => setChatCollapsed(false)}
-            style={styles.fab}
+            style={{
+              ...styles.fab,
+              width: 36,
+              height: 36,
+              minWidth: 36,
+            }}
           />
         </Tooltip>
       )}

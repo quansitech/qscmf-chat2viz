@@ -92,6 +92,7 @@ class EventRouterMultiWidgetTest extends TestCase
             public function create(array $data): array { return []; }
             public function update(string $uid, array $data): array { return []; }
             public function archive(string $uid): bool { return true; }
+            public function delete(string $uid): bool { return true; }
             public function publish(string $uid, ?int $publishedBy = null, string $title = ''): array { return []; }
             public function getPublishedSchema(string $uid): ?array { return null; }
             public function getVersions(string $uid, int $page = 1, int $perPage = 20): array { return []; }
