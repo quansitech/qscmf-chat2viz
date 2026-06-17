@@ -9,6 +9,9 @@ import type {
 } from '../store/dashboardStore';
 import { parseSseEvent, type SseEvent } from '../sse-parser';
 import { planActionCall, findInProgressToolStep } from '../utils/aiSteps';
+// contract-driven-foundation Phase 2: SSE event types from contract SSOT (codegen).
+import type { SSEWidgetUpdate, SSEWidgetRemove } from '../types/sse-events';
+import { isWidgetUpdateData, isWidgetRemoveData } from '../types/sse-events';
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -407,16 +410,10 @@ function dispatchEvent(event: SseEvent | null): boolean {
       );
       const st = useDashboardStore.getState();
       if (decision.kind === 'refresh') {
-        // Same-type repeat: reset the existing row to "freshly processing" so
-        // its spinner visibly restarts, without adding a new row.
-        st.completeAiStep(decision.id);
-        st.addAiStep({
-          id: generateStepId(),
-          type: 'tool_start',
-          label: toolLabel,
-          timestamp: generateId(),
-          completed: false,
-        });
+        // Same-type repeat: refresh the EXISTING in-progress step in place.
+        // Do NOT complete+re-add — that leaves completed ghost rows behind and
+        // causes the step list to grow with every repeat call.
+        st.refreshAiStep(decision.id);
       } else {
         if (decision.kind === 'completeAndAdd' && decision.completeId) {
           st.completeAiStep(decision.completeId);
@@ -453,10 +450,13 @@ function dispatchEvent(event: SseEvent | null): boolean {
       // edit-widget-snapshot-contract: field-level declaration delivery.
       // The backend declares {widget_id, action, field?, value?}; we apply a
       // deep dotted-path set on widgets[id] (NOT RFC6902 applyPatches).
-      const wid = str(event.data.widget_id);
-      const action = str(event.data.action);
-      const field = event.data.field as string | undefined;
-      const value = event.data.value;
+      // contract-driven-foundation Phase 2: data is now narrowed via the
+      // SSEWidgetUpdate type guard from types/sse-events.ts (codegen SSOT).
+      const data = isWidgetUpdateData(event.data) ? event.data : event.data as unknown as SSEWidgetUpdate;
+      const wid = str(data.widget_id);
+      const action = str(data.action);
+      const field = data.field as string | undefined;
+      const value = data.value;
       if (!wid) break;
       if (action === 'remove') {
         store.removePanel(wid);
@@ -482,7 +482,9 @@ function dispatchEvent(event: SseEvent | null): boolean {
     case 'WIDGET_REMOVE': {
       // Frontend deletes the widget; layout is embedded per-widget so removePanel
       // suffices (no separate layout array to filter).
-      const wid = str(event.data.widget_id);
+      // contract-driven-foundation Phase 2: narrowed via SSEWidgetRemove guard.
+      const data = isWidgetRemoveData(event.data) ? event.data : event.data as unknown as SSEWidgetRemove;
+      const wid = str(data.widget_id);
       if (wid) store.removePanel(wid);
       break;
     }
