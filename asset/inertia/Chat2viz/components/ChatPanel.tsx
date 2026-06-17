@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
-import { Alert, Badge, Button, Collapse, Empty, Input, message, Modal, Spin, Tag, Tooltip, Typography } from 'antd';
-import { SendOutlined, QuestionCircleOutlined, PlusOutlined } from '@ant-design/icons';
+import { Alert, Badge, Button, Collapse, Empty, Input, message as notify, Modal, Spin, Tag, Tooltip, Typography } from 'antd';
+import { SendOutlined, QuestionCircleOutlined, PlusOutlined, CopyOutlined } from '@ant-design/icons';
 import { useDashboardStore } from '../store/dashboardStore';
 import { useSseStream } from '../hooks/useSseStream';
 import type { ChatMessage } from '../store/dashboardStore';
@@ -121,13 +121,13 @@ export default function ChatPanel({ disabled = false, showSql = false }: ChatPan
             String(result.data?.conversation_id),
           );
         }
-        message.success('已开始新对话，已生成的图表保留。', 2);
+        notify.success('已开始新对话，已生成的图表保留。', 2);
         refocusInput();
       } else {
-        message.error(result.info || 'Failed to create new conversation');
+        notify.error(result.info || 'Failed to create new conversation');
       }
     } catch {
-      message.error('Network error creating conversation');
+      notify.error('Network error creating conversation');
     } finally {
       setNewConvLoading(false);
     }
@@ -329,6 +329,33 @@ function MessageBubble({ message, showSql = false }: MessageBubbleProps) {
 
   if (isSystem) return null;
 
+  // Copy the assistant answer text. Only enabled when not streaming and there
+  // is content — a common affordance for chat answers.
+  const handleCopyAnswer = () => {
+    const text = message.content ?? '';
+    if (!text) return;
+    const done = () => notify.success('已复制回答', 1.2);
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
+    } else {
+      fallbackCopy(text, done);
+    }
+  };
+  // Copy the SQL statement (debugging convenience when show_sql is on).
+  const handleCopySql = () => {
+    const sql = message.metadata?.sql ?? '';
+    if (!sql) return;
+    const done = () => notify.success('已复制查询语句', 1.2);
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(sql).then(done).catch(() => fallbackCopy(sql, done));
+    } else {
+      fallbackCopy(sql, done);
+    }
+  };
+
+  // Show the copy-answer button only for completed assistant bubbles.
+  const canCopyAnswer = !isUser && streamingState === 'idle' && !!message.content;
+
   return (
     <div style={{ ...styles.bubbleRow, justifyContent: isUser ? 'flex-end' : 'flex-start' }}>
       <div style={isUser ? styles.userBubble : styles.assistantBubble}>
@@ -341,6 +368,13 @@ function MessageBubble({ message, showSql = false }: MessageBubbleProps) {
         )}
         {!isUser && status === 'failed' && (
           <Tag color="error" style={styles.statusTag}>Failed</Tag>
+        )}
+
+        {/* Copy-answer affordance (top-right of assistant bubbles) */}
+        {canCopyAnswer && (
+          <Tooltip title="复制回答">
+            <CopyOutlined onClick={handleCopyAnswer} style={styles.copyBtn} />
+          </Tooltip>
         )}
 
         {/* Security: React auto-escapes text content. If switching to
@@ -362,7 +396,14 @@ function MessageBubble({ message, showSql = false }: MessageBubbleProps) {
             items={[
               {
                 key: 'sql',
-                label: <Typography.Text type="secondary" style={{ fontSize: 11 }}>查询语句</Typography.Text>,
+                label: (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <Typography.Text type="secondary" style={{ fontSize: 11 }}>查询语句</Typography.Text>
+                    <Tooltip title="复制 SQL">
+                      <CopyOutlined onClick={handleCopySql} style={{ fontSize: 11, color: '#999', cursor: 'pointer' }} />
+                    </Tooltip>
+                  </span>
+                ),
                 children: (
                   <pre style={styles.sqlBlock}>{message.metadata.sql}</pre>
                 ),
@@ -373,6 +414,23 @@ function MessageBubble({ message, showSql = false }: MessageBubbleProps) {
       </div>
     </div>
   );
+}
+
+// Legacy clipboard fallback for browsers without the async Clipboard API.
+function fallbackCopy(text: string, done: () => void): void {
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    done();
+  } catch {
+    notify.error('复制失败');
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -491,6 +549,16 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '8px 12px',
     maxWidth: '85%',
     wordBreak: 'break-word' as const,
+    position: 'relative' as const, // anchor for the copy button
+  },
+  copyBtn: {
+    fontSize: 12,
+    color: '#999',
+    cursor: 'pointer' as const,
+    // Inside the assistant bubble: top-right, subtle until hover.
+    position: 'absolute' as const,
+    top: 6,
+    right: 6,
   },
   bubbleContent: {
     fontSize: 13,

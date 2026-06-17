@@ -449,6 +449,44 @@ function dispatchEvent(event: SseEvent | null): boolean {
       break;
     }
 
+    case 'WIDGET_UPDATE': {
+      // edit-widget-snapshot-contract: field-level declaration delivery.
+      // The backend declares {widget_id, action, field?, value?}; we apply a
+      // deep dotted-path set on widgets[id] (NOT RFC6902 applyPatches).
+      const wid = str(event.data.widget_id);
+      const action = str(event.data.action);
+      const field = event.data.field as string | undefined;
+      const value = event.data.value;
+      if (!wid) break;
+      if (action === 'remove') {
+        store.removePanel(wid);
+        break;
+      }
+      if (action === 'add') {
+        // add_widget declares the full initial config under event.data.widget
+        const initial = obj<Record<string, unknown>>(event.data.widget);
+        if (initial) store.createWidgetPlaceholder(wid, initial as Partial<Widget>);
+        break;
+      }
+      if (action === 'set_title') {
+        if (typeof value === 'string') store.setTitle(value);
+        break;
+      }
+      // set_field / set_type / set_sql / set_layout → dotted-path set
+      if (field && value !== undefined) {
+        store.updateWidgetPath(wid, field, value);
+      }
+      break;
+    }
+
+    case 'WIDGET_REMOVE': {
+      // Frontend deletes the widget; layout is embedded per-widget so removePanel
+      // suffices (no separate layout array to filter).
+      const wid = str(event.data.widget_id);
+      if (wid) store.removePanel(wid);
+      break;
+    }
+
     case 'dashboard_rollback': {
       const rollbackWidgetId = str(event.data.widget_id);
       const rollbackSnapshot = obj<{

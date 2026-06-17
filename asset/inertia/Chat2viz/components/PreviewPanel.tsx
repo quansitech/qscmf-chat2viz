@@ -138,9 +138,19 @@ export default function PreviewPanel({ showSql = false }: PreviewPanelProps) {
         <Empty
           image={<LayoutOutlined style={{ fontSize: 48, color: '#bfbfbf' }} />}
           description={
-            <Typography.Text type="secondary">
-              开始对话以生成图表
-            </Typography.Text>
+            <div style={{ textAlign: 'center' }}>
+              <Typography.Text type="secondary" strong>
+                还没有图表
+              </Typography.Text>
+              <div style={{ marginTop: 4 }}>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  在左侧输入你的问题，AI 会自动生成对应的图表。例如：
+                </Typography.Text>
+              </div>
+              <div style={{ marginTop: 6, fontSize: 12, color: '#8c8c8c' }}>
+                「查看月度销售趋势」「按产品类别对比收入」
+              </div>
+            </div>
           }
         />
       </div>

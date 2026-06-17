@@ -3,7 +3,7 @@ import { Alert, Collapse, Popconfirm, Skeleton, Spin, Tooltip, Typography } from
 import { DeleteOutlined, EditOutlined, LoadingOutlined, ReloadOutlined } from '@ant-design/icons';
 import LazyG2Renderer from './LazyG2Renderer';
 import WidgetTable from './WidgetTable';
-import { hasChartSpec } from '../store/dashboardStore';
+import { hasChartSpec, useDashboardStore } from '../store/dashboardStore';
 import type { Widget } from '../store/dashboardStore';
 
 // ---------------------------------------------------------------------------
@@ -65,6 +65,8 @@ export default function WidgetCard({ widget, onTitleChange, onRemove, onRefresh,
 
   // Effective render status — legacy widgets without a status field default to 'chart'.
   const status = effectiveStatus(widget);
+  // Streaming state — used to vary the loading hint ("正在查询…" vs "加载中…").
+  const streamingState = useDashboardStore((s) => s.streamingState);
 
   // Unified chart-existence judgment (DESIGN_BASIS #7): type OR mark OR children.
   const hasSpec = hasChartSpec(widget.g2_spec);
@@ -134,9 +136,18 @@ export default function WidgetCard({ widget, onTitleChange, onRemove, onRefresh,
       {/* ---- Chart Area — three render branches by status ---- */}
       <div style={styles.chartArea}>
         {status === 'loading' && (
-          // DASHBOARD_INIT placeholder: skeleton frame (no spec yet)
+          // DASHBOARD_INIT placeholder: skeleton frame + progress text. While a
+          // stream is active this reads "正在查询…"; on dashboard reopen it reads
+          // "加载中…". Gives the user a sense of what is happening, not just an
+          // abstract shimmer.
           <div style={styles.emptyChart}>
             <Skeleton active paragraph={{ rows: 4 }} />
+            <div style={styles.loadingHint}>
+              <Spin size="small" />
+              <Typography.Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
+                {streamingState !== 'idle' ? '正在查询…' : '加载中…'}
+              </Typography.Text>
+            </div>
           </div>
         )}
 
@@ -279,10 +290,17 @@ const styles: Record<string, React.CSSProperties> = {
   },
   emptyChart: {
     display: 'flex',
+    flexDirection: 'column' as const,
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 12,
     height: '100%',
     minHeight: 200,
+    padding: 12,
+  },
+  loadingHint: {
+    display: 'flex',
+    alignItems: 'center',
   },
   errorCard: {
     display: 'flex',

@@ -156,6 +156,9 @@ export interface DashboardActions {
   addPanel: (widget: Widget) => void;
   removePanel: (widgetId: string) => void;
   updateWidget: (widgetId: string, partial: Partial<Widget>) => void;
+  /** Deep dotted-path set on widgets[widgetId], e.g. field 'g2_spec.type' sets
+   *  widgets[id].g2_spec.type. Used by WIDGET_UPDATE (edit-widget-snapshot-contract). */
+  updateWidgetPath: (widgetId: string, field: string, value: unknown) => void;
   /** Create a widget placeholder (status=loading, no g2_spec required). */
   createWidgetPlaceholder: (widgetId: string, partial: Partial<Widget>) => void;
   /** Inject data for a widget. Status is DERIVED from data + spec (not hardcoded).
@@ -169,6 +172,8 @@ export interface DashboardActions {
   executeAction: (action: ActionCall) => void;
   appendAnswer: (text: string) => void;
   setSql: (widgetId: string, sql: string) => void;
+  /** Set the dashboard page title (update_page_title / WIDGET_UPDATE set_title). */
+  setTitle: (title: string) => void;
   setError: (error: string) => void;
   completeConversation: () => void;
   /** Transition from 'submitted' to 'streaming' on the first real SSE frame. */
@@ -382,6 +387,26 @@ const _store = _create()(
           });
         },
 
+        updateWidgetPath: (widgetId: string, field: string, value: unknown) => {
+          set((state) => {
+            const widget = state.widgets[widgetId];
+            if (!widget) return;
+            // Walk the dotted path, creating intermediate objects as needed,
+            // and set the leaf. 'g2_spec.type' → widget.g2_spec.type = value.
+            const segments = field.split('.');
+            let target: Record<string, unknown> = widget as unknown as Record<string, unknown>;
+            for (let i = 0; i < segments.length - 1; i++) {
+              const seg = segments[i];
+              if (target[seg] == null || typeof target[seg] !== 'object') {
+                target[seg] = {};
+              }
+              target = target[seg] as Record<string, unknown>;
+            }
+            target[segments[segments.length - 1]] = value;
+            state.isDirty = true;
+          });
+        },
+
         // Multi-widget lifecycle actions (D5: placeholder path bypasses
         // validateWidget since placeholders legitimately carry no g2_spec).
         createWidgetPlaceholder: (widgetId: string, partial: Partial<Widget>) => {
@@ -486,6 +511,13 @@ const _store = _create()(
             const widget = state.widgets[widgetId];
             if (!widget) return;
             widget.sql = sql;
+            state.isDirty = true;
+          });
+        },
+
+        setTitle: (title: string) => {
+          set((state) => {
+            state.title = title;
             state.isDirty = true;
           });
         },
