@@ -42,7 +42,19 @@ class Nl2sqlEventTransformer
             // envelope {rows, columns} + sql + g2_spec flows verbatim to the frontend
             // store boundary; normalization (envelope → bare Row[]) happens in the
             // React store, NOT in this PHP passthrough layer.
-            'DASHBOARD_INIT', 'WIDGET_DATA_UPDATE', 'WIDGET_ERROR' => [
+            // Dashboard/widget events: 1:1 verbatim passthrough (no rename, no
+            // field add/remove). The frontend store is the normalization boundary.
+            'DASHBOARD_INIT', 'WIDGET_DATA_UPDATE', 'WIDGET_ERROR',
+            'WIDGET_UPDATE', 'WIDGET_REMOVE',
+            // Tool-execution progress events emitted directly by sse_dispatcher
+            // (dispatch_tool_start/end send these names directly — NOT tool_start/
+            // tool_result, so the mapToolStart/mapToolResult cases above are legacy
+            // HTTP-path mappings that never fire on the socket path).
+            // Without explicit passthrough these fell through to default and were
+            // silently dropped, so the frontend's AI-step indicator never showed.
+            'action_call', 'action_call_result',
+            // Dashboard lifecycle notices (non-critical UI hints).
+            'dashboard_notice', 'dashboard_rollback' => [
                 new SseEvent(type: $event->type, data: $event->data, raw: $event->raw),
             ],
             // Skip these events (return empty array)
