@@ -1,6 +1,6 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { Modal, message } from 'antd';
-import { useDashboardStore } from '../store/dashboardStore';
+import { useDashboardStore, saveDashboardDraft } from '../store/dashboardStore';
 import { buildSchema } from '../utils/buildSchema';
 import { ADMIN_BASE } from '../utils/routes';
 
@@ -64,7 +64,21 @@ export function useDashboardDraft(): UseDashboardDraftReturn {
       if (!state.isDirty && !options.forceOverwrite) return;
 
       const currentUid = state.uid;
-      if (!currentUid) return; // not saved yet — creation handled by store
+      if (!currentUid) {
+        // New (unsaved) dashboard — delegate to the store's create-capable
+        // saver, which POSTs to api_create and writes the returned uid back
+        // into the store (so the next save becomes an update). Previously this
+        // branch early-returned with no network call, so a brand-new dashboard
+        // could never be persisted (manual save, auto-save, and the pre-publish
+        // save all silently no-op'd). setSaving drives the button spinner.
+        setSaving(true);
+        try {
+          await saveDashboardDraft();
+        } finally {
+          setSaving(false);
+        }
+        return;
+      }
 
       const schema = buildSchema(state.widgets);
       setSaving(true);
