@@ -427,15 +427,38 @@ function dispatchEvent(event: SseEvent | null): boolean {
       const result: ActionCallResult = {
         success: bool(event.data.success),
         result: event.data.result,
+        // DEF-07 / design D4: carry structured failure fields through to metadata.
+        // Absent on success (legacy payloads); present on EDIT_FAILED etc.
+        error_code: str(event.data.error_code) || undefined,
+        error: str(event.data.error) || undefined,
       };
       applyActionResult(result);
       // Complete the most recent in-progress tool step so its spinner stops and
       // it settles into the (green) completed state. Previously this never
       // happened, so tool steps stayed "processing" forever and accumulated.
+      // NOTE: only settle to "completed" on SUCCESS — on failure we mark the
+      // message below instead, so the step does not falsely show green.
       const s = useDashboardStore.getState();
-      const inProgress = findInProgressToolStep(s.aiSteps);
-      if (inProgress) {
-        s.completeAiStep(inProgress.id);
+      if (result.success) {
+        const inProgress = findInProgressToolStep(s.aiSteps);
+        if (inProgress) {
+          s.completeAiStep(inProgress.id);
+        }
+      } else {
+        // DEF-07: surface the failure visibly. An orphan action_call_result
+        // (e.g. EDIT_FAILED — the LLM claimed an edit but never emitted the
+        // tool_call) has no in-progress step to complete, so without this the
+        // user would only see the raw "【编辑未生效】" text with no failure
+        // indicator. Marking the last assistant message 'failed' makes
+        // ChatPanel render the red "Failed" tag alongside the explanation text.
+        useDashboardStore.setState((state) => {
+          const lastAssistant = [...state.messages]
+            .reverse()
+            .find((m) => m.role === 'assistant');
+          if (lastAssistant) {
+            lastAssistant.message_status = 'failed';
+          }
+        });
       }
       break;
     }

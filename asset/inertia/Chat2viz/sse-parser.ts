@@ -126,12 +126,23 @@ export interface ActionCallEvent {
   };
 }
 
-/** Emitted to report the outcome of a previously dispatched action_call. */
+/** Emitted to report the outcome of a previously dispatched action_call.
+ *
+ * DEF-07 / design D4 "耗尽即失败": when the edit-intent guard exhausts its
+ * correction budget with no edit tool_call, the backend raises
+ * EditIntentFailedError and ask_stream emits an ORPHAN action_call_result
+ * (no preceding action_call) carrying success=false + error_code="EDIT_FAILED".
+ * error_code/error are optional — only present on failure (legacy success-only
+ * payloads remain valid). */
 export interface ActionCallResultEvent {
   type: 'action_call_result';
   data: {
     success: boolean;
-    result: unknown;
+    result?: unknown;
+    /** Stable machine-readable failure code (e.g. "EDIT_FAILED"). Absent on success. */
+    error_code?: string;
+    /** Human-readable failure detail. Absent on success. */
+    error?: string;
   };
 }
 

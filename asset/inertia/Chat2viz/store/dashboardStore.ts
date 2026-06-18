@@ -79,6 +79,10 @@ export interface ActionCall {
 export interface ActionCallResult {
   success: boolean;
   result: unknown;
+  /** DEF-07: stable failure code (e.g. "EDIT_FAILED"). Absent on success. */
+  error_code?: string;
+  /** DEF-07: human-readable failure detail. Absent on success. */
+  error?: string;
 }
 
 export interface DashboardPatch {
