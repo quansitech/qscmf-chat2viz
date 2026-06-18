@@ -13,6 +13,10 @@ module.exports = {
     filename: '[name].js',
     clean: true,
   },
+  // Emit full source maps (one .map per entry). Lets minified runtime errors
+  // (e.g. React error #310) be traced back to the original .tsx file/line in
+  // browser DevTools. The .map files are gitignored (see package root .gitignore).
+  devtool: 'source-map',
   resolve: {
     alias: {
       // For v13 builds, redirect all adapter imports to the smarty adapter.

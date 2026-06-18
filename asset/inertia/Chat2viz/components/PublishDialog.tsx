@@ -108,6 +108,7 @@ export default function PublishDialog({ uid, title, visible, onClose }: PublishD
                 type="primary"
                 icon={<CloudUploadOutlined />}
                 loading={publishing}
+                disabled={!uid}
                 onClick={handlePublish}
               >
                 发布

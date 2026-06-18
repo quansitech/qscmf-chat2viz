@@ -1,6 +1,8 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
 import { Alert, Badge, Button, Collapse, Empty, Input, message as notify, Modal, Spin, Tag, Tooltip, Typography } from 'antd';
-import { SendOutlined, QuestionCircleOutlined, PlusOutlined, CopyOutlined } from '@ant-design/icons';
+import { SendOutlined, QuestionCircleOutlined, PlusOutlined, CopyOutlined, LikeOutlined, DislikeOutlined } from '@ant-design/icons';
+import ReactMarkdown from 'react-markdown';
+import rehypeSanitize from 'rehype-sanitize';
 import { useDashboardStore } from '../store/dashboardStore';
 import { useSseStream } from '../hooks/useSseStream';
 import type { ChatMessage } from '../store/dashboardStore';
@@ -348,6 +350,38 @@ function MessageBubble({ message, showSql = false }: MessageBubbleProps) {
 
   const status = message.message_status;
 
+  // DEF-06: feedback (thumbs up/down) state + handler.
+  // NOTE: ALL hooks (useState/useCallback) MUST run before any early return,
+  // otherwise React throws "Rendered more hooks than during the previous
+  // render" (React error #310) when a message transitions between the
+  // empty-content placeholder path (which used to early-return) and a path
+  // that rendered this useState. Keep hooks above the returns below.
+  const [feedbackGiven, setFeedbackGiven] = useState<string | null>(null);
+  const handleFeedback = useCallback(async (msg: any, thumbs: 'up' | 'down') => {
+    try {
+      const ADMIN_BASE = (window as any).__ADMIN_BASE__ || '';
+      const resp = await fetch(`${ADMIN_BASE}/extends/Chat2Viz/api_feedback`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message_id: msg.id || '',
+          conversation_id: msg.conversation_id || '',
+          thumbs,
+        }),
+      });
+      const result = await resp.json();
+      if (result.status === 1 || result.success) {
+        setFeedbackGiven(thumbs);
+        notify.success(thumbs === 'up' ? '感谢反馈' : '已记录改进建议', 1.2);
+      } else {
+        notify.error(result.info || '反馈提交失败');
+      }
+    } catch {
+      notify.error('网络错误，请重试');
+    }
+  }, []);
+
   if (isSystem) return null;
 
   // The last assistant message is created empty by startConversation() as a
@@ -406,13 +440,44 @@ function MessageBubble({ message, showSql = false }: MessageBubbleProps) {
           </Tooltip>
         )}
 
-        {/* Security: React auto-escapes text content. If switching to
-            dangerouslySetInnerHTML for markdown rendering, MUST sanitize
-            with DOMPurify first. */}
+        {/* DEF-12: render AI answer as markdown (bold, lists, code) via
+            react-markdown + rehype-sanitize (whitelist, strips script/onclick).
+            Cursor is placed AFTER the markdown block (not inline) because
+            markdown produces block-level <p> elements — inline cursor would
+            break layout. The typing-cursor class still provides the blink. */}
         {message.content && (
-          <div style={styles.bubbleContent}>
-            {message.content}
+          <div className="chat-markdown" style={styles.bubbleContent}>
+            <ReactMarkdown rehypePlugins={[rehypeSanitize]}>
+              {message.content}
+            </ReactMarkdown>
             {showCursor && <span className="typing-cursor" />}
+          </div>
+        )}
+
+        {/* DEF-06: like/dislike feedback buttons (only after stream completes).
+            Posts thumbs: "up"|"down" to the existing api_feedback endpoint. */}
+        {!isUser && streamingState === 'idle' && message.content && (
+          <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+            <Tooltip title="有帮助">
+              <Button
+                size="small"
+                type="text"
+                icon={<LikeOutlined />}
+                style={{ color: feedbackGiven === 'up' ? '#52c41a' : '#999', padding: '0 4px' }}
+                disabled={!!feedbackGiven}
+                onClick={() => handleFeedback(message, 'up')}
+              />
+            </Tooltip>
+            <Tooltip title="需改进">
+              <Button
+                size="small"
+                type="text"
+                icon={<DislikeOutlined />}
+                style={{ color: feedbackGiven === 'down' ? '#ff4d4f' : '#999', padding: '0 4px' }}
+                disabled={!!feedbackGiven}
+                onClick={() => handleFeedback(message, 'down')}
+              />
+            </Tooltip>
           </div>
         )}
 

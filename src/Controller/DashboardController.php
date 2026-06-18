@@ -45,7 +45,7 @@ class DashboardController extends BaseDashboardController
         $builder->setMetaTitle('仪表盘')
             ->addTopButton('addnew', [
                 'title' => '新增仪表盘',
-                'href'  => U(MODULE_NAME . '/' . CONTROLLER_NAME . '/edit'),
+                'href'  => U(MODULE_NAME . '/' . CONTROLLER_NAME . '/add'),
             ])
             ->addSearchItem('dashboard_status', 'select', '发布状态', $statusOptions)
             ->addSearchItem('q', 'text', '标题')
@@ -59,7 +59,7 @@ class DashboardController extends BaseDashboardController
             ->addRightButton('edit')
             ->addRightButton('self', [
                 'title' => '查看',
-                'class' => 'default',
+                'class' => 'qs-list-right-btn info',
                 'href'  => '/extends/Chat2VizDashboard/view/uid/__data_id__',
             ])
             ->addRightButton('delete')
@@ -90,10 +90,30 @@ class DashboardController extends BaseDashboardController
         return $pageObj->show();
     }
 
+    /**
+     * New dashboard route. Renders the dashboard editor in "create" mode
+     * (dashboard=null) so the frontend starts a fresh, unsaved dashboard. The
+     * React dashboard-edit component is shared with edit() — only the route
+     * semantics differ (add = create, edit = modify an existing record).
+     */
+    public function add()
+    {
+        $this->renderer->renderEdit(null);
+    }
+
+    /**
+     * Edit an EXISTING dashboard. Requires a valid uid pointing at a record
+     * that actually exists; otherwise redirect to the add route so the URL
+     * always reflects the real intent (create vs. modify).
+     */
     public function edit()
     {
-        $uid = I('get.uid');
-        $dashboard = $uid !== null ? $this->repo->findByUid((string) $uid) : null;
+        $uid = (string) I('get.uid', '');
+        $dashboard = $uid !== '' ? $this->repo->findByUid($uid) : null;
+        if ($dashboard === null) {
+            redirect(U(MODULE_NAME . '/' . CONTROLLER_NAME . '/add'));
+            return;
+        }
         $this->renderer->renderEdit($dashboard);
     }
 

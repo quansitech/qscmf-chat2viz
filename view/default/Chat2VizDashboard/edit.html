@@ -11,7 +11,7 @@
 
 <block name="script">
     <link rel="stylesheet" href="__PUBLIC__/chat2viz-dashboard/dashboard-edit.css">
-    <script src="https://unpkg.com/@antv/g2@5/dist/g2.min.js"></script>
+    <script src="__PUBLIC__/libs/g2/5.4.8/g2.min.js"></script>
     <script>
     // --- G2 resilience patch: normalize specs + async error swallowing ---
     // LLM-generated G2 specs occasionally contain structures that crash G2 v5
@@ -46,5 +46,5 @@
     })();
     </script>
     <script>var __PAGE_DATA__ = {:json_encode(['dashboard' => $dashboard, 'show_sql' => $show_sql])};</script>
-    <script src="__PUBLIC__/chat2viz-dashboard/dashboard-edit.js?v=23"></script>
+    <script src="__PUBLIC__/chat2viz-dashboard/dashboard-edit.js?v=26"></script>
 </block>

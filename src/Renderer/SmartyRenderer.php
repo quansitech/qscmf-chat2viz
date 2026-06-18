@@ -53,7 +53,11 @@ class SmartyRenderer implements PageRendererInterface
 
     public function renderEdit(?array $dashboard = null): mixed
     {
-        // NOTE: display() uses action name as template name (index→index.html, edit→edit.html)
+        // Explicitly target edit.html — both the `add` (new dashboard) and
+        // `edit` (existing dashboard) actions render this SAME template so the
+        // dashboard-edit React component is reused for both routes (routes stay
+        // semantically distinct while the component is shared). display() would
+        // otherwise default to ACTION_NAME, requiring an add.html duplicate.
         // Parse current_schema so json_encode in the template does not double-encode it
         if ($dashboard !== null && isset($dashboard['current_schema']) && is_string($dashboard['current_schema'])) {
             $parsed = json_decode($dashboard['current_schema'], true);
@@ -63,7 +67,7 @@ class SmartyRenderer implements PageRendererInterface
         $this->callProtected('assign', 'meta_title', $dashboard ? '编辑仪表盘' : '新建仪表盘');
         $this->callProtected('assign', 'dashboard', $dashboard);
         $this->callProtected('assign', 'show_sql', self::showSql());
-        $this->callProtected('display');
+        $this->callProtected('display', 'edit');
         return null;
     }
 

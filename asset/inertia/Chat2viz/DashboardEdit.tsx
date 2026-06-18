@@ -149,12 +149,28 @@ function DashboardEditInner() {
   // different dashboard (Inertia client-side navigation in v14/v15) or on
   // first mount (v13 full page load).
   useEffect(() => {
-    if (!dashboard) return;
+    // DEF-14: for new (unsaved) dashboards, PHP passes dashboard=null. Set a
+    // dated default title so the list doesn't accumulate empty-title drafts.
+    if (!dashboard) {
+      const cur = useDashboardStore.getState();
+      if (!cur.uid && !cur.title) {
+        const today = new Date().toISOString().slice(0, 10);
+        useDashboardStore.setState({ title: '未命名仪表盘 ' + today });
+      }
+      return;
+    }
     if (dashboard.uid === useDashboardStore.getState().uid) return;
+
+    // DEF-14: also cover the case where dashboard exists but has no uid/title.
+    let initTitle = dashboard.title || '';
+    if (!dashboard.uid && !initTitle) {
+      const today = new Date().toISOString().slice(0, 10);
+      initTitle = '未命名仪表盘 ' + today;
+    }
 
     useDashboardStore.setState({
       uid: dashboard.uid || '',
-      title: dashboard.title || '',
+      title: initTitle,
     });
 
     // Hydrate widgets from current_schema if present
