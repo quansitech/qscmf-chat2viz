@@ -273,6 +273,15 @@ export function useDashboardDraft(): UseDashboardDraftReturn {
 
   const saveRef = useRef(save);
   saveRef.current = save;
+  // N-2 root cause A: the flush subscription below MUST save immediately on
+  // stream end, not via the 3s debounce. The previous saveRef.current('ai')
+  // left a 3s window where unmount (cleanup aborts in-flight saves + clears
+  // the timer) or a page refresh silently dropped the whole streaming result
+  // — the store updated and G2 re-rendered, but the save never fired, so the
+  // DB kept the old value and a refresh reverted the edit. saveNow bypasses
+  // debounce and persists the complete result at the instant the stream ends.
+  const saveNowRef = useRef(saveNow);
+  saveNowRef.current = saveNow;
 
   useEffect(() => {
     let prevWidgets = useDashboardStore.getState().widgets;
@@ -311,9 +320,12 @@ export function useDashboardDraft(): UseDashboardDraftReturn {
       // Fire once when an in-flight ask ends (any non-idle → idle transition),
       // covering 'submitted' → idle and 'streaming' → idle.
       if (prevState.streamingState === 'idle' || state.streamingState !== 'idle') return;
-      // Streaming just ended — if there are unsaved changes, flush now.
+      // Streaming just ended — flush IMMEDIATELY (N-2: saveNow, not the 3s
+      // debounced save) so the full result is persisted before any refresh or
+      // unmount can cancel it. All WIDGET_UPDATE edits are already applied to
+      // the store when the stream goes idle, so there is nothing left to settle.
       if (state.isDirty) {
-        saveRef.current('ai');
+        saveNowRef.current();
       }
     });
     return unsubscribe;

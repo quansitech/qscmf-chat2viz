@@ -21,6 +21,51 @@ const EXAMPLE_QUESTIONS = [
 // — defined once at module level to avoid re-injecting a <style> per render.
 const TYPING_CURSOR_CSS = `@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} } .typing-cursor { animation: blink 1s step-end infinite; display: inline; } .typing-cursor::after { content: '|'; } @keyframes typingDot { 0%,60%,100%{opacity:.25; transform: translateY(0)} 30%{opacity:1; transform: translateY(-2px)} } .typing-dots span { display:inline-block; width:5px; height:5px; margin:0 1px; border-radius:50%; background:#888; animation: typingDot 1.2s infinite; } .typing-dots span:nth-child(2){animation-delay:.2s} .typing-dots span:nth-child(3){animation-delay:.4s}`;
 
+// Scoped markdown reset for chat bubbles. react-markdown emits plain
+// <ul>/<ol>/<pre>/<blockquote> which inherit the browser UA default styles —
+// notably ul/ol { padding-left: 40px } and pre { margin: 1em 0 }. Inside a
+// narrow bubble (maxWidth 85%, content ~220px) that 40px left padding eats
+// ~18% of the width and pushes content against / past the right edge.
+// This reset tightens list indentation, collapses block margins, and makes
+// code blocks scroll horizontally instead of overflowing the bubble.
+const CHAT_MARKDOWN_CSS = `
+.chat-markdown > :last-child { margin-bottom: 0; }
+.chat-markdown p { margin: 0 0 6px; }
+.chat-markdown ul, .chat-markdown ol { margin: 4px 0 6px; padding-left: 20px; }
+.chat-markdown li { margin: 2px 0; }
+.chat-markdown pre {
+  margin: 4px 0;
+  padding: 6px 8px;
+  background: #ececec;
+  border-radius: 4px;
+  overflow-x: auto;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.chat-markdown code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+/* inline code (not inside pre) */
+.chat-markdown :not(pre) > code {
+  padding: 1px 4px;
+  background: #ececec;
+  border-radius: 3px;
+}
+.chat-markdown blockquote {
+  margin: 4px 0;
+  padding-left: 10px;
+  border-left: 3px solid #d9d9d9;
+  color: #666;
+}
+.chat-markdown h1, .chat-markdown h2, .chat-markdown h3 {
+  margin: 6px 0 4px;
+  font-size: 14px;
+}
+.chat-markdown a { word-break: break-all; }
+.chat-markdown img { max-width: 100%; }
+`;
+
 /** Selector: does the last assistant message have content? */
 function selectLastAssistantHasContent(s: { messages: ChatMessage[] }): boolean {
   const msgs = s.messages;
@@ -296,6 +341,7 @@ export default function ChatPanel({ disabled = false, showSql = false }: ChatPan
             duplicate. When streamingState resets to 'idle' (via the `done`
             event) the user can send a new question. */}
 
+        <style>{CHAT_MARKDOWN_CSS}</style>
         <div ref={messagesEndRef} />
         {streamingState !== 'idle' && lastAssistantHasContent && (
           <style>{TYPING_CURSOR_CSS}</style>

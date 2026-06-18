@@ -37,6 +37,7 @@ export default function PreviewPanel({ showSql = false }: PreviewPanelProps) {
   const widgets = useDashboardStore((s) => s.widgets);
   const updateWidget = useDashboardStore((s) => s.updateWidget);
   const updateLayout = useDashboardStore((s) => s.updateLayout);
+  const markWidgetUserSized = useDashboardStore((s) => s.markWidgetUserSized);
   const removePanel = useDashboardStore((s) => s.removePanel);
   const streamingState = useDashboardStore((s) => s.streamingState);
   const uid = useDashboardStore((s) => s.uid);
@@ -167,7 +168,12 @@ export default function PreviewPanel({ showSql = false }: PreviewPanelProps) {
         onDragStart={() => setDragging(true)}
         onDragStop={() => setDragging(false)}
         onResizeStart={() => setDragging(true)}
-        onResizeStop={() => setDragging(false)}
+        onResizeStop={(_layout, oldItem) => {
+          setDragging(false);
+          // User manually resized → freeze auto-height for this widget so its
+          // chosen size isn't recomputed on the next data refresh.
+          if (oldItem) markWidgetUserSized(oldItem.i);
+        }}
         compactType={COMPACT_TYPE}
         draggableHandle=".widget-header"
         isResizable={true}

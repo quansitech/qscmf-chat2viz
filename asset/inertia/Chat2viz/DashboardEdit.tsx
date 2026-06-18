@@ -6,6 +6,7 @@ import { getPageProps, navigate } from './adapters';
 import { ADMIN_BASE } from './utils/routes';
 import { useDashboardStore, normalizeRows } from './store/dashboardStore';
 import type { ChatMessage, MessageStatus } from './store/dashboardStore';
+import { suggestHeight } from './utils/suggestHeight';
 import { useDashboardDraft } from './hooks/useDashboardDraft';
 import ChatPanel from './components/ChatPanel';
 import PreviewPanel from './components/PreviewPanel';
@@ -196,7 +197,17 @@ function DashboardEditInner() {
             data: normalizeRows(w.data),
             sql: w.sql,
             refreshInterval: w.refreshInterval,
-            layout: w.layout || { x: 0, y: 0, w: 12, h: 6 },
+            // Content-aware auto-height on hydration: if the persisted layout
+            // was NOT explicitly user-sized, recompute h from the spec/data so
+            // tables (many rows) grow and compact charts shrink. Widgets whose
+            // layout predates suggestHeight are stored flat at h=6 — this makes
+            // the dynamic height visible on existing dashboards too. User-sized
+            // widgets keep their hand-set h untouched.
+            layout: (() => {
+              const persisted = w.layout || { x: 0, y: 0, w: 12, h: 6 };
+              if (persisted.userSized) return persisted;
+              return { ...persisted, h: suggestHeight({ spec: w.g2_spec, data: normalizeRows(w.data) }) };
+            })(),
           };
         }
       }

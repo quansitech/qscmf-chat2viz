@@ -34,6 +34,13 @@ export interface WidgetLayout {
   y: number;
   w: number;
   h: number;
+  /**
+   * True once the user has manually dragged/resized this widget. While false,
+   * updateWidgetData may auto-tune `h` to fit the rendered content (tables grow
+   * with rows, KPI cards shrink, etc.). Once true, the user's chosen size is
+   * honored and never overridden by the auto-height logic.
+   */
+  userSized?: boolean;
 }
 
 /**
@@ -169,6 +176,9 @@ export interface DashboardActions {
   /** Fallback: set any widget still loading to error (e.g. on stream done). */
   fallbackLoadingWidgetsToError: () => void;
   updateLayout: (widgetId: string, layout: WidgetLayout) => void;
+  /** Mark a widget as manually resized by the user — disables content
+   *  auto-height so the user's chosen size is preserved. */
+  markWidgetUserSized: (widgetId: string) => void;
   executeAction: (action: ActionCall) => void;
   appendAnswer: (text: string) => void;
   setSql: (widgetId: string, sql: string) => void;
@@ -466,6 +476,23 @@ const _store = _create()(
             // 'chart'. setWidgetError explicitly sets 'error' independently.
             if (rows.length > 0 && hasChartSpec(widget.g2_spec)) {
               widget.status = 'chart';
+              // Content-aware auto-height: when real data + spec arrive and the
+              // user has NOT manually resized this widget, recompute `h` to fit
+              // the content (tables scale with rows, dense charts breathe, KPI
+              // value cards stay compact). This makes suggestHeight's logic
+              // actually take effect on data load instead of every widget
+              // staying at its placeholder height. User-resized widgets are
+              // left alone (their userSized flag is set in updateLayout).
+              if (!widget.layout?.userSized) {
+                const suggested = suggestHeight({
+                  spec: widget.g2_spec,
+                  data: rows,
+                  currentH: widget.layout?.h,
+                });
+                // Only grow or shrink toward the suggestion; never enlarge a
+                // widget the data says should be small beyond a sane cap.
+                widget.layout = { ...(widget.layout as WidgetLayout), h: suggested };
+              }
             } else {
               widget.status = 'loading';
             }
@@ -506,6 +533,14 @@ const _store = _create()(
             if (!widget) return;
             widget.layout = { ...layout };
             state.isDirty = true;
+          });
+        },
+
+        markWidgetUserSized: (widgetId: string) => {
+          set((state) => {
+            const widget = state.widgets[widgetId];
+            if (!widget || !widget.layout) return;
+            widget.layout = { ...widget.layout, userSized: true };
           });
         },
 
