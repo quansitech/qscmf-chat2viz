@@ -74,6 +74,15 @@ export function useDashboardDraft(): UseDashboardDraftReturn {
         setSaving(true);
         try {
           await saveDashboardDraft();
+          // DEF-FRESH: once api_create returns a uid, replace the address bar
+          // from /add → /edit?uid=... so a refresh reloads the now-persisted
+          // dashboard instead of a fresh empty page (which wiped the charts).
+          // replaceState (not pushState) keeps the back button clean — the user
+          // never "visited" /add as a separable step worth returning to.
+          const newUid = useDashboardStore.getState().uid;
+          if (newUid) {
+            window.history.replaceState(null, '', `${ADMIN_BASE}/edit?uid=${newUid}`);
+          }
         } finally {
           setSaving(false);
         }

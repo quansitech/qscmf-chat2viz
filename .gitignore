@@ -28,6 +28,8 @@ asset/chat2viz-dashboard/*.js.map
 # Frontend dependencies
 frontend/node_modules/
 frontend/package-lock.json
+# Webpack filesystem cache (persists between builds; safe to delete to force cold rebuild)
+frontend/.webpack-cache/
 
 # Composer (package is a path repository, uses root project's vendor)
 vendor/

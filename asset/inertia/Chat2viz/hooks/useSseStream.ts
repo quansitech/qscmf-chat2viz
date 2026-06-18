@@ -143,10 +143,17 @@ export function useSseStream() {
     // New stream — clear any stale per-widget watchdog timers.
     resetWatchdog();
 
-    const payload: Record<string, unknown> = {
-      question,
-      dashboard_context: store.getDashboardContext(),
-    };
+    // DEF-NEW-1: only send dashboard_context when the dashboard actually has
+    // widgets. The new-dashboard page carries an empty widgets map; sending
+    // that empty shell made the backend misjudge generate mode as edit mode
+    // (the edit-intent guard then suppressed commit_widget → no chart). The
+    // backend now also defends via has_editable_widgets(), but omitting the
+    // field here keeps the payload clean and the semantics unambiguous.
+    const dashboardContext = store.getDashboardContext() as { widgets?: Record<string, unknown> } | null;
+    const payload: Record<string, unknown> = { question };
+    if (dashboardContext && Object.keys(dashboardContext.widgets || {}).length > 0) {
+      payload.dashboard_context = dashboardContext;
+    }
 
     const conversationId = useDashboardStore.getState().conversationId;
     if (conversationId) {

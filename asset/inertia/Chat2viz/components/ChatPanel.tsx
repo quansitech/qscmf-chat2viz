@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
-import { Alert, Badge, Button, Collapse, Empty, Input, message as notify, Modal, Spin, Tag, Tooltip, Typography } from 'antd';
-import { SendOutlined, QuestionCircleOutlined, PlusOutlined, CopyOutlined, LikeOutlined, DislikeOutlined } from '@ant-design/icons';
+import { Alert, Badge, Button, Collapse, Empty, Input, message as notify, Modal, Popconfirm, Spin, Tag, Tooltip, Typography } from 'antd';
+import { SendOutlined, QuestionCircleOutlined, PlusOutlined, CopyOutlined, LikeOutlined, DislikeOutlined, RedoOutlined } from '@ant-design/icons';
 import ReactMarkdown from 'react-markdown';
 import rehypeSanitize from 'rehype-sanitize';
 import { useDashboardStore } from '../store/dashboardStore';
@@ -403,6 +403,26 @@ function MessageBubble({ message, showSql = false }: MessageBubbleProps) {
   // empty-content placeholder path (which used to early-return) and a path
   // that rendered this useState. Keep hooks above the returns below.
   const [feedbackGiven, setFeedbackGiven] = useState<string | null>(null);
+
+  // 重试(仅最后一条 AI 消息):删除上一轮的 user+assistant 两条消息,用上一条
+  // 用户问题重新发送。图表不动 —— 后端重新生成时按需更新。独立于 feedback
+  // 状态(用户可"点赞但仍想重试换个角度")。
+  const { sendQuestion } = useSseStream();
+  const handleRetry = useCallback(() => {
+    const cur = useDashboardStore.getState();
+    const msgs = cur.messages;
+    // 找最后一条 assistant 之前的 user 问题(即触发本轮回复的问题)
+    let lastUserQuestion = '';
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role === 'user') { lastUserQuestion = msgs[i].content; break; }
+    }
+    if (!lastUserQuestion) return;
+    // 删除最后两条(本轮的 user + assistant),sendQuestion 会重新 push
+    useDashboardStore.setState((state) => ({
+      messages: state.messages.slice(0, -2),
+    }));
+    sendQuestion(lastUserQuestion);
+  }, [sendQuestion]);
   const handleFeedback = useCallback(async (msg: any, thumbs: 'up' | 'down') => {
     try {
       const ADMIN_BASE = (window as any).__ADMIN_BASE__ || '';
@@ -524,6 +544,25 @@ function MessageBubble({ message, showSql = false }: MessageBubbleProps) {
                 onClick={() => handleFeedback(message, 'down')}
               />
             </Tooltip>
+            {/* 重试:仅最后一条 AI 消息显示。删除本轮对话并重新发送上一条问题,
+                图表保持不变。Popconfirm 确认避免误触(feedback 按钮不弹确认是
+                因为它们非破坏性;重试会清掉本轮回复,属轻微破坏性操作)。 */}
+            {isLastAssistant && (
+              <Popconfirm
+                title="重新生成最后一条回复？"
+                description="将清除本轮对话并重新提问，已生成的图表不受影响。"
+                okText="重新生成"
+                cancelText="取消"
+                onConfirm={handleRetry}
+              >
+                <Button
+                  size="small"
+                  type="text"
+                  icon={<RedoOutlined />}
+                  style={{ color: '#999', padding: '0 4px' }}
+                />
+              </Popconfirm>
+            )}
           </div>
         )}
 

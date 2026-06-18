@@ -160,6 +160,14 @@ export default function PreviewPanel({ showSql = false }: PreviewPanelProps) {
 
   return (
     <div style={{ ...styles.container, overflow: dragging ? 'hidden' : 'auto' }}>
+      {/* 常驻布局提示:有图表时引导用户手动操作(拖拽/缩放/删除),
+          不让这些空间类操作走 LLM 对话。极低视觉权重(灰字小号),
+          始终可见——空状态有自己的引导,故仅此处显示。 */}
+      <div style={{ padding: '4px 12px', borderBottom: '1px solid #f0f0f0' }}>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          ✋ 拖拽移动 · 边角缩放 · 🗑️ 删除
+        </Typography.Text>
+      </div>
       <ResponsiveGridLayout
         layout={layout}
         cols={COLS}
