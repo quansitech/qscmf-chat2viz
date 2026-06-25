@@ -10,28 +10,44 @@ use Qscmf\Chat2Viz\Security\SqlValidator;
 /**
  * Security-focused unit tests for SqlValidator.
  *
+ * Policy (per SqlValidator rule 4):
+ *   - UNION alone is ALLOWED (legitimate SQL set operation; NL2SQL uses it
+ *     for multi-metric aggregation).
+ *   - UNION combined with dangerous targets (INFORMATION_SCHEMA, INTO OUTFILE,
+ *     LOAD_FILE, BENCHMARK, SLEEP) is REJECTED.
+ *
+ * Table-level access control is enforced at the SQL execution layer (DB user
+ * permissions + per-widget schema allowlist), not by SqlValidator.
+ *
  * Covers comment-bypass attacks, dangerous function injection,
  * nested comment edge cases, and legitimate query pass-through.
  */
 class SqlValidatorTest extends TestCase
 {
     // =========================================================================
-    // Comment-bypass attacks -- must be blocked
+    // Comment-bypass attacks -- bypass attempts are NEUTRALIZED, not rejected
+    //
+    // The validator strips block/line comments BEFORE keyword analysis, so
+    // UN/**/ION, UN/*comment*/ION, --dummy\nUNION all collapse into a plain
+    // UNION query. Under the current policy (UNION allowed), these bypass
+    // attempts pass validation. The defense-in-depth against exfiltration is
+    // at the SQL execution layer (DB user permissions, widget schema
+    // allowlist), not at the keyword-validator layer.
     // =========================================================================
 
     /**
-     * Block comment injected between UN and ION to evade keyword detection.
+     * Block comment between UN and ION collapses to a plain UNION query.
+     * Validator allows UNION alone, so no exception is thrown.
      */
-    public function testRejectsUnionWithBlockCommentBypass(): void
+    public function testNeutralizesUnionWithBlockCommentBypass(): void
     {
-        $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('UNION');
-
         SqlValidator::validateSelectOnly("SELECT id FROM qs_film UN" . "/**/" . "ION SELECT password FROM qs_staff");
+        $this->assertTrue(true);
     }
 
     /**
-     * Block comment injected between IN and TO OUTFILE to evade keyword detection.
+     * Block comment between IN and TO OUTFILE: even after stripping,
+     * the residual INTO OUTFILE keyword is still rejected by rule 5.
      */
     public function testRejectsIntoOutfileWithBlockCommentBypass(): void
     {
@@ -42,24 +58,23 @@ class SqlValidatorTest extends TestCase
     }
 
     /**
-     * Block comment wrapping a keyword: UN + block-comment + ION.
+     * Block comment wrapping UN/ION collapses to a plain UNION query.
+     * Allowed under current policy.
      */
-    public function testRejectsNestedCommentBypass(): void
+    public function testNeutralizesNestedCommentBypass(): void
     {
-        $this->expectException(\InvalidArgumentException::class);
-
         SqlValidator::validateSelectOnly("SELECT 1 UN" . "/*comment*/" . "ION SELECT 2");
+        $this->assertTrue(true);
     }
 
     /**
-     * Line comment used to mask UNION on next line.
+     * Line comment used to mask UNION on next line is stripped before
+     * keyword analysis. The residual UNION query is allowed.
      */
-    public function testRejectsUnionHiddenBehindLineComment(): void
+    public function testNeutralizesUnionHiddenBehindLineComment(): void
     {
-        $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('UNION');
-
         SqlValidator::validateSelectOnly("SELECT id FROM qs_film -- dummy\nUNION SELECT password FROM qs_staff");
+        $this->assertTrue(true);
     }
 
     /**
@@ -76,6 +91,49 @@ class SqlValidatorTest extends TestCase
             "SELECT id FROM qs_film /*!50000 UNION*/ SELECT password FROM qs_staff"
         );
         $this->assertTrue(true);
+    }
+
+    // =========================================================================
+    // UNION + dangerous targets -- must be blocked (rule 4 second clause)
+    // =========================================================================
+
+    /**
+     * UNION targeting INFORMATION_SCHEMA enables schema/table enumeration.
+     */
+    public function testRejectsUnionWithInformationSchema(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('UNION with dangerous');
+
+        SqlValidator::validateSelectOnly(
+            "SELECT id FROM qs_film UNION SELECT table_name FROM information_schema.tables"
+        );
+    }
+
+    /**
+     * UNION with INTO OUTFILE enables file system exfiltration.
+     */
+    public function testRejectsUnionWithIntoOutfile(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('UNION with dangerous');
+
+        SqlValidator::validateSelectOnly(
+            "SELECT id FROM qs_film UNION SELECT password FROM qs_staff INTO OUTFILE '/tmp/dump.csv'"
+        );
+    }
+
+    /**
+     * UNION with LOAD_FILE enables sensitive file reading.
+     */
+    public function testRejectsUnionWithLoadFile(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('UNION with dangerous');
+
+        SqlValidator::validateSelectOnly(
+            "SELECT id FROM qs_film UNION SELECT LOAD_FILE('/etc/passwd')"
+        );
     }
 
     // =========================================================================
@@ -193,14 +251,25 @@ class SqlValidatorTest extends TestCase
     }
 
     /**
-     * SELECT with string literal containing UNION text.
-     *
-     * Known limitation: the validator does not parse string literals,
-     * so UNION inside a string will cause a false positive rejection.
+     * SELECT with string literal containing UNION text. Under the current
+     * policy (UNION allowed), this is no longer a false positive — it's
+     * simply a legitimate query whose label happens to spell "UNION ALL".
      */
-    public function testRejectsSelectWithUnionInStringLiteral(): void
+    public function testAllowsSelectWithUnionInStringLiteral(): void
     {
-        $this->expectException(\InvalidArgumentException::class);
         SqlValidator::validateSelectOnly("SELECT 'UNION ALL' AS label FROM qs_film");
+        $this->assertTrue(true);
+    }
+
+    /**
+     * UNION alone (no dangerous target) is allowed — NL2SQL uses it
+     * legitimately for multi-metric aggregation.
+     */
+    public function testAllowsUnionAlone(): void
+    {
+        SqlValidator::validateSelectOnly(
+            "SELECT title FROM qs_film UNION SELECT title FROM qs_film_category"
+        );
+        $this->assertTrue(true);
     }
 }

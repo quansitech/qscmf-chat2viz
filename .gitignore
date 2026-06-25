@@ -57,3 +57,7 @@ CONTRIBUTING.md
 .playwright-mcp
 
 AUDIT_REPORT.md.codegraph/
+
+.codegraph/
+AGENTS.md
+AUDIT_REPORT.md

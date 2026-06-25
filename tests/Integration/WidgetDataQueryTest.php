@@ -110,11 +110,21 @@ class WidgetDataQueryTest extends TestCase
      */
     public function testRejectsSqlInjectionViaUnion(): void
     {
-        $maliciousSql = "SELECT title FROM qs_film UNION SELECT password FROM qs_staff";
+        // UNION + INFORMATION_SCHEMA is rejected (rule 4 second clause);
+        // UNION alone would be allowed (NL2SQL legitimately uses it for
+        // multi-metric aggregation).
+        $maliciousSql = "SELECT title FROM qs_film UNION SELECT table_name FROM information_schema.tables";
 
         $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('UNION');
+        $this->expectExceptionMessage('UNION with dangerous');
         SqlValidator::validateSelectOnly($maliciousSql);
+    }
+
+    public function testAllowsUnionAlone(): void
+    {
+        // UNION alone is permitted — NL2SQL uses it for multi-metric aggregation.
+        SqlValidator::validateSelectOnly("SELECT title FROM qs_film UNION SELECT title FROM qs_film_category");
+        $this->assertTrue(true);
     }
 
     public function testRejectsSqlInjectionViaSemicolon(): void
