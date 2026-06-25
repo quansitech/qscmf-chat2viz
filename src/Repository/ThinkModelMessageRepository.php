@@ -186,4 +186,105 @@ class ThinkModelMessageRepository implements MessageRepositoryInterface
 
         return $result;
     }
+
+    public function markLastStreamingOrphanInterrupted(string $conversationId): int
+    {
+        // Find the most-recent orphan (streaming + empty content), then flip it.
+        $orphan = M(self::TABLE)
+            ->where([
+                'conversation_id' => $conversationId,
+                'role'            => 'assistant',
+                'message_status'  => 'streaming',
+                'content'         => ['exp', "= '' OR content IS NULL"],
+            ])
+            ->order('id DESC')
+            ->find();
+
+        if (!$orphan || empty($orphan)) {
+            return 0;
+        }
+
+        $affected = M(self::TABLE)
+            ->where([
+                'id'              => $orphan['id'],
+                'message_status'  => 'streaming',  // re-guard: only flip if still streaming
+            ])
+            ->save(['message_status' => 'interrupted']);
+
+        return $affected === false ? 0 : (int) $affected;
+    }
+
+    public function updateStatusAtomic(int $messageId, string $fromStatus, string $toStatus): int
+    {
+        if (!in_array($fromStatus, self::VALID_STATUSES, true) || !in_array($toStatus, self::VALID_STATUSES, true)) {
+            throw new DashboardException('Invalid message status transition: ' . $fromStatus . '→' . $toStatus);
+        }
+
+        $affected = M(self::TABLE)
+            ->where([
+                'id'             => $messageId,
+                'message_status' => $fromStatus,
+            ])
+            ->save(['message_status' => $toStatus]);
+
+        return $affected === false ? 0 : (int) $affected;
+    }
+
+    public function getRecentCompleteMessages(string $conversationId, int $limit): array
+    {
+        $limit = max(1, $limit);
+        $rows = M(self::TABLE)
+            ->field('role, content')
+            ->where([
+                'conversation_id' => $conversationId,
+                'role'            => ['in', ['user', 'assistant']],
+                'message_status'  => ['in', ['complete', 'interrupted']],
+            ])
+            ->where('content IS NOT NULL AND content <> ""')
+            ->order('id DESC')
+            ->limit($limit)
+            ->select();
+
+        if (!is_array($rows)) {
+            return [];
+        }
+        $out = [];
+        foreach ($rows as $r) {
+            $out[] = ['role' => $r['role'], 'content' => $r['content']];
+        }
+        return $out;
+    }
+
+    public function deleteLastTurnFromLastUser(string $conversationId): int
+    {
+        // Transaction guards against TOCTOU with a concurrent persistMessage.
+        M()->startTrans();
+        try {
+            $lastUser = M(self::TABLE)
+                ->where([
+                    'conversation_id' => $conversationId,
+                    'role'            => 'user',
+                ])
+                ->order('id DESC')
+                ->find();
+
+            if (!$lastUser || empty($lastUser)) {
+                M()->commit();
+                return 0;
+            }
+
+            $deleted = M(self::TABLE)
+                ->where([
+                    'conversation_id' => $conversationId,
+                    'id'              => ['egt', $lastUser['id']],
+                ])
+                ->delete();
+
+            M()->commit();
+            return $deleted === false ? 0 : (int) $deleted;
+        } catch (\Throwable $e) {
+            M()->rollback();
+            throw $e;
+        }
+    }
 }

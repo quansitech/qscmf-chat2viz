@@ -28,6 +28,13 @@ class Chat2VizController extends GyController
     protected Client $httpClient;
     private ?MockStreamEmitter $mockEmitter = null;
     private string $currentDashboardUid = '';
+    /**
+     * conversation-one-to-one-and-first-msg-init: when a first message triggers
+     * the three-table init, the freshly created dashboard uid is stored here so
+     * it can be threaded into the Nl2sqlEventTransformer (Task 5) and emitted on
+     * the conversation_id SSE frame. Empty on non-first-message turns.
+     */
+    private string $firstMessageDashboardUid = '';
 
     private ?ConversationService $conversationService = null;
     private ?StreamService $streamService = null;
@@ -50,6 +57,7 @@ class Chat2VizController extends GyController
             $this->conversationService = new ConversationService(
                 AdapterFactory::createConversationRepository(),
                 AdapterFactory::createMessageRepository(),
+                AdapterFactory::createRepository(),
                 fn(string $tag, string $detail) => $this->logError($tag, $detail)
             );
         }
@@ -155,6 +163,12 @@ class Chat2VizController extends GyController
 
     public function api_ask_stream()
     {
+        // fix-stream-message-persistence: keep the script alive after the client
+        // disconnects (gateway timeout) so finalizeStream can still run. Covers the
+        // common "connection dropped but PHP still executing" soft-interrupt path;
+        // hard kills (SIGKILL/OOM) are masked by history-display filtering + optional cron.
+        ignore_user_abort(true);
+
         $input = $this->parseJsonInput();
         $validation = ConversationValidator::validateQuestion($input);
         if ($validation !== null) {
@@ -165,22 +179,110 @@ class Chat2VizController extends GyController
         $payload = $this->buildPayloadFromParsed($input);
         $this->currentDashboardUid = trim((string) ($payload['dashboard_context']['dashboard_uid'] ?? ''));
 
-        // Resolve or create conversation
-        $conversationId = $payload['conversation_id'] ?? '';
-        if (!preg_match('/^[a-f0-9\-]{1,64}$/i', $conversationId)) {
-            $conversationId = bin2hex(random_bytes(16));
+        // inject-conversation-history Decision 7: enforce dashboard ownership
+        // BEFORE ensureConversation / history assembly. Chat2VizController lives
+        // in the `extends` module (no framework auth), and dashboard_uid comes
+        // from client JSON — without this guard a logged-in user could pass
+        // another user's dashboard_uid and read their conversation history via
+        // the injected prior_messages. Mirrors DashboardController's ownership
+        // checks but implemented inline (Chat2VizController does not extend
+        // BaseDashboardController, so it cannot call checkOwnershipAndReject).
+        if ($this->currentDashboardUid !== '') {
+            $dashboard = \Qscmf\Chat2Viz\Adapter\AdapterFactory::createRepository()
+                ->findByUid($this->currentDashboardUid);
+            if ($dashboard === null) {
+                $this->ajaxReturn(['status' => 0, 'info' => '仪表盘不存在']);
+                return;
+            }
+            $currentUserId = (int) session(C('USER_AUTH_KEY'));
+            if ((int) ($dashboard['created_by'] ?? 0) !== $currentUserId) {
+                $this->ajaxReturn(['status' => 0, 'info' => '无权操作']);
+                return;
+            }
         }
 
         $convService = $this->getConversationService();
-        $conversationId = $convService->ensureConversation($conversationId, $this->currentDashboardUid);
-        $convService->persistMessage(
-            $conversationId,
-            'user',
-            $payload['question'] ?? ''
-        );
-        $assistantMessageId = $convService->preallocateAssistantMessage(
-            $conversationId
-        );
+
+        // conversation-one-to-one-and-first-msg-init: detect the first message
+        // on a brand-new dashboard (no conversation_id and no dashboard_uid yet
+        // — the frontend has not created the dashboard). Transactionally create
+        // dashboard + conversation + user message, then continue the stream.
+        $hasConversationId = isset($payload['conversation_id'])
+            && is_string($payload['conversation_id'])
+            && $payload['conversation_id'] !== '';
+
+        if (!$hasConversationId && $this->currentDashboardUid === '') {
+            $question = trim((string) ($payload['question'] ?? ''));
+            try {
+                $userId = (int) session(C("USER_AUTH_KEY")); $init = $convService->initializeOnFirstMessage($question, $userId > 0 ? $userId : null);
+            } catch (\Throwable $e) {
+                $this->logError('first message init failed', $e->getMessage());
+                $this->ajaxReturn(['status' => 0, 'info' => '初始化会话失败']);
+                return;
+            }
+
+            $conversationId = $init['conversation_id'];
+            $this->currentDashboardUid = $init['uid'];
+            // Stored so the Nl2sqlEventTransformer (Task 5) can append uid to the
+            // conversation_id SSE frame, letting the frontend switch to edit mode.
+            $this->firstMessageDashboardUid = $init['uid'];
+
+            $payload['conversation_id'] = $conversationId;
+            // First message: no prior history (the three tables were just created).
+            $payload['prior_messages'] = [];
+
+            // The user message was persisted inside initializeOnFirstMessage's
+            // transaction; only preallocate the assistant slot below.
+            $convService->finalizeOrphanedStreamingMessages($conversationId);
+            $assistantMessageId = $convService->preallocateAssistantMessage($conversationId);
+        } else {
+            // Resolve or reuse the 1:1 conversation for an existing dashboard.
+            $conversationId = (string) ($payload['conversation_id'] ?? '');
+
+            $conversationId = $convService->ensureConversation($conversationId, $this->currentDashboardUid);
+
+            if ($conversationId === '') {
+                // ensureConversation could not resolve (no uid, non-numeric cid,
+                // or persistence failure). Cannot proceed without a BIGINT id.
+                $this->ajaxReturn(['status' => 0, 'info' => '会话初始化失败']);
+                return;
+            }
+
+            // inject-conversation-history Decision 4: unify conversation_id to the
+            // DB id so Python never self-generates a divergent UUID (which would
+            // break history continuity).
+            $payload['conversation_id'] = $conversationId;
+
+            // inject-conversation-history: assemble prior_messages from DB history.
+            // MUST run BEFORE persistMessage(this turn) so the current question is
+            // not duplicated (Python appends HumanMessage(question) on its side).
+            // Cap turns at 20 to guard against misconfigured CHAT2VIZ_HISTORY_TURNS.
+            $historyLimit = min((int) env('CHAT2VIZ_HISTORY_TURNS', 4), 20) * 2;
+            $payload['prior_messages'] = $convService->getRecentMessagesForContext($conversationId, $historyLimit);
+
+            // fix-stream-message-persistence: clean the tail orphan left by a prior
+            // interrupted request BEFORE preallocating a new assistant row, so the
+            // previous 'streaming'+empty row never lingers as a terminal state.
+            $convService->finalizeOrphanedStreamingMessages($conversationId);
+
+            $convService->persistMessage(
+                $conversationId,
+                'user',
+                $payload['question'] ?? ''
+            );
+            $assistantMessageId = $convService->preallocateAssistantMessage($conversationId);
+        }
+
+        // fix-stream-message-persistence Decision 3: register a shutdown guard so
+        // that if PHP exits before finalizeStream runs (soft interrupt), the
+        // preallocated row is atomically flipped 'streaming'→'interrupted'.
+        // Idempotent — finalizeStream's 'complete' write wins; this UPDATE's
+        // WHERE message_status='streaming' then matches 0 rows.
+        $shutdownConvService = $convService;
+        register_shutdown_function(function () use ($shutdownConvService, $conversationId, $assistantMessageId): void {
+            $shutdownConvService->ensureNotStrandedStreaming($conversationId, $assistantMessageId);
+        });
+
         $accumulator = new StreamAccumulator();
 
         // Release session lock before long-running stream
@@ -202,7 +304,11 @@ class Chat2VizController extends GyController
             $wantsChat2viz,
             $conversationId,
             $accumulator,
-            $assistantMessageId
+            $assistantMessageId,
+            // conversation-one-to-one-and-first-msg-init: non-empty only on the
+            // first message; the Nl2sqlEventTransformer appends it to the
+            // conversation_id SSE frame so the frontend can switch to edit mode.
+            $this->firstMessageDashboardUid !== '' ? $this->firstMessageDashboardUid : null
         );
     }
 
@@ -210,47 +316,6 @@ class Chat2VizController extends GyController
     // Conversation API
     // -------------------------------------------------------
 
-    public function api_conversation_create()
-    {
-        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-            $this->ajaxReturn(['status' => 0, 'info' => '请求方法不允许']);
-            return;
-        }
-
-        $input = $this->parseJsonInput();
-        $validation = ConversationValidator::validateConversationCreate($input);
-        if ($validation !== null) {
-            $this->ajaxReturn($validation);
-            return;
-        }
-
-        $dashboardUid = trim((string) ($input['dashboard_uid'] ?? ''));
-
-        try {
-            $convService = $this->getConversationService();
-
-            // Archive current active conversation if one exists
-            $active = $convService->findActiveByDashboardUid($dashboardUid);
-            if ($active !== null) {
-                $convService->archive((int) $active['id']);
-            }
-
-            $title = trim((string) ($input['title'] ?? ''));
-            $conversation = $convService->createConversation($dashboardUid, $title);
-
-            $this->ajaxReturn([
-                'status' => 1,
-                'data'   => [
-                    'conversation_id' => $conversation['id'],
-                    'dashboard_uid'   => $dashboardUid,
-                    'title'           => $conversation['title'] ?? '',
-                ],
-            ]);
-        } catch (\Throwable $e) {
-            $this->logError('conversation create failed', $e->getMessage());
-            $this->ajaxReturn(['status' => 0, 'info' => '创建会话失败']);
-        }
-    }
 
     public function api_conversation_history()
     {
@@ -280,6 +345,17 @@ class Chat2VizController extends GyController
             $conversationId = (string) $active['id'];
             $msgRepo = AdapterFactory::createMessageRepository();
             $messages = $msgRepo->findConversationHistory($conversationId);
+
+            // fix-stream-message-persistence: filter out terminal 'streaming'
+            // orphans (status=streaming AND empty content) so they never render
+            // as a phantom "thinking..." bubble in the chat history. Real partial
+            // replies (status=interrupted with content, or streaming with content
+            // from an in-flight request) are preserved.
+            $messages = array_values(array_filter($messages, static function ($m): bool {
+                $status = $m['message_status'] ?? '';
+                $content = trim((string) ($m['content'] ?? ''));
+                return !($status === 'streaming' && $content === '');
+            }));
 
             // Strip g2_spec inside message metadata to ONLY type+encode+title.
             // The frontend populates React state from these specs; any extra
@@ -338,47 +414,6 @@ class Chat2VizController extends GyController
         }
     }
 
-    public function api_conversation_list()
-    {
-        if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
-            $this->ajaxReturn(['status' => 0, 'info' => '请求方法不允许']);
-            return;
-        }
-
-        $uid = (string) ($_GET['uid'] ?? '');
-        if ($uid === '' || !self::validateUuid($uid)) {
-            $this->ajaxReturn(['status' => 0, 'info' => '无效的仪表盘ID']);
-            return;
-        }
-
-        try {
-            $convService = $this->getConversationService();
-            $conversations = $convService->findByDashboardUid($uid);
-
-            $msgRepo = AdapterFactory::createMessageRepository();
-            $convIds = array_map(fn($c) => (string) $c['id'], $conversations);
-            $counts = $msgRepo->countByConversationIds($convIds);
-
-            $enriched = [];
-            foreach ($conversations as $conv) {
-                $convId = (string) $conv['id'];
-                $enriched[] = [
-                    'id'            => $conv['id'],
-                    'dashboard_uid' => $conv['dashboard_uid'] ?? $uid,
-                    'title'         => $conv['title'] ?? '',
-                    'status'        => (int) ($conv['status'] ?? 1),
-                    'message_count' => $counts[$convId] ?? 0,
-                    'created_at'    => $conv['created_at'] ?? '',
-                    'updated_at'    => $conv['updated_at'] ?? '',
-                ];
-            }
-
-            $this->ajaxReturn(['status' => 1, 'data' => ['conversations' => $enriched]]);
-        } catch (\Throwable $e) {
-            $this->logError('conversation list failed', $e->getMessage());
-            $this->ajaxReturn(['status' => 0, 'info' => '获取会话列表失败']);
-        }
-    }
 
     // -------------------------------------------------------
     // HTTP-level helpers (kept on controller)
@@ -472,6 +507,69 @@ class Chat2VizController extends GyController
     private function logError(string $tag, string $detail): void
     {
         \Think\Log::write(sprintf('[chat2viz] %s | %s', $tag, $detail), \Think\Log::ERR);
+    }
+
+    // -------------------------------------------------------
+    // Retry API (fix-redis-degrade-and-retry-dedup: dedup user messages on retry)
+    // -------------------------------------------------------
+
+    /**
+     * POST /extends/Chat2Viz/api_delete_last_turn
+     *
+     * Deletes the most-recent user message and everything after it (typically the
+     * paired assistant reply) from a conversation. Used by the frontend retry
+     * flow to prevent duplicate user rows from accumulating when regenerating
+     * the last answer.
+     *
+     * fix-redis-degrade-and-retry-dedup: Chat2VizController lives in the extends
+     * module (no framework auth) and conversation_id is client-controlled, so
+     * this endpoint MUST verify dashboard ownership + conversation belonging
+     * before deleting. Mirrors DashboardController's pattern but implemented
+     * inline (Chat2VizController does not extend BaseDashboardController).
+     */
+    public function api_delete_last_turn()
+    {
+        if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+            $this->ajaxReturn(['status' => 0, 'info' => '请求方法不允许']);
+            return;
+        }
+
+        $input = $this->parseJsonInput();
+        $dashboardUid = trim((string) ($input['dashboard_uid'] ?? ''));
+        $conversationId = trim((string) ($input['conversation_id'] ?? ''));
+
+        if ($dashboardUid === '' || !self::validateUuid($dashboardUid)) {
+            $this->ajaxReturn(['status' => 0, 'info' => '无效参数']);
+            return;
+        }
+
+        // 1. Dashboard ownership check (Chat2VizController cannot call
+        //    checkOwnershipAndReject — it does not extend BaseDashboardController).
+        $dashboard = \Qscmf\Chat2Viz\Adapter\AdapterFactory::createRepository()
+            ->findByUid($dashboardUid);
+        if ($dashboard === null) {
+            $this->ajaxReturn(['status' => 0, 'info' => '仪表盘不存在']);
+            return;
+        }
+        $currentUserId = (int) session(C('USER_AUTH_KEY'));
+        if ((int) ($dashboard['created_by'] ?? 0) !== $currentUserId) {
+            $this->ajaxReturn(['status' => 0, 'info' => '无权操作']);
+            return;
+        }
+
+        // 2. Conversation belonging: ConversationRepositoryInterface has no
+        //    find(string); reverse-lookup via findActiveByDashboardUid and
+        //    compare the active id. Only the active conversation can be deleted.
+        $convService = $this->getConversationService();
+        $active = $convService->findActiveByDashboardUid($dashboardUid);
+        if ($active === null || (string) $active['id'] !== $conversationId) {
+            $this->ajaxReturn(['status' => 0, 'info' => '会话不属于该仪表盘']);
+            return;
+        }
+
+        // 3. Delete (transactional inside the repo).
+        $deleted = $convService->deleteLastTurn($conversationId);
+        $this->ajaxReturn(['status' => 1, 'data' => ['deleted' => $deleted]]);
     }
 
     // -------------------------------------------------------

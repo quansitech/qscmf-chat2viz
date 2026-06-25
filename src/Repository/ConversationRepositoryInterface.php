@@ -7,8 +7,11 @@ use Qscmf\Chat2Viz\Exception\DashboardException;
 /**
  * Repository interface for managing conversation records (qs_chat2viz_conversations).
  *
- * A "conversation" groups messages into a logical session tied to a dashboard.
- * This interface handles conversation lifecycle: create, find, archive.
+ * conversation-one-to-one-and-first-msg-init: a conversation has a strict 1:1
+ * relationship with its dashboard (enforced by a UNIQUE constraint on
+ * dashboard_uid). There is at most one conversation per dashboard, so the
+ * "active/archived" status machine is removed — findActiveByDashboardUid no
+ * longer filters by status, and archive() is removed.
  */
 interface ConversationRepositoryInterface
 {
@@ -32,12 +35,13 @@ interface ConversationRepositoryInterface
     public function findById(int $id): ?array;
 
     /**
-     * Find the single active conversation for a dashboard.
+     * Find the single conversation for a dashboard (1:1).
      *
-     * Returns the most recently created conversation where status = 1 (active).
+     * conversation-one-to-one: no status filter — there is at most one
+     * conversation per dashboard (UNIQUE dashboard_uid).
      *
      * @param string $dashboardUid UUID v4 of the dashboard
-     * @return array|null Conversation row, or null if no active conversation exists
+     * @return array|null Conversation row, or null if none exists
      */
     public function findActiveByDashboardUid(string $dashboardUid): ?array;
 
@@ -45,15 +49,7 @@ interface ConversationRepositoryInterface
      * List all conversations for a dashboard, newest first.
      *
      * @param string $dashboardUid UUID v4 of the dashboard
-     * @return array<int, array> List of conversation rows
+     * @return array<int, array> List of conversation rows (at most one under 1:1)
      */
     public function findByDashboardUid(string $dashboardUid): array;
-
-    /**
-     * Archive (soft-delete) a conversation by setting status = 0.
-     *
-     * @param int $id Conversation primary key
-     * @return bool True if archived, false if not found
-     */
-    public function archive(int $id): bool;
 }

@@ -52,7 +52,8 @@ class GuzzleStreamFallback
         string $conversationId = '',
         ?StreamAccumulator $accumulator = null,
         ?int $assistantMessageId = null,
-        array $headers = []
+        array $headers = [],
+        ?string $dashboardUid = null
     ): bool {
         $timeout = (int) env('CHAT2VIZ_SSE_TIMEOUT', 180);
 
@@ -99,7 +100,7 @@ class GuzzleStreamFallback
         $convId = $conversationId;
 
         if ($wantsChat2viz) {
-            $transformer = new Nl2sqlEventTransformer($conversationId);
+            $transformer = new Nl2sqlEventTransformer($conversationId, $dashboardUid);
             $handler = new class($transformer, $sseWriter, $acc, $convId, $eventRouter) implements SseEventHandler {
                 public function __construct(
                     private Nl2sqlEventTransformer $transformer,

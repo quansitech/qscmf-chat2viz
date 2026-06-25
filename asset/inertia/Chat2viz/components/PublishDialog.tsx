@@ -45,7 +45,14 @@ export default function PublishDialog({ uid, title, visible, onClose }: PublishD
         body: JSON.stringify({ title: titleValue }),
       });
       if (!resp.ok) {
-        throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
+        // Read server error body for actionable message (task 8.9: previously
+        // swallowed, showing generic "网络错误" even when server explained why).
+        let serverMsg = `HTTP ${resp.status}`;
+        try {
+          const errBody = await resp.json();
+          serverMsg = errBody.info || errBody.message || serverMsg;
+        } catch { /* non-JSON error body; keep HTTP status */ }
+        throw new Error(serverMsg);
       }
       const result = await resp.json();
 

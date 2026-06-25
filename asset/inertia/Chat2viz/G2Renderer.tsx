@@ -51,16 +51,39 @@ function determineUpdateLevel(
   const nextKeys = Object.keys(nextSpec).filter((k) => k !== 'data').sort();
   if (prevKeys.join(',') !== nextKeys.join(',')) return 'options';
 
-  // Deep-compare non-data fields by JSON stringify (shallow enough for G2 specs)
-  const stripData = (s: Record<string, unknown>) => {
-    const copy = { ...s };
-    delete copy.data;
-    return JSON.stringify(copy);
+  // task 8.3: deterministic key-sorted JSON so two specs with the same fields
+  // in different insertion orders compare equal. Plain JSON.stringify(copy)
+  // produced false-positive 'options' updates whenever the same spec arrived
+  // via a different code path (hydration vs SSE vs buildSchema), causing
+  // unnecessary full chart recreations.
+  const stripDataStable = (s: Record<string, unknown>): string => {
+    const copy: Record<string, unknown> = {};
+    for (const k of Object.keys(s).sort()) {
+      if (k !== 'data') copy[k] = s[k];
+    }
+    return stableStringify(copy);
   };
-  if (stripData(prevSpec) !== stripData(nextSpec)) return 'options';
+  if (stripDataStable(prevSpec) !== stripDataStable(nextSpec)) return 'options';
 
   // Only data differs
   return 'changeData';
+}
+
+/**
+ * Deterministic JSON serialization (task 8.3). Like JSON.stringify but with
+ * object keys sorted ascending at every depth, so {b:1,a:2} and {a:2,b:1}
+ * produce identical output. Handles nested objects and arrays of objects.
+ */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return '[' + value.map(stableStringify).join(',') + ']';
+  }
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj).sort();
+  return '{' + keys.map((k) => JSON.stringify(k) + ':' + stableStringify(obj[k])).join(',') + '}';
 }
 
 // ---------------------------------------------------------------------------

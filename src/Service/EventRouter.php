@@ -37,10 +37,6 @@ class EventRouter
         string $conversation_id,
         SseEvent $event
     ): void {
-        if (!$accumulator->isRedisAvailable()) {
-            return;
-        }
-
         $data = $event->data;
 
         switch ($event->type) {
@@ -53,21 +49,23 @@ class EventRouter
                 break;
 
             case 'action_call':
-                $accumulator->accumulateActionCall($conversation_id, [
-                    'action_type' => $data['action_type'] ?? '',
-                    'params'      => $data['params'] ?? [],
-                ]);
+                if ($accumulator->isRedisAvailable()) {
+                    $accumulator->accumulateActionCall($conversation_id, [
+                        'action_type' => $data['action_type'] ?? '',
+                        'params'      => $data['params'] ?? [],
+                    ]);
+                }
                 break;
 
             case 'tool_call':
-                if (!empty($data)) {
+                if (!empty($data) && $accumulator->isRedisAvailable()) {
                     $accumulator->accumulateToolCall($conversation_id, $data);
                 }
                 break;
 
             case 'reasoning':
                 $text = $data['text'] ?? '';
-                if ($text !== '') {
+                if ($text !== '' && $accumulator->isRedisAvailable()) {
                     $accumulator->accumulateReasoning($conversation_id, $text);
                 }
                 break;

@@ -5,7 +5,7 @@ import { useQueries, QueryClient, QueryClientProvider } from '@tanstack/react-qu
 import { getPageProps, navigate } from './adapters';
 import { ADMIN_BASE } from './utils/routes';
 import { useDashboardStore, normalizeRows } from './store/dashboardStore';
-import type { ChatMessage, MessageStatus } from './store/dashboardStore';
+import type { ChatMessage, MessageStatus, Widget } from './store/dashboardStore';
 import { suggestHeight } from './utils/suggestHeight';
 import { useDashboardDraft } from './hooks/useDashboardDraft';
 import ChatPanel from './components/ChatPanel';
@@ -21,15 +21,19 @@ import { createSemaphore } from './utils/concurrency';
 // onSuccess, so there is never a dual-source conflict.
 // ---------------------------------------------------------------------------
 
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 5 * 60 * 1000, // 5 minutes
-      retry: 1,
-      refetchOnWindowFocus: false,
+// QueryClient created per-mount via useState factory (task 7.5: module-scope
+// QueryClient leaks cache across SPA navigations / different dashboards).
+function useQueryClient() {
+  return useState(() => new QueryClient({
+    defaultOptions: {
+      queries: {
+        staleTime: 5 * 60 * 1000, // 5 minutes
+        retry: 1,
+        refetchOnWindowFocus: false,
+      },
     },
-  },
-});
+  }))[0];
+}
 
 /**
  * Shared concurrency cap (6) wrapping every widget-data HTTP request on this
@@ -65,6 +69,22 @@ interface DashboardData {
   status?: string;
 }
 
+/**
+ * task 7.1: typed shape for a widget element inside
+ * dashboard.current_schema.widgets. The server may store widgets loosely, so
+ * every field is optional except id; the hydration loop below applies sensible
+ * defaults. Replaces the previous `any[]` element type.
+ */
+interface HydratedWidget {
+  id: string;
+  title?: string;
+  g2_spec?: Record<string, unknown>;
+  data?: unknown;
+  sql?: string;
+  refreshInterval?: number;
+  layout?: { x: number; y: number; w: number; h: number; userSized?: boolean };
+}
+
 interface DashboardEditProps {
   dashboard: DashboardData | null;
   /** Feature flag: show the per-widget "查询语句" panel (CHAT2VIZ_SHOW_SQL). */
@@ -90,6 +110,7 @@ function useThrottledAction(action: () => void, delayMs: number) {
 // ---------------------------------------------------------------------------
 
 export default function DashboardEdit() {
+  const queryClient = useQueryClient();
   return (
     <QueryClientProvider client={queryClient}>
       <DashboardEditInner />
@@ -178,12 +199,12 @@ function DashboardEditInner() {
     // NOTE: ThinkPHP M()->find() returns current_schema as a JSON string.
     // The server-side renderer (SmartyRenderer) should parse it, but we add
     // a client-side fallback for robustness.
-    let schema = dashboard.current_schema as { widgets?: any[] } | string | null;
+    let schema = dashboard.current_schema as { widgets?: HydratedWidget[] } | string | null;
     if (typeof schema === 'string') {
       try { schema = JSON.parse(schema); } catch { schema = null; }
     }
     if (schema && typeof schema === 'object' && Array.isArray(schema.widgets)) {
-      const widgetsMap: Record<string, any> = {};
+      const widgetsMap: Record<string, Widget> = {};
       for (const w of schema.widgets) {
         if (w.id) {
           widgetsMap[w.id] = {
@@ -240,12 +261,17 @@ function DashboardEditInner() {
       return;
     }
 
+    // AbortController prevents stale-response race: if uid changes before the
+    // fetch resolves, the late response is discarded (task 7.4).
+    const abortController = new AbortController();
+
     // Mark history as loading so the chat panel can disable send + show a
     // spinner until the conversation is hydrated.
     useDashboardStore.setState({ historyStatus: 'loading' });
 
     fetch(`/extends/Chat2Viz/api_conversation_history?uid=${encodeURIComponent(dashboard.uid)}`, {
       credentials: 'same-origin',
+      signal: abortController.signal,
     })
       .then((r) => r.json())
       .then((result) => {
@@ -261,7 +287,7 @@ function DashboardEditInner() {
 
         const msgs: ChatMessage[] = result.data.messages
           .filter((m: any) => m.role === 'user' || m.role === 'assistant')
-          .map((m: any) => {
+          .map((m: any, i: number) => {
             let metadata: any;
             if (!m.metadata) {
               metadata = undefined;
@@ -272,7 +298,10 @@ function DashboardEditInner() {
             }
 
             return {
-              id: String(m.id ?? Math.random().toString(36).slice(2)),
+              // Deterministic id: prefer server id; if missing, derive from
+              // index+role (stable across re-renders). Math.random() caused
+              // React key instability — every re-render produced new keys.
+              id: String(m.id ?? `${i}-${m.role}`),
               role: m.role,
               content: m.content || '',
               timestamp: m.created_at || new Date().toISOString(),
@@ -291,7 +320,9 @@ function DashboardEditInner() {
         }
         useDashboardStore.setState(update);
       })
-      .catch(() => {
+      .catch((err) => {
+        // AbortController.abort() on uid change/unmount — silent, not an error
+        if (abortController.signal.aborted) return;
         // Non-critical: conversation history is best-effort. Surface as ready
         // (not error) so the user can still ask new questions, but tell the
         // user the history failed to load (otherwise the empty chat looks like
@@ -299,6 +330,9 @@ function DashboardEditInner() {
         useDashboardStore.setState({ historyStatus: 'ready' });
         message.warning('对话历史加载失败，已开始新对话。你仍可以继续提问。', 4);
       });
+
+    // Cleanup: abort in-flight fetch on unmount or uid change (task 7.4 race fix)
+    return () => abortController.abort();
   }, [dashboard?.uid]);
 
   // ---- Draft auto-save hook ----

@@ -44,11 +44,10 @@ class ThinkModelConversationRepository implements ConversationRepositoryInterfac
 
     public function findActiveByDashboardUid(string $dashboardUid): ?array
     {
+        // conversation-one-to-one: no status filter — UNIQUE(dashboard_uid)
+        // guarantees at most one conversation per dashboard.
         $row = M(self::TABLE)
-            ->where([
-                'dashboard_uid' => $dashboardUid,
-                'status'        => 1,
-            ])
+            ->where(['dashboard_uid' => $dashboardUid])
             ->order('created_at DESC')
             ->find();
 
@@ -67,19 +66,5 @@ class ThinkModelConversationRepository implements ConversationRepositoryInterfac
             ->select();
 
         return is_array($rows) ? $rows : [];
-    }
-
-    public function archive(int $id): bool
-    {
-        $row = $this->findById($id);
-        if ($row === null) {
-            return false;
-        }
-
-        $affected = M(self::TABLE)
-            ->where(['id' => $id])
-            ->save(['status' => \Gy_Library\DBCont::FORBIDDEN_STATUS]);
-
-        return $affected !== false;
     }
 }

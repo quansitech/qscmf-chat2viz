@@ -750,14 +750,49 @@ export const useDashboardStore: UseDashboardStore = (() => {
 // ---------------------------------------------------------------------------
 
 export async function saveDashboardDraft(): Promise<void> {
-  const { uid, title, widgets, isDirty } = _store.getState() as DashboardState;
+  const { uid, title, widgets, isDirty, conversationId } = _store.getState() as DashboardState;
   if (!isDirty) return;
 
+  // conversation-one-to-one: if the backend has already initialized a dashboard
+  // (conversationId is set from the conversation_id SSE frame) but uid is still
+  // empty (the frame's uid write is racing), SKIP api_create — it would create
+  // a SECOND orphan dashboard. The flush-on-stream-end subscription retries
+  // once the uid is backfilled.
+  if (!uid && conversationId) {
+    // Check if uid arrived in the meantime (race window)
+    const settledUid = _store.getState().uid;
+    if (settledUid) {
+      // uid arrived — re-call with the now-populated uid so the url/method below
+      // correctly take the api_update path.
+      const state2 = _store.getState() as DashboardState;
+      return _saveDashboardDraftCore(settledUid, state2.title, state2.widgets, state2.conversationId);
+    }
+    // uid not yet settled — defer this save (stream-end flush retries)
+    return;
+  }
+
+  return _saveDashboardDraftCore(uid, title, widgets, conversationId);
+}
+
+// Core save logic, extracted so the race-guard above can call it with the
+// settled uid after the conversation_id frame backfills it.
+async function _saveDashboardDraftCore(
+  uid: string,
+  title: string,
+  widgets: DashboardState['widgets'],
+  conversationId: string,
+): Promise<void> {
   const schema = buildSchema(widgets);
 
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30000);
+
   try {
+    // task 3.6: uid is validated server-side (UUID v4) but encode here too
+    // so any unexpected value (e.g. a stale id with special chars from an
+    // older buggy build) cannot inject path segments.
     const url = uid
-      ? `${ADMIN_BASE}/api_update/uid/${uid}`
+      ? `${ADMIN_BASE}/api_update/uid/${encodeURIComponent(uid)}`
       : `${ADMIN_BASE}/api_create`;
 
     const method = uid ? 'PUT' : 'POST';
@@ -769,7 +804,10 @@ export async function saveDashboardDraft(): Promise<void> {
       body: JSON.stringify(
         uid ? { current_schema: schema } : { title, current_schema: schema },
       ),
+      signal: controller.signal,
     });
+
+    clearTimeout(timeoutId);
 
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -791,8 +829,14 @@ export async function saveDashboardDraft(): Promise<void> {
       useDashboardStore.setState({ error: result.info || '保存失败' });
     }
   } catch (e) {
+    // task 3.7: AbortController timeout (30s) → user-facing timeout message
+    // rather than a raw AbortError. Manual cancellation is not a path here
+    // (saveDashboardDraft has no external cancel caller), so abort == timeout.
+    const isAbort = e instanceof DOMException && e.name === 'AbortError';
     useDashboardStore.setState({
-      error: e instanceof Error ? e.message : '保存失败',
+      error: isAbort ? '保存超时，请重试' : (e instanceof Error ? e.message : '保存失败'),
     });
+  } finally {
+    clearTimeout(timeoutId);
   }
 }

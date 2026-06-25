@@ -193,41 +193,80 @@ class ServiceTest extends TestCase
     }
 
     // ─── ConversationService::ensureConversation tests ──────────────────────
+    // conversation-one-to-one: ensureConversation does a 1:1 upsert by
+    // dashboard_uid. Pure-integer id → returned as-is (already a BIGINT).
+    // Non-empty dashboard_uid → find/create conversation, return BIGINT id.
+    // Empty uid + non-numeric id → returns '' (signals first-message init).
 
-    public function testEnsureConversationReturnsInputIdWhenNoDashboardUid(): void
+    public function testEnsureConversationReturnsEmptyWhenNoUidAndNonNumericId(): void
     {
+        // New-dashboard first turn: hex client id + empty dashboard_uid.
+        // ensureConversation returns '' so the caller triggers
+        // initializeOnFirstMessage (which creates all three tables in a tx).
         $convRepo = new class implements \Qscmf\Chat2Viz\Repository\ConversationRepositoryInterface {
             public function createConversation(string $dashboardUid, string $title = ''): array { return ['id' => 1]; }
             public function findById(int $id): ?array { return null; }
             public function findActiveByDashboardUid(string $dashboardUid): ?array { return null; }
             public function findByDashboardUid(string $dashboardUid): array { return []; }
-            public function archive(int $id): bool { return true; }
         };
-        $msgRepo = new class implements \Qscmf\Chat2Viz\Repository\MessageRepositoryInterface {
-            public function createMessage(string $conversationId, string $role, string $content, ?array $metadata = null): array { return []; }
-            public function getMessages(string $conversationId, int $limit = 50, int $offset = 0): array { return []; }
-            public function getRecentConversationIds(string $dashboardUid, int $limit = 20): array { return []; }
-            public function createPreallocatedAssistantMessage(string $conversationId): int { return 0; }
-            public function updateMessageWithMetadata(int $messageId, ?string $content = null, ?array $metadata = null, ?string $reasoningContent = null, ?array $toolCalls = null, ?string $messageStatus = null): void {}
-            public function findConversationHistory(string $conversationId): array { return []; }
-            public function countByConversationId(string $conversationId): int { return 0; }
-            public function countByConversationIds(array $conversationIds): array { return []; }
-        };
-
+        $msgRepo = $this->createMsgRepoStub();
         $service = new ConversationService($convRepo, $msgRepo);
-        $this->assertSame('gen-id-123', $service->ensureConversation('gen-id-123', ''));
+
+        $this->assertSame('', $service->ensureConversation('d0bac540fd7b69ca76814693e5816761', ''));
     }
 
-    public function testEnsureConversationReusesActive(): void
+    public function testEnsureConversationReusesPriorBigIntId(): void
     {
+        // Subsequent turns pass back the BIGINT id (e.g. '65'). It's a pure
+        // integer → returned as-is (no DB lookup needed, no sentinel).
         $convRepo = new class implements \Qscmf\Chat2Viz\Repository\ConversationRepositoryInterface {
             public function createConversation(string $dashboardUid, string $title = ''): array { return ['id' => 99]; }
             public function findById(int $id): ?array { return null; }
-            public function findActiveByDashboardUid(string $dashboardUid): ?array { return ['id' => 42, 'dashboard_uid' => $dashboardUid]; }
+            public function findActiveByDashboardUid(string $dashboardUid): ?array { return null; }
             public function findByDashboardUid(string $dashboardUid): array { return []; }
-            public function archive(int $id): bool { return true; }
         };
-        $msgRepo = new class implements \Qscmf\Chat2Viz\Repository\MessageRepositoryInterface {
+        $msgRepo = $this->createMsgRepoStub();
+        $service = new ConversationService($convRepo, $msgRepo);
+
+        $this->assertSame('65', $service->ensureConversation('65', ''));
+    }
+
+    public function testEnsureConversationReusesExistingByDashboardUid(): void
+    {
+        // Dashboard has an existing conversation → return its BIGINT id.
+        $convRepo = new class implements \Qscmf\Chat2Viz\Repository\ConversationRepositoryInterface {
+            public function createConversation(string $dashboardUid, string $title = ''): array { return ['id' => 99]; }
+            public function findById(int $id): ?array { return null; }
+            public function findActiveByDashboardUid(string $dashboardUid): ?array {
+                return ['id' => 42, 'dashboard_uid' => $dashboardUid];
+            }
+            public function findByDashboardUid(string $dashboardUid): array { return []; }
+        };
+        $msgRepo = $this->createMsgRepoStub();
+        $service = new ConversationService($convRepo, $msgRepo);
+
+        $this->assertSame('42', $service->ensureConversation('new-id', 'dash-001'));
+    }
+
+    public function testEnsureConversationCreatesWhenDashboardUidGivenButNoExisting(): void
+    {
+        // 1:1 upsert: dashboard_uid provided, no existing conversation → create one.
+        $convRepo = new class implements \Qscmf\Chat2Viz\Repository\ConversationRepositoryInterface {
+            public function createConversation(string $dashboardUid, string $title = ''): array { return ['id' => 88]; }
+            public function findById(int $id): ?array { return null; }
+            public function findActiveByDashboardUid(string $dashboardUid): ?array { return null; }
+            public function findByDashboardUid(string $dashboardUid): array { return []; }
+        };
+        $msgRepo = $this->createMsgRepoStub();
+        $service = new ConversationService($convRepo, $msgRepo);
+
+        $this->assertSame('88', $service->ensureConversation('init-id', 'new-dashboard-uid'));
+    }
+
+    /** Helper: minimal MessageRepositoryInterface stub for ensureConversation tests. */
+    private function createMsgRepoStub(): \Qscmf\Chat2Viz\Repository\MessageRepositoryInterface
+    {
+        return new class implements \Qscmf\Chat2Viz\Repository\MessageRepositoryInterface {
             public function createMessage(string $conversationId, string $role, string $content, ?array $metadata = null): array { return []; }
             public function getMessages(string $conversationId, int $limit = 50, int $offset = 0): array { return []; }
             public function getRecentConversationIds(string $dashboardUid, int $limit = 20): array { return []; }
@@ -236,10 +275,11 @@ class ServiceTest extends TestCase
             public function findConversationHistory(string $conversationId): array { return []; }
             public function countByConversationId(string $conversationId): int { return 0; }
             public function countByConversationIds(array $conversationIds): array { return []; }
+            public function markLastStreamingOrphanInterrupted(string $conversationId): int { return 0; }
+            public function updateStatusAtomic(int $messageId, string $fromStatus, string $toStatus): int { return 0; }
+            public function getRecentCompleteMessages(string $conversationId, int $limit): array { return []; }
+            public function deleteLastTurnFromLastUser(string $conversationId): int { return 0; }
         };
-
-        $service = new ConversationService($convRepo, $msgRepo);
-        $this->assertSame('42', $service->ensureConversation('new-id', 'dash-001'));
     }
 
     // ─── EventRouter::backfillWidgetSql tests ───────────────────────────────

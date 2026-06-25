@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { Button, Empty, Alert, Spin, Typography, Collapse } from 'antd';
 import { ArrowLeftOutlined } from '@ant-design/icons';
 import { useQuery, QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -22,15 +22,19 @@ const ResponsiveGridLayout = WidthProvider(RGL);
 // QueryClient — scoped to this view page
 // ---------------------------------------------------------------------------
 
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 5 * 60 * 1000, // 5 minutes
-      retry: 1,
-      refetchOnWindowFocus: false,
+// QueryClient created per-mount via useState factory (task 7.5: module-scope
+// QueryClient leaks cache across SPA navigations / different dashboards).
+function useQueryClient() {
+  return useState(() => new QueryClient({
+    defaultOptions: {
+      queries: {
+        staleTime: 5 * 60 * 1000, // 5 minutes
+        retry: 1,
+        refetchOnWindowFocus: false,
+      },
     },
-  },
-});
+  }))[0];
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -75,18 +79,28 @@ const ROW_HEIGHT = 60;
 
 interface ViewWidgetCardProps {
   uid: string;
-  dashboardStatus: string;
   widget: SchemaWidget;
   showSql?: boolean;
 }
 
-function ViewWidgetCard({ uid, dashboardStatus, widget, showSql = false }: ViewWidgetCardProps) {
+function ViewWidgetCard({ uid, widget, showSql = false }: ViewWidgetCardProps) {
   const { data, isLoading, isError, error } = useQuery({
-    queryKey: ['widget-data', uid, widget.id, dashboardStatus],
+    queryKey: ['widget-data', uid, widget.id],
     queryFn: async () => {
-      const endpoint = dashboardStatus === 'published'
-        ? `${PUBLIC_BASE}/api_widget_data/uid/${uid}/widgetId/${widget.id}`
-        : `${ADMIN_BASE}/api_draft_widget_data/uid/${uid}/widgetId/${widget.id}`;
+      // fix-public-view-draft-exposure §2.1: the public view ONLY ever calls
+      // the extends-module public endpoint. The previous admin fallback
+      // (api_draft_widget_data) 302'd anonymous users to the login page →
+      // HTML response → JSON.parse failure ("Unexpected token <"). PHP now
+      // rejects non-published dashboards at the view action (§1.1), so this
+      // branch is unreachable for drafts in production; this is the
+      // belt-and-suspenders frontend half.
+      //
+      // task 7.6: encode uid/widgetId defensively. PHP validates UUID
+      // server-side, but encoding here prevents any value with special chars
+      // from injecting path segments.
+      const safeUid = encodeURIComponent(uid);
+      const safeWidgetId = encodeURIComponent(widget.id);
+      const endpoint = `${PUBLIC_BASE}/api_widget_data/uid/${safeUid}/widgetId/${safeWidgetId}`;
       const resp = await fetch(endpoint, { credentials: 'same-origin' });
       const result = await resp.json();
       if (result.status !== 1) {
@@ -181,6 +195,15 @@ function DashboardViewInner() {
   const widgets = useMemo(() => schema?.widgets ?? [], [schema]);
   const hasWidgets = widgets.length > 0;
 
+  // fix-public-view-draft-exposure §2.2: belt-and-suspenders guard. PHP
+  // rejects non-published dashboards at the view action (§1.1) so this branch
+  // is theoretically unreachable. Kept as a defense-in-depth layer: if the
+  // PHP gate ever fails (misconfigured status, stale cache), the frontend
+  // still renders a friendly Empty instead of issuing api_widget_data calls
+  // that would 404 / redirect. An "unpublished" state is not an error — it
+  // is the absence of content — so we use Empty, not Alert.
+  const isPublished = (dashboard?.dashboard_status ?? '') === 'published';
+
   // Build static layout from schema — all items are static (not draggable/resizable)
   const layout: Layout[] = useMemo(
     () =>
@@ -213,7 +236,13 @@ function DashboardViewInner() {
 
       {/* Content */}
       <div style={styles.content}>
-        {hasWidgets ? (
+        {!isPublished ? (
+          // §2.2 defense-in-depth: friendly empty state for non-published
+          // dashboards. No widget data is fetched in this branch.
+          <div style={styles.empty}>
+            <Empty description="该仪表盘暂未发布" />
+          </div>
+        ) : hasWidgets ? (
           <div style={styles.gridWrapper}>
             <ResponsiveGridLayout
               layout={layout}
@@ -226,7 +255,7 @@ function DashboardViewInner() {
             >
               {widgets.map((w) => (
                 <div key={w.id}>
-                  <ViewWidgetCard uid={dashboard.uid} dashboardStatus={dashboard.dashboard_status} widget={w} showSql={show_sql} />
+                  <ViewWidgetCard uid={dashboard.uid} widget={w} showSql={show_sql} />
                 </div>
               ))}
             </ResponsiveGridLayout>
@@ -246,6 +275,7 @@ function DashboardViewInner() {
 // ---------------------------------------------------------------------------
 
 export default function DashboardView() {
+  const queryClient = useQueryClient();
   return (
     <QueryClientProvider client={queryClient}>
       <DashboardViewInner />

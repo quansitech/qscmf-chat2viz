@@ -254,6 +254,10 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 8,
   },
   gridItem: {
-    // Ensure the grid item fills the RGL cell so WidgetCard can use height:100%
+    // task 8.6: react-grid-layout positions each child via absolute
+    // positioning; the child must explicitly fill the cell (100% × 100%) or
+    // WidgetCard's height:100% collapses to auto and the chart area underflows.
+    width: '100%',
+    height: '100%',
   },
 };

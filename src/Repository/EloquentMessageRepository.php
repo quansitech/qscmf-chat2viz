@@ -151,4 +151,78 @@ class EloquentMessageRepository implements MessageRepositoryInterface
 
         return $result;
     }
+
+    public function markLastStreamingOrphanInterrupted(string $conversationId): int
+    {
+        // Find the most-recent orphan: streaming + empty content, ORDER BY id DESC LIMIT 1.
+        // MySQL cannot UPDATE ... WHERE id IN (SELECT ... FROM same table) directly, so we
+        // fetch the id first then target it in a second, scoped UPDATE. Both operations are
+        // cheap (indexed conversation_id + tiny result set) and the orphan is, by definition,
+        // a single terminal-state row left by a prior interrupted request.
+        $orphan = ConversationMessage::where('conversation_id', $conversationId)
+            ->where('role', 'assistant')
+            ->where('message_status', 'streaming')
+            ->where(function ($q) {
+                $q->whereNull('content')->orWhere('content', '');
+            })
+            ->orderByDesc('id')
+            ->first();
+
+        if ($orphan === null) {
+            return 0;
+        }
+
+        return (int) ConversationMessage::where('id', $orphan->id)
+            ->where('message_status', 'streaming')  // re-guard: only flip if still streaming
+            ->update(['message_status' => 'interrupted']);
+    }
+
+    public function updateStatusAtomic(int $messageId, string $fromStatus, string $toStatus): int
+    {
+        if (!in_array($fromStatus, self::VALID_STATUSES, true) || !in_array($toStatus, self::VALID_STATUSES, true)) {
+            throw new DashboardException('Invalid message status transition: ' . $fromStatus . '→' . $toStatus);
+        }
+
+        return (int) ConversationMessage::where('id', $messageId)
+            ->where('message_status', $fromStatus)
+            ->update(['message_status' => $toStatus]);
+    }
+
+    public function getRecentCompleteMessages(string $conversationId, int $limit): array
+    {
+        $limit = max(1, $limit);
+        return ConversationMessage::where('conversation_id', $conversationId)
+            ->whereIn('role', ['user', 'assistant'])
+            ->whereIn('message_status', ['complete', 'interrupted'])
+            ->where(function ($q) {
+                // non-empty content (trim-equivalent: exclude '' and null and whitespace-only
+                // via a cheap server-side guard; DB-side trim keeps the index usable)
+                $q->whereNotNull('content')->where('content', '!=', '');
+            })
+            ->orderByDesc('id')
+            ->limit($limit)
+            ->get(['role', 'content'])
+            ->map(fn ($r) => ['role' => $r->role, 'content' => $r->content])
+            ->all();
+    }
+
+    public function deleteLastTurnFromLastUser(string $conversationId): int
+    {
+        // Transaction guards against TOCTOU: a concurrent persistMessage could
+        // insert a new user message between the find and the delete otherwise.
+        return \Illuminate\Support\Facades\DB::transaction(function () use ($conversationId): int {
+            $lastUser = ConversationMessage::where('conversation_id', $conversationId)
+                ->where('role', 'user')
+                ->orderByDesc('id')
+                ->first();
+
+            if ($lastUser === null) {
+                return 0;
+            }
+
+            return (int) ConversationMessage::where('conversation_id', $conversationId)
+                ->where('id', '>=', $lastUser->id)
+                ->delete();
+        });
+    }
 }

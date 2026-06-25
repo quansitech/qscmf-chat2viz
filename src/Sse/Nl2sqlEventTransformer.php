@@ -9,8 +9,21 @@ class Nl2sqlEventTransformer
     /** @var callable|null */
     private $logger;
 
-    public function __construct(private string $phpConversationId, ?callable $logger = null)
-    {
+    /**
+     * @param string      $phpConversationId The BIGINT conversation id emitted on
+     *                                       the conversation_id SSE frame.
+     * @param string|null $dashboardUid      conversation-one-to-one-and-first-msg-init:
+     *                                       when non-empty (first message, backend
+     *                                       just created the dashboard), it is
+     *                                       appended to the conversation_id frame so
+     *                                       the frontend can switch to edit mode.
+     * @param callable|null $logger
+     */
+    public function __construct(
+        private string $phpConversationId,
+        private ?string $dashboardUid = null,
+        ?callable $logger = null
+    ) {
         $this->logger = $logger;
     }
 
@@ -83,14 +96,21 @@ class Nl2sqlEventTransformer
         return [new SseEvent(type: $event->type, data: $event->data, raw: $event->raw)];
     }
 
-    // message_start → conversation_id — PHP is the sole authority; Python's ID is silently discarded
+    // message_start → conversation_id — PHP is the sole authority; Python's ID
+    // is silently discarded. On the first message (backend initialized the
+    // dashboard) the frame also carries `uid` so the frontend can adopt the new
+    // dashboard and switch the URL to edit mode. Subsequent turns omit `uid`.
     private function mapMessageStart(SseEvent $event): array
     {
         $cid = $this->phpConversationId;
         if ($cid === '') {
             return [];
         }
-        return [new SseEvent(type: 'conversation_id', data: ['conversation_id' => $cid], raw: '')];
+        $data = ['conversation_id' => $cid];
+        if ($this->dashboardUid !== null && $this->dashboardUid !== '') {
+            $data['uid'] = $this->dashboardUid;
+        }
+        return [new SseEvent(type: 'conversation_id', data: $data, raw: '')];
     }
 
     // content_block_delta → answer (only if delta.text is non-empty)

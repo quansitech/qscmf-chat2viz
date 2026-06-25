@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
-import { Alert, Badge, Button, Collapse, Empty, Input, message as notify, Modal, Popconfirm, Spin, Tag, Tooltip, Typography } from 'antd';
-import { SendOutlined, QuestionCircleOutlined, PlusOutlined, CopyOutlined, LikeOutlined, DislikeOutlined, RedoOutlined } from '@ant-design/icons';
+import { Alert, Badge, Button, Collapse, Empty, Input, message as notify, Popconfirm, Spin, Tag, Tooltip, Typography } from 'antd';
+import { SendOutlined, QuestionCircleOutlined, CopyOutlined, LikeOutlined, DislikeOutlined, RedoOutlined } from '@ant-design/icons';
 import ReactMarkdown from 'react-markdown';
 import rehypeSanitize from 'rehype-sanitize';
 import { useDashboardStore } from '../store/dashboardStore';
@@ -80,19 +80,23 @@ function selectLastAssistantHasContent(s: { messages: ChatMessage[] }): boolean 
 function AiStepsIndicator() {
   const aiSteps = useDashboardStore((s) => s.aiSteps);
   const streamingState = useDashboardStore((s) => s.streamingState);
-  // Whether the last assistant message has real answer text yet.
+  // Whether the CURRENT turn's last assistant message has real answer text yet.
+  // fix-stream-message-persistence Decision 4: scope to the last message only
+  // (store.messages[last]) rather than a cross-message selector — historical
+  // streaming orphans no longer leak in (api_conversation_history filters them),
+  // but this keeps the check robust against any residual mixed states.
   const assistantHasContent = useDashboardStore((s) => {
     const msgs = s.messages;
-    const last = [...msgs].reverse().find((m) => m.role === 'assistant');
-    return !!last?.content;
+    const last = msgs[msgs.length - 1];
+    return !!last && last.role === 'assistant' && !!last.content;
   });
 
-  // Keep the three-dot indicator until the FIRST answer text arrives — tool
-  // calls (search_objects etc.) often arrive before any visible answer, and
-  // swapping to step badges prematurely makes the UI look empty/jumpy.
-  // Also show it while waiting for the first frame (submitted, no steps yet).
-  const awaitingFirstAnswer = streamingState !== 'idle' && !assistantHasContent;
-  if (streamingState === 'submitted' || awaitingFirstAnswer) {
+  // fix-stream-message-persistence: the three-dot indicator shows UNCONDITIONALLY
+  // while streamingState === 'submitted' (request sent, no first frame yet). It
+  // no longer depends on assistantHasContent for the submitted branch — that
+  // selector could be polluted by stale historical messages and prematurely hide
+  // the loader, leaving a blank reply area.
+  if (streamingState === 'submitted') {
     return (
       <div style={styles.loadingIndicator}>
         <span className="typing-dots"><span /><span /><span /></span>
@@ -100,6 +104,18 @@ function AiStepsIndicator() {
     );
   }
   if (streamingState === 'idle') return null;
+
+  // streaming / error states: keep the dots until the first real answer text
+  // arrives (tool calls like search_objects often precede any visible answer),
+  // then hand off to the step badges.
+  const awaitingFirstAnswer = !assistantHasContent;
+  if (awaitingFirstAnswer && aiSteps.length === 0) {
+    return (
+      <div style={styles.loadingIndicator}>
+        <span className="typing-dots"><span /><span /><span /></span>
+      </div>
+    );
+  }
 
   // Deduplicate tool steps by label: the backend often repeats the same tool
   // (e.g. search_objects multiple times), and each repeat currently produces a
@@ -156,7 +172,6 @@ export default function ChatPanel({ disabled = false, showSql = false }: ChatPan
   const lastAssistantHasContent = useDashboardStore(selectLastAssistantHasContent);
 
   const [inputValue, setInputValue] = useState('');
-  const [newConvLoading, setNewConvLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textAreaRef = useRef<{ focus: () => void; resizableTextArea?: { textArea: HTMLTextAreaElement } } | null>(null);
 
@@ -169,51 +184,6 @@ export default function ChatPanel({ disabled = false, showSql = false }: ChatPan
 
   // History still loading → block sending until the conversation is hydrated.
   const historyLoading = historyStatus === 'loading';
-
-  // ---- New Conversation (with confirm: charts preserved, chat cleared) ----
-  const performNewConversation = useCallback(async () => {
-    if (!uid || streamingState !== 'idle') return;
-    setNewConvLoading(true);
-    try {
-      const resp = await fetch('/extends/Chat2Viz/api_conversation_create', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dashboard_uid: uid }),
-      });
-      const result = await resp.json();
-      if (result.status === 1) {
-        useDashboardStore.getState().resetConversation();
-        if (result.data?.conversation_id) {
-          useDashboardStore.getState().setConversationId(
-            String(result.data?.conversation_id),
-          );
-        }
-        notify.success('已开始新对话，已生成的图表保留。', 2);
-        refocusInput();
-      } else {
-        notify.error(result.info || 'Failed to create new conversation');
-      }
-    } catch {
-      notify.error('Network error creating conversation');
-    } finally {
-      setNewConvLoading(false);
-    }
-  }, [uid, streamingState, refocusInput]);
-
-  const handleNewConversation = useCallback(() => {
-    if (!uid || streamingState !== 'idle') return;
-    // Confirm before clearing: charts stay, but the conversation history is
-    // discarded and cannot be recovered — guard against accidental clicks.
-    Modal.confirm({
-      title: '开始新对话？',
-      content: '当前对话记录将被清空，已生成的图表会保留。此操作无法撤销。',
-      okText: '开始新对话',
-      okButtonProps: { danger: true },
-      cancelText: '取消',
-      onOk: performNewConversation,
-    });
-  }, [uid, streamingState, performNewConversation]);
 
   // ---- Auto-scroll to bottom on new messages ----
   useEffect(() => {
@@ -287,23 +257,12 @@ export default function ChatPanel({ disabled = false, showSql = false }: ChatPan
         </div>
       )}
 
-      {/* ---- Header with New Conversation button ---- */}
+      {/* ---- Header ---- */}
       {hasMessages && (
         <div style={styles.panelHeader}>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             {messages.length} messages
           </Typography.Text>
-          <Tooltip title="New Conversation">
-            <Button
-              size="small"
-              icon={<PlusOutlined />}
-              loading={newConvLoading}
-              disabled={streamingState !== 'idle'}
-              onClick={handleNewConversation}
-            >
-              New
-            </Button>
-          </Tooltip>
         </div>
       )}
 
@@ -407,8 +366,12 @@ function MessageBubble({ message, showSql = false }: MessageBubbleProps) {
   // 重试(仅最后一条 AI 消息):删除上一轮的 user+assistant 两条消息,用上一条
   // 用户问题重新发送。图表不动 —— 后端重新生成时按需更新。独立于 feedback
   // 状态(用户可"点赞但仍想重试换个角度")。
+  // fix-redis-degrade-and-retry-dedup: the backend DELETE runs first; only on
+  // success do we trim the frontend store + resend. This prevents the duplicate-
+  // user-row regression (frontend trimmed, backend untouched, resend INSERTs a
+  // third copy). On failure we abort the retry with a toast instead.
   const { sendQuestion } = useSseStream();
-  const handleRetry = useCallback(() => {
+  const handleRetry = useCallback(async () => {
     const cur = useDashboardStore.getState();
     const msgs = cur.messages;
     // 找最后一条 assistant 之前的 user 问题(即触发本轮回复的问题)
@@ -417,7 +380,31 @@ function MessageBubble({ message, showSql = false }: MessageBubbleProps) {
       if (msgs[i].role === 'user') { lastUserQuestion = msgs[i].content; break; }
     }
     if (!lastUserQuestion) return;
-    // 删除最后两条(本轮的 user + assistant),sendQuestion 会重新 push
+
+    // 先调后端清理上一轮消息对(dashboard 所有权校验在后端完成)。
+    // 失败则不删前端 store、不重试,避免脏数据退回到原 bug。
+    const ADMIN_BASE_RETRY = (window as any).__ADMIN_BASE__ || '';
+    try {
+      const resp = await fetch(`${ADMIN_BASE_RETRY}/extends/Chat2Viz/api_delete_last_turn`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          dashboard_uid: cur.uid,
+          conversation_id: cur.conversationId,
+        }),
+      });
+      const result = await resp.json();
+      if (result.status !== 1) {
+        notify.error(result.info || '清理失败，无法重试');
+        return;
+      }
+    } catch {
+      notify.error('网络错误，无法重试');
+      return;
+    }
+
+    // 后端成功后才删前端 store 的本轮两条并重新发送。
     useDashboardStore.setState((state) => ({
       messages: state.messages.slice(0, -2),
     }));

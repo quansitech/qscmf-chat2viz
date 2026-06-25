@@ -51,7 +51,8 @@ class StreamService
         bool $wants_chat2viz,
         string $conversation_id,
         StreamAccumulator $accumulator,
-        ?int $assistant_message_id
+        ?int $assistant_message_id,
+        ?string $dashboardUid = null
     ): void {
         try {
             $requestFrame = [
@@ -62,7 +63,7 @@ class StreamService
             ];
 
             if ($wants_chat2viz) {
-                $transformer = new Nl2sqlEventTransformer($conversation_id);
+                $transformer = new Nl2sqlEventTransformer($conversation_id, $dashboardUid);
                 SseProxy::socket($transport, $requestFrame, function (array $frame) use ($transformer, $accumulator, $conversation_id): ?SseEvent {
                     $type = $frame['type'] ?? 'message';
                     if ($type === 'ping' || $type === 'pong') {
@@ -104,7 +105,7 @@ class StreamService
                 }
 
                 $stream_completed = $this->fallbackToHttp(
-                    $payload, $wants_chat2viz, $conversation_id, $accumulator, $assistant_message_id
+                    $payload, $wants_chat2viz, $conversation_id, $accumulator, $assistant_message_id, $dashboardUid
                 );
 
                 $this->conversationService->finalizeStream(
@@ -137,7 +138,8 @@ class StreamService
         bool $wants_chat2viz = false,
         string $conversation_id = '',
         ?StreamAccumulator $accumulator = null,
-        ?int $assistant_message_id = null
+        ?int $assistant_message_id = null,
+        ?string $dashboardUid = null
     ): bool {
         $fallback = new GuzzleStreamFallback(
             null, // http_client passed from caller context
@@ -148,7 +150,7 @@ class StreamService
             }
         );
 
-        return $fallback($payload, $wants_chat2viz, $conversation_id, $accumulator, $assistant_message_id, $this->buildHeaders());
+        return $fallback($payload, $wants_chat2viz, $conversation_id, $accumulator, $assistant_message_id, $this->buildHeaders(), $dashboardUid);
     }
 
     public function handleMockStream(MockStreamEmitter $emitter): void

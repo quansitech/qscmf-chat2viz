@@ -299,7 +299,7 @@ class Nl2sqlEventTransformerTest extends TestCase
     public function testUnknownEventTypeDropped(): void
     {
         $warnings = [];
-        $transformer = new Nl2sqlEventTransformer(self::PHP_CID, static function (string $level, string $message) use (&$warnings): void {
+        $transformer = new Nl2sqlEventTransformer(self::PHP_CID, null, static function (string $level, string $message) use (&$warnings): void {
             $warnings[] = [$level, $message];
         });
         $event = $this->makeEvent('some_unknown_type', ['foo' => 'bar']);
@@ -437,5 +437,49 @@ class Nl2sqlEventTransformerTest extends TestCase
         $result3 = $this->transformer->transform($event3);
         $this->assertSame('conversation_id', $result3[0]->type);
         $this->assertSame(self::PHP_CID, $result3[0]->data['conversation_id']);
+    }
+
+    // ─── conversation-one-to-one-and-first-msg-init: conversation_id frame uid ─
+    // The conversation_id frame MUST carry `uid` on the first round (backend
+    // just initialized the dashboard) and omit it on later rounds.
+
+    // First round (dashboardUid passed) → frame carries BOTH conversation_id and uid
+    public function testMessageStartFirstRoundCarriesUid(): void
+    {
+        $uid = 'uid-xyz-123';
+        $transformer = new Nl2sqlEventTransformer(self::PHP_CID, $uid);
+        $event = $this->makeEvent('message_start', ['conversation_id' => 'python-id']);
+
+        $result = $transformer->transform($event);
+
+        $this->assertCount(1, $result);
+        $this->assertSame('conversation_id', $result[0]->type);
+        $this->assertSame(self::PHP_CID, $result[0]->data['conversation_id']);
+        $this->assertSame($uid, $result[0]->data['uid']);
+    }
+
+    // Later round (dashboardUid null) → frame carries ONLY conversation_id, no uid
+    public function testMessageStartLaterRoundOmitsUid(): void
+    {
+        $transformer = new Nl2sqlEventTransformer(self::PHP_CID, null);
+        $event = $this->makeEvent('message_start', ['conversation_id' => 'python-id']);
+
+        $result = $transformer->transform($event);
+
+        $this->assertCount(1, $result);
+        $this->assertSame('conversation_id', $result[0]->type);
+        $this->assertSame(self::PHP_CID, $result[0]->data['conversation_id']);
+        $this->assertArrayNotHasKey('uid', $result[0]->data);
+    }
+
+    // Empty dashboardUid is treated like null (later round) — no uid emitted
+    public function testMessageStartEmptyDashboardUidOmitsUid(): void
+    {
+        $transformer = new Nl2sqlEventTransformer(self::PHP_CID, '');
+        $event = $this->makeEvent('message_start', []);
+
+        $result = $transformer->transform($event);
+
+        $this->assertArrayNotHasKey('uid', $result[0]->data);
     }
 }

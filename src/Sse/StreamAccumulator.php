@@ -22,6 +22,18 @@ class StreamAccumulator
 
     private bool $redisAvailable;
 
+    /**
+     * fix-redis-degrade-and-retry-dedup: request-scoped fallback buffer that
+     * catches content/sql when Redis is unavailable, so finalizeStream can
+     * persist the reply text instead of writing an empty assistant row.
+     *
+     * Instance-scoped (each api_ask_stream does `new StreamAccumulator()`,
+     * Chat2VizController.php:184) so concurrent requests never cross-contaminate.
+     * Only core fields are kept — widgets/g2_spec/reasoning/tool_calls are
+     * documented as lossy in the degraded path (see redis-degrade-persistence spec).
+     */
+    private array $fallbackBuffer = ['content' => '', 'sql' => ''];
+
     public function __construct()
     {
         $this->redisAvailable = class_exists(\Redis::class);
@@ -40,6 +52,10 @@ class StreamAccumulator
     public function accumulateAnswer(string $conversationId, string $text): void
     {
         if (!$this->ensureRedis($conversationId)) {
+            // fix-redis-degrade: persist reply text in the fallback buffer so the
+            // empty-content regression (assistant row written with content='') does
+            // not occur when Redis is down. Only content is preserved here.
+            $this->fallbackBuffer['content'] .= $text;
             return;
         }
 
@@ -55,6 +71,11 @@ class StreamAccumulator
      */
     public function accumulateSql(string $conversationId, string $sql): void
     {
+        if (!$this->ensureRedis($conversationId)) {
+            // fix-redis-degrade: keep sql in the fallback buffer too.
+            $this->fallbackBuffer['sql'] = $sql;
+            return;
+        }
         $this->hSet($conversationId, 'sql', $sql);
     }
 
@@ -239,7 +260,16 @@ class StreamAccumulator
         ];
 
         if (!$this->redisAvailable) {
-            return $empty;
+            // fix-redis-degrade: serve from the fallback buffer so the reply text
+            // and sql survive even when Redis is down for the whole request.
+            return [
+                'content'           => $this->fallbackBuffer['content'],
+                'metadata'          => $this->fallbackBuffer['sql'] !== ''
+                    ? ['sql' => $this->fallbackBuffer['sql']]
+                    : [],
+                'reasoning_content' => '',
+                'tool_calls'        => [],
+            ];
         }
 
         try {

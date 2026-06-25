@@ -35,8 +35,9 @@ class EloquentConversationRepository implements ConversationRepositoryInterface
 
     public function findActiveByDashboardUid(string $dashboardUid): ?array
     {
+        // conversation-one-to-one: no status filter — UNIQUE(dashboard_uid)
+        // guarantees at most one conversation per dashboard.
         $conversation = Conversation::where('dashboard_uid', $dashboardUid)
-            ->where('status', 1)
             ->orderByDesc('created_at')
             ->first();
 
@@ -53,15 +54,5 @@ class EloquentConversationRepository implements ConversationRepositoryInterface
             ->orderByDesc('created_at')
             ->get()
             ->toArray();
-    }
-
-    public function archive(int $id): bool
-    {
-        $conversation = Conversation::find($id);
-        if ($conversation === null) {
-            return false;
-        }
-
-        return $conversation->update(['status' => \Gy_Library\DBCont::FORBIDDEN_STATUS]);
     }
 }

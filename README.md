@@ -57,6 +57,22 @@ composer require quansitech/qscmf-chat2viz:^1.0
 - `conversation_id`：可选，匹配 `^[a-f0-9\-]{1,64}$`
 - 错误时返回 `{status: 0, info: "..."}`
 
+## 公开视图（Public Dashboard View）
+
+发布后的仪表盘可通过公开路由匿名访问：
+
+```
+GET /extends/Chat2VizDashboard/view/uid/{uid}
+```
+
+**安全边界**：
+
+- 仅 `dashboard_status = 'published'` 的仪表盘可被匿名访问。草稿（`draft`）和归档（`archived`）状态返回与"UID 不存在"完全一致的错误页，避免状态枚举。
+- 公开视图渲染前会剥离 schema 中每个 widget 的 `sql` 字段（仅暴露图表渲染所需的 `g2_spec` / 标题 / 布局）。SQL 字符串属于"查询意图"，不应进浏览器 View Source。`g2_spec` 是图表规格（不是 SQL），保留。
+- 图表数据通过公开端点 `GET /extends/Chat2VizDashboard/api_widget_data/uid/{uid}/widgetId/{widgetId}` 获取，服务端依据持久化的 SQL 执行查询，前端 schema 不需要 SQL 即可渲染。
+- `api_widget_data` 受 SqlValidator（SELECT-only + UNION 禁止 + 危险函数黑名单）和 IP 速率限制（APCu 可用 60 次/分钟，不可用 30 次/分钟）双重防护。
+- admin 模块（`/admin/Chat2VizDashboard/*`）与公开模块（`/extends/Chat2VizDashboard/*`）独立鉴权：公开路由不携带 admin session；内部 API（`api_read` / `api_update` 等）强制 `created_by === currentUserId` 所有权校验。
+
 ## 工作原理
 
 ```

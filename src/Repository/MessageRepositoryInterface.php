@@ -115,4 +115,57 @@ interface MessageRepositoryInterface
      * @return array<string, int>
      */
     public function countByConversationIds(array $conversationIds): array;
+
+    /**
+     * Mark the LAST orphaned streaming assistant message (status='streaming'
+     * AND empty content) in a conversation as 'interrupted'.
+     *
+     * fix-stream-message-persistence: ensures the preallocate→finalize gap
+     * never leaves a permanent 'streaming' terminal state. Only touches the
+     * single most-recent orphan (ORDER BY id DESC LIMIT 1) — historical
+     * mid-conversation orphans are not cleaned here (history display
+     * filtering covers them).
+     *
+     * @param string $conversationId
+     * @return int Affected rows (0 if no orphan found)
+     */
+    public function markLastStreamingOrphanInterrupted(string $conversationId): int;
+
+    /**
+     * Atomically transition a message's status from $fromStatus to $toStatus.
+     *
+     * fix-stream-message-persistence Decision 3: eliminates the TOCTOU race
+     * between finalizeStream (complete) and the shutdown guard (interrupted)
+     * by doing a single conditional UPDATE — only flips the row if its
+     * current status is still $fromStatus.
+     *
+     * @param int    $messageId
+     * @param string $fromStatus  Expected current status (e.g. 'streaming')
+     * @param string $toStatus    Target status (e.g. 'interrupted')
+     * @return int Affected rows (0 = status already changed by another path, idempotent)
+     */
+    public function updateStatusAtomic(int $messageId, string $fromStatus, string $toStatus): int;
+
+    /**
+     * inject-conversation-history: fetch the most-recent complete turns (user +
+     * assistant text only) for LLM context assembly. Filters to role IN
+     * (user,assistant), status IN (complete,interrupted), non-empty content;
+     * returns the newest $limit rows ordered DESC, caller reverses to ASC.
+     *
+     * @param string $conversationId
+     * @param int    $limit  Max messages (already capped to 2*N turns by caller)
+     * @return array<int, array{role: string, content: string}>
+     */
+    public function getRecentCompleteMessages(string $conversationId, int $limit): array;
+
+    /**
+     * fix-redis-degrade-and-retry-dedup: delete the last turn (the most-recent
+     * user message and everything after it) from a conversation. Used by the
+     * retry flow to prevent duplicate user rows from accumulating. Runs inside
+     * a transaction to avoid TOCTOU with a concurrent persistMessage.
+     *
+     * @param string $conversationId
+     * @return int Number of rows deleted (0 if no user message)
+     */
+    public function deleteLastTurnFromLastUser(string $conversationId): int;
 }

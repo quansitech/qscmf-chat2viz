@@ -77,7 +77,10 @@ export function parseSseEvent(frame: string): SseEvent | null {
     if (line.startsWith('event:')) {
       eventType = line.slice(6).trim();
     } else if (line.startsWith('data:')) {
-      dataLines.push(line.slice(5).trimStart());
+      // Per SSE spec: strip exactly ONE leading space (if present), not all.
+      // trimStart() would corrupt data values that legitimately begin with spaces.
+      const afterColon = line.slice(5);
+      dataLines.push(afterColon.startsWith(' ') ? afterColon.slice(1) : afterColon);
     } else if (line.includes(':')) {
       // Unknown field; ignore per SSE spec
     }

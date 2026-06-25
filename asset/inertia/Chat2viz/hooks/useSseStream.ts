@@ -143,15 +143,34 @@ export function useSseStream() {
     // New stream — clear any stale per-widget watchdog timers.
     resetWatchdog();
 
-    // DEF-NEW-1: only send dashboard_context when the dashboard actually has
-    // widgets. The new-dashboard page carries an empty widgets map; sending
-    // that empty shell made the backend misjudge generate mode as edit mode
-    // (the edit-intent guard then suppressed commit_widget → no chart). The
-    // backend now also defends via has_editable_widgets(), but omitting the
-    // field here keeps the payload clean and the semantics unambiguous.
-    const dashboardContext = store.getDashboardContext() as { widgets?: Record<string, unknown> } | null;
+    // fix-stream-message-persistence Decision 4 (submitted watchdog): if no
+    // first frame arrives within 30s (markStreaming never fires), the state
+    // would otherwise sit in 'submitted' forever showing the three-dot loader.
+    // Flip to an explicit error so the user sees a timeout, not a hang.
+    let submittedWatchdog: ReturnType<typeof setTimeout> | null = null;
+    const armSubmittedWatchdog = (): void => {
+      submittedWatchdog = setTimeout(() => {
+        const cur = useDashboardStore.getState();
+        if (cur.streamingState === 'submitted') {
+          cur.setError('AI 响应超时，未收到任何数据');
+        }
+      }, 30000);
+    };
+    const clearSubmittedWatchdog = (): void => {
+      if (submittedWatchdog !== null) {
+        clearTimeout(submittedWatchdog);
+        submittedWatchdog = null;
+      }
+    };
+    armSubmittedWatchdog();
+
+    // conversation-one-to-one: DEF-NEW-1 removed — dashboard_uid and widgets are
+    // orthogonal. uid identifies which dashboard; widgets identify edit vs generate
+    // mode (the backend has_editable_widgets() guard handles that). Send
+    // dashboard_context whenever we have a uid (all turns except the first).
+    const dashboardContext = store.getDashboardContext();
     const payload: Record<string, unknown> = { question };
-    if (dashboardContext && Object.keys(dashboardContext.widgets || {}).length > 0) {
+    if (dashboardContext && useDashboardStore.getState().uid) {
       payload.dashboard_context = dashboardContext;
     }
 
@@ -164,16 +183,39 @@ export function useSseStream() {
 
     while (attempt <= MAX_RETRIES) {
       try {
-        const response = await fetch(SSE_ENDPOINT, {
-          method: 'POST',
-          credentials: 'same-origin',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Event-Format': 'chat2viz',
-          },
-          body: JSON.stringify(payload),
-          signal: controller.signal,
+        // task 4.1: connection-level timeout (30s). SSE streams are long-lived,
+        // so we only guard the CONNECT phase (headers). Once headers arrive,
+        // the watchdog detaches and the stream runs until done/cancel.
+        // Implementation: race fetch against a timer that rejects with a plain
+        // Error (NOT controller.abort, which would also kill the stream and
+        // user-cancel). Manual controller stays reserved for cancel().
+        const connectTimeoutMs = 30000;
+        let connectTimer: ReturnType<typeof setTimeout> | null = null;
+        const connectTimeout = new Promise<never>((_, reject) => {
+          connectTimer = setTimeout(
+            () => reject(new Error('连接超时，请稍后重试')),
+            connectTimeoutMs,
+          );
         });
+
+        let response: Response;
+        try {
+          response = await Promise.race([
+            fetch(SSE_ENDPOINT, {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: {
+                'Content-Type': 'application/json',
+                'X-Event-Format': 'chat2viz',
+              },
+              body: JSON.stringify(payload),
+              signal: controller.signal,
+            }),
+            connectTimeout,
+          ]);
+        } finally {
+          if (connectTimer) clearTimeout(connectTimer);
+        }
 
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -201,19 +243,24 @@ export function useSseStream() {
         // Consume the SSE stream
         const streamClean = await consumeStream(response.body, controller.signal);
 
+        // fix-stream-message-persistence: clear the submitted watchdog once the
+        // stream has started producing frames (markStreaming already ran) or ended.
+        clearSubmittedWatchdog();
+
         if (streamClean) {
           useDashboardStore.getState().completeConversation();
         } else {
-          // Stream terminated (done=true) without receiving a 'done' event.
-          // Clean up loading state without displaying an error message — the
-          // partial response may still be useful to the user.
+          // fix-stream-message-persistence Decision 5 (two-branch): stream ended
+          // without a 'done' event. If the current turn produced partial content,
+          // preserve it and settle gently (the user can still read what arrived);
+          // if nothing arrived, surface an explicit error instead of silently
+          // dropping to idle (which left a blank reply area).
           const s = useDashboardStore.getState();
-          if (s.isLoading) {
-            useDashboardStore.setState({
-              isLoading: false,
-              streamingState: 'idle',
-              aiSteps: [],
-            });
+          const lastAssistant = [...s.messages].reverse().find((m) => m.role === 'assistant');
+          if (lastAssistant && lastAssistant.content) {
+            s.completeConversation();
+          } else {
+            s.setError('AI 回复超时或中断，请重试');
           }
         }
 
@@ -222,6 +269,13 @@ export function useSseStream() {
 
         return;
       } catch (err) {
+        // fix-stream-message-persistence: clear the submitted watchdog on any
+        // exit path (error/retry/abort) so the timer never fires post-retry.
+        clearSubmittedWatchdog();
+
+        // task 4.2: distinguish user-cancel AbortError from other errors.
+        // User-initiated cancel (controller.abort) → silent exit.
+        // Connect-timeout / network errors → retry then surface.
         if (controller.signal.aborted) {
           return;
         }
@@ -551,6 +605,17 @@ function dispatchEvent(event: SseEvent | null): boolean {
 
     case 'conversation_id': {
       store.setConversationId(str(event.data.conversation_id));
+      if (event.data.uid) {
+        // conversation-one-to-one: first message — backend created the dashboard,
+        // surface the uid here so the frontend state + URL are consistent.
+        useDashboardStore.setState({ uid: str(event.data.uid) });
+        // Replace add.html URL with edit?uid=<uid> without triggering navigation
+        if (!window.location.pathname.includes('/edit')) {
+          const newUrl = window.location.pathname.replace('/add', '/edit')
+            + '?uid=' + encodeURIComponent(str(event.data.uid));
+          window.history.replaceState({}, '', newUrl);
+        }
+      }
       break;
     }
 

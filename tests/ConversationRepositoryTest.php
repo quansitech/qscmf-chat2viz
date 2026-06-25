@@ -267,7 +267,6 @@ class ConversationRepositoryTest extends TestCase
             public function findById(int $id): ?array { return null; }
             public function findActiveByDashboardUid(string $dashboardUid): ?array { return null; }
             public function findByDashboardUid(string $dashboardUid): array { return []; }
-            public function archive(int $id): bool { return true; }
         };
         $msgRepo = new class implements \Qscmf\Chat2Viz\Repository\MessageRepositoryInterface {
             public array $captured = [];
@@ -282,6 +281,10 @@ class ConversationRepositoryTest extends TestCase
             public function findConversationHistory(string $conversationId): array { return []; }
             public function countByConversationId(string $conversationId): int { return 0; }
             public function countByConversationIds(array $conversationIds): array { return []; }
+            public function markLastStreamingOrphanInterrupted(string $conversationId): int { return 0; }
+            public function updateStatusAtomic(int $messageId, string $fromStatus, string $toStatus): int { return 0; }
+            public function getRecentCompleteMessages(string $conversationId, int $limit): array { return []; }
+            public function deleteLastTurnFromLastUser(string $conversationId): int { return 0; }
         };
 
         $service = new ConversationService($convRepo, $msgRepo);
@@ -299,7 +302,6 @@ class ConversationRepositoryTest extends TestCase
             public function findById(int $id): ?array { return null; }
             public function findActiveByDashboardUid(string $dashboardUid): ?array { return null; }
             public function findByDashboardUid(string $dashboardUid): array { return []; }
-            public function archive(int $id): bool { return true; }
         };
         $msgRepo = new class implements \Qscmf\Chat2Viz\Repository\MessageRepositoryInterface {
             public array $captured = [];
@@ -314,6 +316,10 @@ class ConversationRepositoryTest extends TestCase
             public function findConversationHistory(string $conversationId): array { return []; }
             public function countByConversationId(string $conversationId): int { return 0; }
             public function countByConversationIds(array $conversationIds): array { return []; }
+            public function markLastStreamingOrphanInterrupted(string $conversationId): int { return 0; }
+            public function updateStatusAtomic(int $messageId, string $fromStatus, string $toStatus): int { return 0; }
+            public function getRecentCompleteMessages(string $conversationId, int $limit): array { return []; }
+            public function deleteLastTurnFromLastUser(string $conversationId): int { return 0; }
         };
 
         $service = new ConversationService($convRepo, $msgRepo);
@@ -329,7 +335,6 @@ class ConversationRepositoryTest extends TestCase
             public function findById(int $id): ?array { return null; }
             public function findActiveByDashboardUid(string $dashboardUid): ?array { return null; }
             public function findByDashboardUid(string $dashboardUid): array { return []; }
-            public function archive(int $id): bool { return true; }
         };
         $msgRepo = new class implements \Qscmf\Chat2Viz\Repository\MessageRepositoryInterface {
             public array $captured = [];
@@ -344,6 +349,10 @@ class ConversationRepositoryTest extends TestCase
             public function findConversationHistory(string $conversationId): array { return []; }
             public function countByConversationId(string $conversationId): int { return 0; }
             public function countByConversationIds(array $conversationIds): array { return []; }
+            public function markLastStreamingOrphanInterrupted(string $conversationId): int { return 0; }
+            public function updateStatusAtomic(int $messageId, string $fromStatus, string $toStatus): int { return 0; }
+            public function getRecentCompleteMessages(string $conversationId, int $limit): array { return []; }
+            public function deleteLastTurnFromLastUser(string $conversationId): int { return 0; }
         };
 
         $service = new ConversationService($convRepo, $msgRepo);

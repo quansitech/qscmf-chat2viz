@@ -34,7 +34,7 @@ class AdapterFactory
      * Create the appropriate conversation repository based on runtime ORM availability.
      *
      * Manages conversation records (qs_chat2viz_conversations):
-     * createConversation, findById, findActiveByDashboardUid, findByDashboardUid, archive.
+     * createConversation, findById, findActiveByDashboardUid, findByDashboardUid.
      *
      * v13/v14: Think\Model exists -> ThinkModelConversationRepository
      * v15:     Think\Model absent -> EloquentConversationRepository

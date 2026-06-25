@@ -240,6 +240,15 @@ class DashboardController extends BaseDashboardController
                 $this->ajaxReturn(['status' => 0, 'info' => '仪表盘不存在']);
                 return;
             }
+            // fix-backend 2.11 / fix-public-view 1.3: api_read is the full
+            // dashboard row (including current_schema with SQL) and lives in the
+            // admin module — enforce ownership so a logged-in user cannot read
+            // another user's draft or its SQL via this endpoint. Mirrors the
+            // existing checkOwnershipAndReject at api_update / api_archive /
+            // api_publish / api_draft_widget_data. Same '无权操作' message keeps
+            // the rejection indistinguishable across endpoints.
+            if (!$this->checkOwnershipAndReject($dashboard)) return;
+
             // g2_spec is returned as stored — no stripping.
             // Specs are validated at commit_widget ingress (spec-typed-contract),
             // so the DB only contains valid specs. The old strip-to-type+encode+title
