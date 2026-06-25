@@ -18,14 +18,14 @@ class ConversationOneToOneUniqueDashboardUid extends Migration
     public function up()
     {
         Schema::table('qs_chat2viz_conversations', function (Blueprint $table) {
-            $table->unique('dashboard_uid', 'uk_dashboard_uid');
+            $table->unique('dashboard_uid', 'uq_dashboard_uid');
         });
     }
 
     public function down()
     {
         Schema::table('qs_chat2viz_conversations', function (Blueprint $table) {
-            $table->dropUnique('uk_dashboard_uid');
+            $table->dropUnique('uq_dashboard_uid');
         });
     }
 }
