@@ -35,10 +35,20 @@ export default function PublishDialog({ uid, title, visible, onClose }: PublishD
       message.error('仪表盘尚未保存');
       return;
     }
+    // Path-traversal guard: validate uid before concatenating into URL.
+    // Spec fix-frontend-review-defects/frontend-hardening requires
+    // ^[a-zA-Z0-9_-]+$ for every URL-bound uid. encodeURIComponent is a
+    // belt-and-braces defense — the regex alone rejects the dangerous
+    // characters, but encoding keeps the URL canonical even if a future
+    // refactor relaxes the pattern.
+    if (!/^[a-zA-Z0-9_-]+$/.test(uid)) {
+      message.error('无效的仪表盘标识符');
+      return;
+    }
     setPublishing(true);
 
     try {
-      const resp = await fetch(`${ADMIN_BASE}/api_publish/uid/${uid}`, {
+      const resp = await fetch(`${ADMIN_BASE}/api_publish/uid/${encodeURIComponent(uid)}`, {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },

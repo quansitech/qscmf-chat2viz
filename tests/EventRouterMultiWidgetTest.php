@@ -9,16 +9,17 @@ use Qscmf\Chat2Viz\Sse\StreamAccumulator;
 use Qscmf\SseCore\SseEvent;
 
 /**
- * Unit tests for EventRouter multi-widget accumulation (tasks 2.1–2.5).
+ * declarative-frontend-adapter: EventRouter whole-tree accumulation tests.
  *
  * Covers:
- * - DASHBOARD_INIT / WIDGET_DATA_UPDATE / WIDGET_ERROR accumulate per widget_id
- *   (multiple widgets must not overwrite each other).
- * - Reading legacy single-widget (flat) metadata must not crash (compat degrade).
+ * - DASHBOARD_REPLACE overlays the whole {layout, widgets} tree per widget_id
+ *   (verbatim, no per-field reducer; data:null slim + error widgets forwarded).
+ * - WIDGET_ERROR merges into the widgets map produced by the latest
+ *   DASHBOARD_REPLACE (mid-stream local degradation, contract §3).
  *
  * @covers \Qscmf\Chat2Viz\Service\EventRouter::routeEvent
+ * @covers \Qscmf\Chat2Viz\Sse\StreamAccumulator::accumulateDashboardReplace
  * @covers \Qscmf\Chat2Viz\Sse\StreamAccumulator::accumulateWidgetData
- * @covers \Qscmf\Chat2Viz\Sse\StreamAccumulator::readWidgetsMetadata
  */
 class EventRouterMultiWidgetTest extends TestCase
 {
@@ -32,7 +33,6 @@ class EventRouterMultiWidgetTest extends TestCase
 
     /**
      * Build a recording StreamAccumulator proxy backed by an in-memory hash.
-     * Mirrors the proxy strategy in RouteEventSqlExtractionTest.
      */
     private function makeProxy(): StreamAccumulator
     {
@@ -56,13 +56,27 @@ class EventRouterMultiWidgetTest extends TestCase
                 return true;
             }
 
+            public function accumulateDashboardReplace(string $conversationId, array $layout, array $widgets): void
+            {
+                // Whole-tree overlay: replace the prior widgets map entirely.
+                $this->test->fakeRedis[$conversationId]['widgets'] = json_encode(
+                    $widgets,
+                    JSON_UNESCAPED_UNICODE
+                );
+                $this->test->fakeRedis[$conversationId]['layout'] = json_encode(
+                    $layout,
+                    JSON_UNESCAPED_UNICODE
+                );
+            }
+
             public function accumulateWidgetData(string $conversationId, string $widgetId, array $payload): void
             {
                 $widgets = $this->readWidgets($conversationId);
                 if (!isset($widgets[$widgetId]) || !is_array($widgets[$widgetId])) {
                     $widgets[$widgetId] = [];
                 }
-                // dict-merge: later fields do not overwrite prior distinct keys
+                // dict-merge: WIDGET_ERROR merges error_msg/status into the
+                // existing widget record produced by the latest DASHBOARD_REPLACE.
                 foreach ($payload as $k => $v) {
                     $widgets[$widgetId][$k] = $v;
                 }
@@ -108,101 +122,73 @@ class EventRouterMultiWidgetTest extends TestCase
         return new SseEvent(type: $type, data: $data, raw: '');
     }
 
-    // 2.1+2.2 DASHBOARD_INIT then two WIDGET_DATA_UPDATE → w1 and w2 isolated
-    public function testMultipleWidgetsDoNotOverwriteEachOther(): void
+    // DASHBOARD_REPLACE overlays the whole tree — all widgets forwarded verbatim.
+    public function testDashboardReplaceOverlaysWholeTree(): void
     {
         $acc = $this->makeProxy();
         $router = $this->makeRouter();
 
-        $router->routeEvent($acc, 'cid', $this->makeEvent('DASHBOARD_INIT', [
-            // Contract §2: widgets is a map<widget_id, WidgetMeta>. w1 uses
-            // the Python emitter field `chart_type`; w2 uses the `type` alias
-            // to exercise both branches of the chart_type mapping.
-            'widgets' => [
-                'w1' => ['widget_id' => 'w1', 'title' => 'A', 'chart_type' => 'bar'],
-                'w2' => ['widget_id' => 'w2', 'title' => 'B', 'type' => 'line'],
+        $router->routeEvent($acc, 'cid', $this->makeEvent('DASHBOARD_REPLACE', [
+            'layout' => [
+                ['i' => 'w1', 'x' => 0, 'y' => 0, 'w' => 12, 'h' => 6],
+                ['i' => 'w2', 'x' => 12, 'y' => 0, 'w' => 12, 'h' => 6],
             ],
-        ]));
-        $router->routeEvent($acc, 'cid', $this->makeEvent('WIDGET_DATA_UPDATE', [
-            'widget_id' => 'w1',
-            'sql' => 'SELECT 1 FROM a',
-            'data' => [['x' => 1]],
-        ]));
-        $router->routeEvent($acc, 'cid', $this->makeEvent('WIDGET_DATA_UPDATE', [
-            'widget_id' => 'w2',
-            'sql' => 'SELECT 2 FROM b',
-            'data' => [['x' => 2]],
+            'widgets' => [
+                'w1' => ['widget_id' => 'w1', 'title' => 'A', 'status' => 'success',
+                          'sql' => 'SELECT 1', 'data' => [['x' => 1]]],
+                'w2' => ['widget_id' => 'w2', 'title' => 'B', 'status' => 'success', 'data' => null],
+            ],
         ]));
 
         $widgets = $acc->readWidgets('cid');
-        $this->assertArrayHasKey('w1', $widgets);
-        $this->assertArrayHasKey('w2', $widgets);
-        // w2's data did not overwrite w1's fields
-        $this->assertSame('SELECT 1 FROM a', $widgets['w1']['sql']);
-        $this->assertSame('SELECT 2 FROM b', $widgets['w2']['sql']);
-        $this->assertSame([['x' => 1]], $widgets['w1']['data']);
-        $this->assertSame([['x' => 2]], $widgets['w2']['data']);
-        // chart_type persisted from both field-name variants (chart_type
-        // primary, type alias fallback) — was silently dropped before the fix.
-        $this->assertSame('bar', $widgets['w1']['chart_type']);
-        $this->assertSame('line', $widgets['w2']['chart_type']);
+        $this->assertSame('SELECT 1', $widgets['w1']['sql']);
+        // data:null slim widget forwarded verbatim (not synthesized)
+        $this->assertNull($widgets['w2']['data']);
     }
 
-    // 2.3 WIDGET_ERROR accumulates into the corresponding widget only
-    public function testWidgetErrorIsolatesToCorrespondingWidget(): void
+    // Whole-tree semantics: a second DASHBOARD_REPLACE fully replaces the tree
+    // (widgets absent from the new tree are gone).
+    public function testSecondReplaceFullyReplacesPriorTree(): void
     {
         $acc = $this->makeProxy();
         $router = $this->makeRouter();
 
-        $router->routeEvent($acc, 'cid', $this->makeEvent('WIDGET_DATA_UPDATE', [
-            'widget_id' => 'w1', 'sql' => 'SELECT 1', 'data' => [['x' => 1]],
+        $router->routeEvent($acc, 'cid', $this->makeEvent('DASHBOARD_REPLACE', [
+            'layout' => [],
+            'widgets' => ['w1' => ['widget_id' => 'w1'], 'w2' => ['widget_id' => 'w2'], 'w3' => ['widget_id' => 'w3']],
+        ]));
+        $router->routeEvent($acc, 'cid', $this->makeEvent('DASHBOARD_REPLACE', [
+            'layout' => [['i' => 'w1', 'x' => 0, 'y' => 0, 'w' => 12, 'h' => 6]],
+            'widgets' => ['w1' => ['widget_id' => 'w1', 'status' => 'success']],
+        ]));
+
+        $widgets = $acc->readWidgets('cid');
+        // Only w1 remains — w2/w3 cleared by the whole-tree replace.
+        $this->assertSame(['w1'], array_keys($widgets));
+    }
+
+    // WIDGET_ERROR merges into the widgets map from the latest DASHBOARD_REPLACE.
+    public function testWidgetErrorMergesIntoWidgetsMap(): void
+    {
+        $acc = $this->makeProxy();
+        $router = $this->makeRouter();
+
+        $router->routeEvent($acc, 'cid', $this->makeEvent('DASHBOARD_REPLACE', [
+            'layout' => [],
+            'widgets' => [
+                'w1' => ['widget_id' => 'w1', 'status' => 'success', 'sql' => 'SELECT 1'],
+                'w3' => ['widget_id' => 'w3', 'status' => 'success'],
+            ],
         ]));
         $router->routeEvent($acc, 'cid', $this->makeEvent('WIDGET_ERROR', [
             'widget_id' => 'w3', 'error_msg' => 'query timed out',
         ]));
 
         $widgets = $acc->readWidgets('cid');
+        // w1 untouched by w3's error
         $this->assertSame('SELECT 1', $widgets['w1']['sql']);
+        // w3's error merged into its record
+        $this->assertSame('error', $widgets['w3']['status']);
         $this->assertSame('query timed out', $widgets['w3']['error_msg']);
-        $this->assertArrayNotHasKey('error_msg', $widgets['w1']);
-    }
-
-    // 2.4 Legacy single-widget (flat) metadata read must not crash
-    public function testReadLegacyFlatMetadataDegradesGracefully(): void
-    {
-        // A legacy single-widget conversation stored its metadata as flat
-        // scalar/array fields (sql, g2_spec, ...) — NOT a widgets map.
-        // The read helper must treat such records as a single implicit widget
-        // and never throw.
-        $flat = [
-            'sql' => 'SELECT legacy',
-            'g2_spec' => ['type' => 'bar'],
-            'chart_type' => 'bar',
-        ];
-        $result = StreamAccumulator::readWidgetsMetadata($flat);
-
-        $this->assertIsArray($result);
-        // No exception thrown — legacy record tolerated
-        // It MAY be normalized into a widgets map (single implicit widget)
-        // but MUST NOT crash. At minimum returns an array.
-        $this->assertTrue(true, 'legacy flat metadata read without throwing');
-    }
-
-    // 2.5 multiple WIDGET_DATA_UPDATE for the SAME widget merge (not replace)
-    public function testSameWidgetDataMergesAcrossUpdates(): void
-    {
-        $acc = $this->makeProxy();
-        $router = $this->makeRouter();
-
-        $router->routeEvent($acc, 'cid', $this->makeEvent('WIDGET_DATA_UPDATE', [
-            'widget_id' => 'w1', 'sql' => 'SELECT 1',
-        ]));
-        $router->routeEvent($acc, 'cid', $this->makeEvent('WIDGET_DATA_UPDATE', [
-            'widget_id' => 'w1', 'data' => [['x' => 1]],
-        ]));
-
-        $widgets = $acc->readWidgets('cid');
-        $this->assertSame('SELECT 1', $widgets['w1']['sql']);
-        $this->assertSame([['x' => 1]], $widgets['w1']['data']);
     }
 }

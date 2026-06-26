@@ -13,6 +13,12 @@ use Qscmf\SseCore\SseWriter;
  * Extracted from Chat2VizController to keep the controller under 800 lines.
  * All methods are pure SSE emitters — they only use SseWriter, SseEvent,
  * and local data. No controller context or logger dependency needed.
+ *
+ * declarative-frontend-adapter: the mock emulates the Python emitter under
+ * the whole-tree protocol — every intent delivers a single DASHBOARD_REPLACE
+ * frame (contract §2), never the deprecated DASHBOARD_INIT / WIDGET_DATA_UPDATE
+ * / dashboard_patch / WIDGET_UPDATE sequence. tool_start/tool_result are the
+ * contract §5 tool-progress names.
  */
 class MockStreamEmitter
 {
@@ -56,19 +62,19 @@ class MockStreamEmitter
 
             switch ($intent) {
                 case 'modify_chart':
-                    $this->emitMockModifyChart($writer, $question, $firstWidgetId);
+                    $this->emitMockModifyChart($writer, $question, $firstWidgetId, $widgets);
                     break;
                 case 'rename':
-                    $this->emitMockRename($writer, $question, $firstWidgetId);
+                    $this->emitMockRename($writer, $question, $firstWidgetId, $widgets);
                     break;
                 case 'delete':
-                    $this->emitMockDelete($writer, $question, $firstWidgetId);
+                    $this->emitMockDelete($writer, $question, $firstWidgetId, $widgets);
                     break;
                 case 'add':
                     $this->emitMockAddChart($writer, $question);
                     break;
                 case 'multi':
-                    // Whole-dashboard request: unified multi-widget delivery.
+                    // Whole-dashboard request: whole-tree delivery.
                     $this->emitMockMultiWidget($writer);
                     break;
                 default:
@@ -90,9 +96,7 @@ class MockStreamEmitter
     private function classifyMockIntent(string $question): string
     {
         // Multi-widget summary dashboard — matched first so a whole-dashboard
-        // request takes the unified multi-widget delivery path (DASHBOARD_INIT
-        // → N×WIDGET_DATA_UPDATE). Exercises the same frontend code as the
-        // real emitter, deterministically (no LLM variance).
+        // request takes the whole-tree delivery path (DASHBOARD_REPLACE).
         if (preg_match('/整体.*仪表盘|仪表盘|总览|概览|overview|dashboard|summary/u', $question)) {
             return 'multi';
         }
@@ -146,50 +150,34 @@ class MockStreamEmitter
     {
         $writer->sendEvent(new SseEvent(type: 'answer', data: ['text' => '正在分析'], raw: ''));
 
-        $sql = 'SELECT category, COUNT(*) AS cnt FROM film GROUP BY category ORDER BY cnt DESC';
-        $writer->sendEvent(new SseEvent(type: 'sql_generated', data: ['sql' => $sql], raw: ''));
-
+        $sql = 'SELECT category, COUNT(*) AS cnt FROM qs_film GROUP BY category ORDER BY cnt DESC';
         $widgetId = 'mock-' . substr(md5($question), 0, 8);
         $g2Spec = ['type' => 'interval', 'encode' => ['x' => 'category', 'y' => 'cnt']];
         $data = $this->mockFilmCategoryData();
 
-        // Unified delivery (count == 1 uses the same path as count >= 1):
-        // DASHBOARD_INIT (skeleton frame) then WIDGET_DATA_UPDATE (data + g2_spec).
-        $writer->sendEvent(new SseEvent(
-            type: 'DASHBOARD_INIT',
-            data: [
-                // Contract §2: layout is an array<{i,x,y,w,h}> with i == widget_id;
-                // widgets is a map<widget_id, WidgetMeta>. chart_type matches the
-                // Python emitter field name (contract §2).
-                'layout' => [['i' => $widgetId, 'x' => 0, 'y' => 0, 'w' => 12, 'h' => 6]],
-                'widgets' => [
-                    $widgetId => [
-                        'widget_id'  => $widgetId,
-                        'title'      => $this->mockTitleFromQuestion($question),
-                        'chart_type' => 'bar',
-                    ],
+        // Whole-tree delivery: single DASHBOARD_REPLACE carries the complete
+        // widget (sql + g2_spec + data + truncated/total). No skeleton frame.
+        $writer->sendEvent($this->buildDashboardReplace(
+            [['i' => $widgetId, 'x' => 0, 'y' => 0, 'w' => 12, 'h' => 6]],
+            [
+                $widgetId => [
+                    'widget_id'  => $widgetId,
+                    'title'      => $this->mockTitleFromQuestion($question),
+                    'status'     => 'success',
+                    'sql'        => $sql,
+                    'g2_spec'    => $g2Spec,
+                    'data'       => $data,
+                    'truncated'  => false,
+                    'total'      => count($data),
                 ],
             ],
-            raw: '',
-        ));
-
-        $writer->sendEvent(new SseEvent(
-            type: 'WIDGET_DATA_UPDATE',
-            data: [
-                'widget_id' => $widgetId,
-                'sql'       => $sql,
-                'data'      => $data,
-                'g2_spec'   => $g2Spec,
-                'truncated' => false,
-                'total'     => count($data),
-            ],
-            raw: '',
+            '已为您生成图表'
         ));
 
         $writer->sendEvent(new SseEvent(type: 'done', data: [], raw: ''));
     }
 
-    private function emitMockModifyChart(SseWriter $writer, string $question, ?string $widgetId): void
+    private function emitMockModifyChart(SseWriter $writer, string $question, ?string $widgetId, array $ctxWidgets): void
     {
         $widgetId = $widgetId ?? 'mock-default';
         $chartType = $this->extractMockChartType($question);
@@ -202,32 +190,29 @@ class MockStreamEmitter
         ];
         $g2Spec = $g2SpecMap[$chartType] ?? $g2SpecMap['line'];
 
-        // action_call
+        // tool_start — contract §5 tool-progress indicator (the modify intent
+        // emulates commit_widget re-spec). Contract §5 base event name.
         $writer->sendEvent(new SseEvent(
-            type: 'action_call',
-            data: [
-                'action_type' => 'change_chart_type',
-                'params' => ['widget_id' => $widgetId, 'new_type' => $chartType],
-            ],
+            type: 'tool_start',
+            data: ['tool_name' => 'commit_widget', 'tool_args' => ['widget_id' => $widgetId]],
             raw: '',
         ));
 
-        // dashboard_patch — replace g2_spec and chart_type
-        $writer->sendEvent(new SseEvent(
-            type: 'dashboard_patch',
-            data: [
-                'patches' => [
-                    ['op' => 'replace', 'path' => "/widgets/{$widgetId}/g2_spec", 'value' => $g2Spec],
-                    ['op' => 'replace', 'path' => "/widgets/{$widgetId}/chart_type", 'value' => $chartType],
-                ],
-            ],
-            raw: '',
-        ));
+        // Whole-tree delivery: rebuild the dashboard tree from the inbound
+        // dashboard_context widgets, swapping the changed widget's g2_spec.
+        // data:null slim — the modify path re-uses cached data (contract §2).
+        $widgets = $this->rebuildWidgetsFromContext($ctxWidgets, $widgetId, [
+            'status'  => 'success',
+            'g2_spec' => $g2Spec,
+            'data'    => null,
+        ]);
+        $layout = $this->rebuildLayoutFromContext($ctxWidgets);
+        $writer->sendEvent($this->buildDashboardReplace($layout, $widgets, ''));
 
-        // action_call_result
+        // tool_result — contract §5.
         $writer->sendEvent(new SseEvent(
-            type: 'action_call_result',
-            data: ['success' => true, 'result' => ['widget_id' => $widgetId, 'patch_count' => 2]],
+            type: 'tool_result',
+            data: ['success' => true, 'summary' => "图表已改为{$chartType}"],
             raw: '',
         ));
 
@@ -238,36 +223,32 @@ class MockStreamEmitter
         $writer->sendEvent(new SseEvent(type: 'done', data: [], raw: ''));
     }
 
-    private function emitMockRename(SseWriter $writer, string $question, ?string $widgetId): void
+    private function emitMockRename(SseWriter $writer, string $question, ?string $widgetId, array $ctxWidgets): void
     {
         $widgetId = $widgetId ?? 'mock-default';
         $newTitle = $this->extractMockNewTitle($question);
 
-        // action_call
+        // tool_start
         $writer->sendEvent(new SseEvent(
-            type: 'action_call',
-            data: [
-                'action_type' => 'update_widget_field',
-                'params' => ['widget_id' => $widgetId, 'field' => 'title', 'value' => $newTitle],
-            ],
+            type: 'tool_start',
+            data: ['tool_name' => 'commit_widget', 'tool_args' => ['widget_id' => $widgetId, 'title' => $newTitle]],
             raw: '',
         ));
 
-        // dashboard_patch
-        $writer->sendEvent(new SseEvent(
-            type: 'dashboard_patch',
-            data: [
-                'patches' => [
-                    ['op' => 'replace', 'path' => "/widgets/{$widgetId}/title", 'value' => $newTitle],
-                ],
-            ],
-            raw: '',
-        ));
+        // Whole-tree delivery: rebuild the tree, swapping the renamed title.
+        // data:null slim — title change does not re-execute SQL.
+        $widgets = $this->rebuildWidgetsFromContext($ctxWidgets, $widgetId, [
+            'status'  => 'success',
+            'title'   => $newTitle,
+            'data'    => null,
+        ]);
+        $layout = $this->rebuildLayoutFromContext($ctxWidgets);
+        $writer->sendEvent($this->buildDashboardReplace($layout, $widgets, ''));
 
-        // action_call_result
+        // tool_result
         $writer->sendEvent(new SseEvent(
-            type: 'action_call_result',
-            data: ['success' => true, 'result' => ['widget_id' => $widgetId, 'patch_count' => 1]],
+            type: 'tool_result',
+            data: ['success' => true, 'summary' => '标题已更新'],
             raw: '',
         ));
 
@@ -276,35 +257,27 @@ class MockStreamEmitter
         $writer->sendEvent(new SseEvent(type: 'done', data: [], raw: ''));
     }
 
-    private function emitMockDelete(SseWriter $writer, string $question, ?string $widgetId): void
+    private function emitMockDelete(SseWriter $writer, string $question, ?string $widgetId, array $ctxWidgets): void
     {
         $widgetId = $widgetId ?? 'mock-default';
 
-        // action_call
+        // tool_start
         $writer->sendEvent(new SseEvent(
-            type: 'action_call',
-            data: [
-                'action_type' => 'remove_widget',
-                'params' => ['widget_id' => $widgetId],
-            ],
+            type: 'tool_start',
+            data: ['tool_name' => 'commit_widget', 'tool_args' => ['widget_id' => $widgetId, 'remove' => true]],
             raw: '',
         ));
 
-        // dashboard_patch
-        $writer->sendEvent(new SseEvent(
-            type: 'dashboard_patch',
-            data: [
-                'patches' => [
-                    ['op' => 'remove', 'path' => "/widgets/{$widgetId}"],
-                ],
-            ],
-            raw: '',
-        ));
+        // Whole-tree delivery: rebuild the tree WITHOUT the deleted widget.
+        // Per contract §2, widgets absent from the new tree are cleared.
+        $widgets = $this->rebuildWidgetsFromContext($ctxWidgets, $widgetId, null);
+        $layout = $this->rebuildLayoutFromContext($ctxWidgets, $widgetId);
+        $writer->sendEvent($this->buildDashboardReplace($layout, $widgets, ''));
 
-        // action_call_result
+        // tool_result
         $writer->sendEvent(new SseEvent(
-            type: 'action_call_result',
-            data: ['success' => true, 'result' => ['widget_id' => $widgetId, 'patch_count' => 1]],
+            type: 'tool_result',
+            data: ['success' => true, 'summary' => '图表已删除'],
             raw: '',
         ));
 
@@ -317,9 +290,7 @@ class MockStreamEmitter
     {
         $writer->sendEvent(new SseEvent(type: 'answer', data: ['text' => '正在生成新图表...'], raw: ''));
 
-        $sql = 'SELECT year, SUM(revenue) AS revenue FROM film_yearly GROUP BY year ORDER BY year';
-        $writer->sendEvent(new SseEvent(type: 'sql_generated', data: ['sql' => $sql], raw: ''));
-
+        $sql = 'SELECT year, SUM(revenue) AS revenue FROM qs_film_yearly GROUP BY year ORDER BY year';
         $widgetId = 'mock-' . substr(md5($question . time()), 0, 8);
         $g2Spec = ['type' => 'line', 'encode' => ['x' => 'year', 'y' => 'revenue']];
         $data = [
@@ -330,57 +301,61 @@ class MockStreamEmitter
             ['year' => '2024', 'revenue' => 4200],
         ];
 
-        // Unified delivery: DASHBOARD_INIT (skeleton) then WIDGET_DATA_UPDATE (data + g2_spec).
-        $writer->sendEvent(new SseEvent(
-            type: 'DASHBOARD_INIT',
-            data: [
-                'layout' => [['i' => $widgetId, 'x' => 0, 'y' => 6, 'w' => 12, 'h' => 6]],
-                'widgets' => [
-                    $widgetId => [
-                        'widget_id'  => $widgetId,
-                        'title'      => $this->mockTitleFromQuestion($question),
-                        'chart_type' => 'line',
-                    ],
+        // Whole-tree delivery: single DASHBOARD_REPLACE with the new widget.
+        $writer->sendEvent($this->buildDashboardReplace(
+            [['i' => $widgetId, 'x' => 0, 'y' => 6, 'w' => 12, 'h' => 6]],
+            [
+                $widgetId => [
+                    'widget_id'  => $widgetId,
+                    'title'      => $this->mockTitleFromQuestion($question),
+                    'status'     => 'success',
+                    'sql'        => $sql,
+                    'g2_spec'    => $g2Spec,
+                    'data'       => $data,
+                    'truncated'  => false,
+                    'total'      => count($data),
                 ],
             ],
-            raw: '',
-        ));
-
-        $writer->sendEvent(new SseEvent(
-            type: 'WIDGET_DATA_UPDATE',
-            data: [
-                'widget_id' => $widgetId,
-                'sql'       => $sql,
-                'data'      => $data,
-                'g2_spec'   => $g2Spec,
-                'truncated' => false,
-                'total'     => count($data),
-            ],
-            raw: '',
+            '已为您生成新图表'
         ));
 
         $writer->sendEvent(new SseEvent(type: 'done', data: [], raw: ''));
     }
 
     /**
-     * Build the multi-widget mock event sequence (pure, no SseWriter side effects).
+     * Build the whole-tree DASHBOARD_REPLACE event frame (pure, no side effects).
      *
-     * Sequence: DASHBOARD_INIT → N×WIDGET_DATA_UPDATE → done.
-     * Kept separate from emitMockMultiWidget() so the frame layout is unit-
-     * testable without a live SseWriter. Single- and multi-widget delivery
-     * now share the same unified path (count == 1 behaves like count >= 1).
+     * Kept separate so the frame layout is unit-testable without a live SseWriter.
+     * Single frame carries the complete tree: layout + widgets map + answer.
      *
-     * @return SseEvent[]
+     * @param array<int, array{i:string,x:int,y:int,w:int,h:int}> $layout
+     * @param array<string, array<string, mixed>>                 $widgets
+     */
+    public function buildDashboardReplace(array $layout, array $widgets, string $answer = ''): SseEvent
+    {
+        return new SseEvent(
+            type: 'DASHBOARD_REPLACE',
+            data: [
+                'layout'  => $layout,
+                'widgets' => $widgets,
+                'answer'  => $answer,
+            ],
+            raw: '',
+        );
+    }
+
+    /**
+     * Build the multi-widget whole-tree event sequence (pure, no side effects).
+     *
+     * declarative-frontend-adapter: the deprecated DASHBOARD_INIT → N×
+     * WIDGET_DATA_UPDATE sequence collapsed to a single DASHBOARD_REPLACE.
+     *
+     * @return SseEvent[]  [tool_start, DASHBOARD_REPLACE, tool_result, done]
      */
     public function buildMultiWidgetEvents(int $widgetCount = 3): array
     {
         $widgetCount = max(1, $widgetCount);
 
-        // DASHBOARD_INIT — declare N widget placeholders (skeleton frames,
-        // no g2_spec yet; status=pending at the contract event-level).
-        // Contract §2: widgets is a map<widget_id, WidgetMeta>; layout is an
-        // array<{i,x,y,w,h}> with i == widget_id. chart_type matches the
-        // Python emitter field name.
         $layoutMap = [
             ['x' => 0, 'y' => 0, 'w' => 12, 'h' => 6],
             ['x' => 12, 'y' => 0, 'w' => 12, 'h' => 6],
@@ -393,15 +368,25 @@ class MockStreamEmitter
             ['type' => 'line', 'encode' => ['x' => 'month', 'y' => 'revenue']],
             ['type' => 'pie', 'encode' => ['color' => 'rating', 'y' => 'cnt']],
         ];
+
         $widgets = [];
         $layout = [];
         for ($i = 0; $i < $widgetCount; $i++) {
             $widgetId = 'w' . ($i + 1);
             $slot = $layoutMap[$i % count($layoutMap)];
+            $data = $this->mockWidgetRows($i);
+            // Contract §2: each widget carries the full record (sql + g2_spec +
+            // data + truncated/total). Mock emulates Python's sole-computation
+            // authority role for truncated/total.
             $widgets[$widgetId] = [
                 'widget_id'  => $widgetId,
                 'title'      => $titles[$i % count($titles)],
-                'chart_type' => $types[$i % count($types)],
+                'status'     => 'success',
+                'sql'        => $this->mockWidgetSql($i),
+                'g2_spec'    => $g2Specs[$i % count($g2Specs)],
+                'data'       => $data,
+                'truncated'  => false,
+                'total'      => count($data),
             ];
             $layout[] = [
                 'i' => $widgetId,
@@ -411,41 +396,26 @@ class MockStreamEmitter
                 'h' => $slot['h'],
             ];
         }
+
         $events = [];
         $events[] = new SseEvent(
-            type: 'DASHBOARD_INIT',
-            data: ['layout' => $layout, 'widgets' => $widgets],
+            type: 'tool_start',
+            data: ['tool_name' => 'commit_widget', 'tool_args' => ['widget_count' => $widgetCount]],
             raw: '',
         );
-
-        // N×WIDGET_DATA_UPDATE — one data frame per declared widget, each
-        // carrying its own g2_spec (config/data separation, contract §7).
-        // truncated/total are set authoritatively here (Python is the sole
-        // computation authority in production; the mock emulates that role).
-        for ($i = 0; $i < $widgetCount; $i++) {
-            $widgetId = 'w' . ($i + 1);
-            $data = $this->mockWidgetRows($i);
-            $events[] = new SseEvent(
-                type: 'WIDGET_DATA_UPDATE',
-                data: [
-                    'widget_id' => $widgetId,
-                    'sql'       => $this->mockWidgetSql($i),
-                    'data'      => $data,
-                    'g2_spec'   => $g2Specs[$i % count($g2Specs)],
-                    'truncated' => false,
-                    'total'     => count($data),
-                ],
-                raw: '',
-            );
-        }
-
+        $events[] = $this->buildDashboardReplace($layout, $widgets, '已为您生成多图表仪表盘');
+        $events[] = new SseEvent(
+            type: 'tool_result',
+            data: ['success' => true, 'summary' => "生成 {$widgetCount} 个图表"],
+            raw: '',
+        );
         $events[] = new SseEvent(type: 'done', data: [], raw: '');
         return $events;
     }
 
     /**
-     * Emit the multi-widget mock stream to the given SseWriter.
-     * Companion to emitMockQuery() (single-widget, same unified path).
+     * Emit the multi-widget whole-tree mock stream to the given SseWriter.
+     * Companion to emitMockQuery() (single-widget, same whole-tree path).
      */
     public function emitMockMultiWidget(SseWriter $writer, int $widgetCount = 3): void
     {
@@ -454,12 +424,85 @@ class MockStreamEmitter
         }
     }
 
+    // ── Context rebuild helpers (modify/rename/delete emulations) ────────────
+
+    /**
+     * Rebuild a widgets map from the inbound dashboard_context widgets.
+     * - $override = array  → merge these fields into the target widget.
+     * - $override = null   → omit the target widget (delete intent).
+     *
+     * @param array<int|string, array<string, mixed>> $ctxWidgets
+     * @return array<string, array<string, mixed>>
+     */
+    private function rebuildWidgetsFromContext(array $ctxWidgets, string $targetId, ?array $override): array
+    {
+        $out = [];
+        foreach ($ctxWidgets as $w) {
+            if (!is_array($w)) {
+                continue;
+            }
+            $id = (string) ($w['id'] ?? $w['widget_id'] ?? '');
+            if ($id === '') {
+                continue;
+            }
+            if ($id === $targetId && $override === null) {
+                continue; // delete
+            }
+            $record = [
+                'widget_id' => $id,
+                'title'     => (string) ($w['title'] ?? ''),
+                'status'    => 'success',
+                'data'      => null,
+            ];
+            if (isset($w['sql'])) {
+                $record['sql'] = (string) $w['sql'];
+            }
+            if ($id === $targetId && is_array($override)) {
+                $record = array_merge($record, $override);
+            }
+            $out[$id] = $record;
+        }
+        return $out;
+    }
+
+    /**
+     * Rebuild a layout array from the inbound dashboard_context widgets.
+     * Optionally omit a target widget (delete intent).
+     *
+     * @param array<int|string, array<string, mixed>> $ctxWidgets
+     * @return array<int, array{i:string,x:int,y:int,w:int,h:int}>
+     */
+    private function rebuildLayoutFromContext(array $ctxWidgets, ?string $omitId = null): array
+    {
+        $layout = [];
+        $i = 0;
+        foreach ($ctxWidgets as $w) {
+            if (!is_array($w)) {
+                continue;
+            }
+            $id = (string) ($w['id'] ?? $w['widget_id'] ?? '');
+            if ($id === '' || $id === $omitId) {
+                continue;
+            }
+            $slot = $w['layout'] ?? null;
+            $layout[] = [
+                'i' => $id,
+                'x' => is_array($slot) ? (int) ($slot['x'] ?? 0) : 0,
+                'y' => is_array($slot) ? (int) ($slot['y'] ?? 0) : 0,
+                'w' => is_array($slot) ? (int) ($slot['w'] ?? 12) : 12,
+                'h' => is_array($slot) ? (int) ($slot['h'] ?? 6) : 6,
+            ];
+            $i++;
+        }
+        return $layout;
+    }
+
     private function mockWidgetSql(int $index): string
     {
         $sqls = [
-            'SELECT category, COUNT(*) AS cnt FROM film GROUP BY category ORDER BY cnt DESC',
-            'SELECT month, SUM(revenue) AS revenue FROM monthly_sales GROUP BY month ORDER BY month',
-            'SELECT rating, COUNT(*) AS cnt FROM film GROUP BY rating ORDER BY cnt DESC',
+            'SELECT category, COUNT(*) AS cnt FROM qs_film GROUP BY category ORDER BY cnt DESC',
+            'SELECT month, SUM(revenue) AS revenue FROM qs_monthly_sales GROUP BY month ORDER BY month',
+            'SELECT rating, COUNT(*) AS cnt FROM qs_film GROUP BY rating ORDER BY cnt DESC',
         ];
         return $sqls[$index % count($sqls)];
     }

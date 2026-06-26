@@ -68,17 +68,11 @@ class PublicDashboardController extends BaseDashboardController
             // critical stripping is verifiable without the controller stack.
             $schema = \Qscmf\Chat2Viz\Service\PublicSchemaSanitizer::stripSqlFromWidgets($schema);
 
-            // Normalize g2_spec only when spec validation is OFF (rollback mode).
-            // When validation is ON (default), specs are already validated at
-            // commit_widget ingress — no heal-on-read needed.
-            // (spec-typed-contract: prompt-unification / encode-normalize gate)
-            $specValidationEnabled = getenv('CHAT2VIZ_SPEC_VALIDATION_ENABLED');
-            $specValidationEnabled = ($specValidationEnabled === false)
-                ? true  // default: validation ON
-                : strtolower($specValidationEnabled) !== 'false';
-            if (!$specValidationEnabled && is_array($schema)) {
-                $schema = \Qscmf\Chat2Viz\Security\SpecNormalizer::normalizeSchema($schema);
-            }
+            // declarative-frontend-adapter (哑前端契约): g2_spec heal-on-read
+            // removed. Python validate_and_coerce_spec is the single SSoT —
+            // specs are render-ready at write time, so the read path is a pure
+            // pass-through. CHAT2VIZ_SPEC_VALIDATION_ENABLED rollback gate and
+            // SpecNormalizer deleted (project pre-launch, no legacy data).
 
             // fix-public-view-draft-exposure §1.2 (E2E-found regression):
             // $dashboard['current_schema'] is the raw DRAFT schema string (with

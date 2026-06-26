@@ -7,8 +7,15 @@ namespace Qscmf\Chat2Viz\Sse;
 /**
  * Accumulates SSE stream data into a Redis Hash for atomic flush to DB.
  *
+ * declarative-frontend-adapter: the accumulation model is whole-tree overlay.
+ * DASHBOARD_REPLACE's {layout, widgets} is serialized verbatim into the
+ * 'widgets' / 'layout' hash fields (no per-field reducer, no recomputation of
+ * truncated/total — Python is the sole computation authority). SQL lives
+ * inside each widget record, so there is no longer a standalone 'sql' field.
+ *
  * Redis key format: chat2viz:stream:{conversation_id}
- * Hash fields: content, reasoning_content, sql, g2_spec, chart_type, widget_id,
+ * Hash fields: content, reasoning_content, layout (JSON array),
+ *              widgets (JSON map<widget_id, Widget>),
  *              tool_calls (JSON array), action_calls (JSON array)
  * TTL: 3600 seconds
  *
@@ -24,15 +31,16 @@ class StreamAccumulator
 
     /**
      * fix-redis-degrade-and-retry-dedup: request-scoped fallback buffer that
-     * catches content/sql when Redis is unavailable, so finalizeStream can
+     * catches content when Redis is unavailable, so finalizeStream can
      * persist the reply text instead of writing an empty assistant row.
      *
      * Instance-scoped (each api_ask_stream does `new StreamAccumulator()`,
      * Chat2VizController.php:184) so concurrent requests never cross-contaminate.
-     * Only core fields are kept — widgets/g2_spec/reasoning/tool_calls are
-     * documented as lossy in the degraded path (see redis-degrade-persistence spec).
+     * Only the answer text is kept — widgets/layout/reasoning/tool_calls are
+     * documented as lossy in the degraded path (see redis-degrade-persistence
+     * spec). SQL now lives inside widgets, so the fallback no longer carries it.
      */
-    private array $fallbackBuffer = ['content' => '', 'sql' => ''];
+    private array $fallbackBuffer = ['content' => ''];
 
     public function __construct()
     {
@@ -47,14 +55,14 @@ class StreamAccumulator
      * Append answer text to the 'content' hash field.
      *
      * Uses Redis HGET/HSET read-modify-write cycle since HAPPEND does not exist.
-     * Falls back to no-op if Redis is unavailable.
+     * Falls back to the instance-scoped fallback buffer if Redis is unavailable.
      */
     public function accumulateAnswer(string $conversationId, string $text): void
     {
         if (!$this->ensureRedis($conversationId)) {
             // fix-redis-degrade: persist reply text in the fallback buffer so the
             // empty-content regression (assistant row written with content='') does
-            // not occur when Redis is down. Only content is preserved here.
+            // not occur when Redis is down.
             $this->fallbackBuffer['content'] .= $text;
             return;
         }
@@ -67,16 +75,26 @@ class StreamAccumulator
     }
 
     /**
-     * Store the generated SQL into the 'sql' hash field (replaces previous).
+     * Accumulate a DASHBOARD_REPLACE whole-tree payload.
+     *
+     * declarative-frontend-adapter: overlay the {layout, widgets} map verbatim
+     * into the 'widgets' and 'layout' hash fields. No per-field reducer, no
+     * recomputation of truncated/total (Python is the sole computation
+     * authority). data:null slim widgets are forwarded as-is — this layer is
+     * NOT the cache-reuse boundary (the frontend is). Each call replaces the
+     * prior tree entirely (whole-tree semantics, contract §2).
+     *
+     * Falls back to no-op if Redis is unavailable (lossy degrade, like every
+     * other accumulate* method).
      */
-    public function accumulateSql(string $conversationId, string $sql): void
+    public function accumulateDashboardReplace(string $conversationId, array $layout, array $widgets): void
     {
         if (!$this->ensureRedis($conversationId)) {
-            // fix-redis-degrade: keep sql in the fallback buffer too.
-            $this->fallbackBuffer['sql'] = $sql;
             return;
         }
-        $this->hSet($conversationId, 'sql', $sql);
+
+        $this->hSet($conversationId, 'widgets', json_encode($widgets, JSON_UNESCAPED_UNICODE));
+        $this->hSet($conversationId, 'layout', json_encode($layout, JSON_UNESCAPED_UNICODE));
     }
 
     /**
@@ -174,65 +192,6 @@ class StreamAccumulator
         $redis->hSet($key, 'widgets', json_encode($widgets, JSON_UNESCAPED_UNICODE));
     }
 
-    /**
-     * Read the accumulated widgets map (widget_id → fields) for a conversation.
-     * Returns an empty array when no multi-widget data was accumulated.
-     */
-    public function readWidgets(string $conversationId): array
-    {
-        if (!$this->redisAvailable) {
-            return [];
-        }
-        try {
-            $raw = $this->redis()->hGet($this->key($conversationId), 'widgets');
-        } catch (\Throwable $e) {
-            return [];
-        }
-        if (!is_string($raw) || $raw === '') {
-            return [];
-        }
-        $decoded = json_decode($raw, true);
-        return is_array($decoded) ? $decoded : [];
-    }
-
-    /**
-     * Backward-compatible reader for persisted conversation metadata.
-     *
-     * Multi-widget conversations store a structured 'widgets' map. Legacy
-     * single-widget records store flat scalar/array fields (sql, g2_spec,
-     * chart_type, widget_id). This helper normalizes either shape into a
-     * widgets map without throwing — legacy flat records are treated as a
-     * single implicit widget keyed by their stored widget_id (or 'w1').
-     */
-    public static function readWidgetsMetadata(array $metadata): array
-    {
-        // Structured multi-widget record
-        if (isset($metadata['widgets']) && is_array($metadata['widgets'])) {
-            return $metadata['widgets'];
-        }
-
-        // Legacy flat single-widget record — degrade gracefully.
-        // Only normalize when at least one widget-relevant field is present.
-        $hasWidgetField = isset($metadata['sql'])
-            || isset($metadata['g2_spec'])
-            || isset($metadata['chart_type'])
-            || isset($metadata['widget_id']);
-        if (!$hasWidgetField) {
-            return [];
-        }
-
-        $widgetId = isset($metadata['widget_id']) && is_string($metadata['widget_id']) && $metadata['widget_id'] !== ''
-            ? $metadata['widget_id']
-            : 'w1';
-        $entry = [];
-        foreach (['sql', 'g2_spec', 'chart_type', 'widget_id'] as $field) {
-            if (array_key_exists($field, $metadata)) {
-                $entry[$field] = $metadata[$field];
-            }
-        }
-        return [$widgetId => $entry];
-    }
-
     // -------------------------------------------------------
     // Flush and cleanup
     // -------------------------------------------------------
@@ -261,12 +220,12 @@ class StreamAccumulator
 
         if (!$this->redisAvailable) {
             // fix-redis-degrade: serve from the fallback buffer so the reply text
-            // and sql survive even when Redis is down for the whole request.
+            // survives even when Redis is down for the whole request. Widgets are
+            // lossy in the degraded path (sql now lives inside widgets, so there
+            // is no standalone sql to carry either).
             return [
                 'content'           => $this->fallbackBuffer['content'],
-                'metadata'          => $this->fallbackBuffer['sql'] !== ''
-                    ? ['sql' => $this->fallbackBuffer['sql']]
-                    : [],
+                'metadata'          => [],
                 'reasoning_content' => '',
                 'tool_calls'        => [],
             ];
@@ -281,21 +240,11 @@ class StreamAccumulator
                 return $empty;
             }
 
-            // Build metadata from individual hash fields
+            // Build metadata from the whole-tree fields. declarative-frontend-
+            // adapter: the accumulation model converged to {widgets, action_calls}
+            // — there are no longer standalone flat sql/g2_spec/chart_type/widget_id
+            // hash roots (those lived on the legacy per-widget event model).
             $metadata = [];
-            if (isset($raw['sql']) && $raw['sql'] !== '') {
-                $metadata['sql'] = $raw['sql'];
-            }
-            if (isset($raw['g2_spec']) && $raw['g2_spec'] !== '') {
-                $decoded = json_decode($raw['g2_spec'], true);
-                $metadata['g2_spec'] = is_array($decoded) ? $decoded : $raw['g2_spec'];
-            }
-            if (isset($raw['chart_type']) && $raw['chart_type'] !== '') {
-                $metadata['chart_type'] = $raw['chart_type'];
-            }
-            if (isset($raw['widget_id']) && $raw['widget_id'] !== '') {
-                $metadata['widget_id'] = $raw['widget_id'];
-            }
             if (isset($raw['action_calls']) && $raw['action_calls'] !== '') {
                 $decoded = json_decode($raw['action_calls'], true);
                 $metadata['action_calls'] = is_array($decoded) ? $decoded : [];
@@ -417,9 +366,11 @@ class StreamAccumulator
     /**
      * Create and return a Redis connection instance.
      *
-     * Uses phpredis extension with sensible defaults.
+     * Uses phpredis extension with sensible defaults. Protected so test doubles
+     * can substitute an in-memory \Redis to exercise the real accumulate/flush
+     * round-trip without a live server.
      */
-    private function redis(): \Redis
+    protected function redis(): \Redis
     {
         static $instance = null;
 

@@ -60,7 +60,13 @@ class DashboardController extends BaseDashboardController
             ->addRightButton('self', [
                 'title' => '查看',
                 'class' => 'qs-list-right-btn info',
-                'href'  => '/extends/Chat2VizDashboard/view/uid/__data_id__',
+                // fix-draft-view-restore: route through the admin preview action
+                // (uses current_schema) instead of the public view (which rejects
+                // non-published dashboards). All statuses preview here.
+                // NOTE: literal href (no U()) — U() appends .html which collides
+                // with ThinkPHP ACTION parsing (preview.html/uid/... → "非法操作").
+                // The extends view button used a literal href for the same reason.
+                'href'  => '/admin/Chat2VizDashboard/preview/uid/__data_id__',
             ])
             ->addRightButton('delete')
             ->build();
@@ -99,6 +105,45 @@ class DashboardController extends BaseDashboardController
     public function add()
     {
         $this->renderer->renderEdit(null);
+    }
+
+    /**
+     * Read-only preview of a dashboard (any status) using its current_schema.
+     *
+     * fix-draft-view-restore: the public view route (/extends/Chat2VizDashboard/view)
+     * rejects non-published dashboards (fix-public-view-draft-exposure, a7619bb),
+     * so the admin list's 查看 button was repointed here. This action serves
+     * the SAME view template (view.html / dashboard-view.js) but:
+     *   - renders current_schema (the live draft), not getPublishedSchema
+     *   - runs under admin auth (login + RBAC, any logged-in administrator)
+     *   - does NOT run PublicSchemaSanitizer (admins may see widget SQL)
+     *   - does NOT mask the draft title (admins see the real working title)
+     *
+     * Auth is positional (controller mounted under the admin module); no
+     * ownership check, mirroring edit()'s posture.
+     */
+    public function preview()
+    {
+        $uid = (string) I('get.uid', '');
+        $dashboard = $uid !== '' ? $this->repo->findByUid($uid) : null;
+        if ($dashboard === null) {
+            $this->error('仪表盘不存在');
+            return;
+        }
+
+        // findByUid returns current_schema as a JSON string; renderShow expects
+        // a decoded array. Decode logic is centralized in PreviewSchemaResolver
+        // (pure, unit-tested) — see tests/Service/PreviewSchemaResolverTest.
+        $schema = \Qscmf\Chat2Viz\Service\PreviewSchemaResolver::resolveFromCurrentSchema($dashboard);
+
+        // Signal the shared DashboardView React app (which serves BOTH the
+        // public view and this admin preview) that this is an admin-authorized
+        // preview, so it renders draft/archived schemas instead of showing the
+        // "该仪表盘暂未发布" empty state (DashboardView.tsx §2.2 gate). The
+        // public view path never sets this, so its draft gate stays intact.
+        $dashboard['__is_preview'] = true;
+
+        $this->renderer->renderShow($dashboard, $schema);
     }
 
     /**
@@ -515,6 +560,61 @@ class DashboardController extends BaseDashboardController
             $this->ajaxReturn(['status' => 0, 'info' => $e->getMessage()]);
         } catch (\Exception $e) {
             $this->logError('api_draft_widget_data failed', sprintf(
+                'uid=%s widget=%s err=%s', $uid, $widgetId, $e->getMessage()
+            ));
+            $this->ajaxReturn(['status' => 0, 'info' => '数据查询失败']);
+        }
+    }
+
+    /**
+     * Preview widget data — like api_draft_widget_data but WITHOUT the
+     * ownership check (fix-draft-view-restore: any logged-in administrator may
+     * preview). Used by the admin preview page (DashboardView.tsx under
+     * isAdminPreview) to fetch chart data from current_schema. Auth is the
+     * admin module's login + RBAC gate (positional, same as edit/preview).
+     *
+     * SQL is still validated (SqlValidator::validateSelectOnly + enforceLimit)
+     * inside WidgetDataService::queryDraftWidgetData.
+     */
+    public function api_preview_widget_data()
+    {
+        if (!$this->requireMethod('GET')) return;
+
+        $uid = (string) I('get.uid', '');
+        $widgetId = (string) I('get.widgetId', '');
+
+        if ($uid === '' || $widgetId === '') {
+            $this->ajaxReturn(['status' => 0, 'info' => '缺少必要参数']);
+            return;
+        }
+        if (!self::validateUuid($uid)) {
+            $this->ajaxReturn(['status' => 0, 'info' => '无效的仪表盘ID']);
+            return;
+        }
+
+        try {
+            $existing = $this->repo->findByUid($uid);
+            if ($existing === null) {
+                $this->ajaxReturn(['status' => 0, 'info' => '仪表盘不存在']);
+                return;
+            }
+            // NO ownership check — any logged-in admin can preview (the admin
+            // module RBAC gate already restricted access to this controller).
+            // Compare api_draft_widget_data above which DOES checkOwnership.
+
+            $result = $this->getWidgetDataService()->queryDraftWidgetData($uid, $widgetId);
+            $this->ajaxReturn(['status' => 1, 'data' => $result->rows]);
+        } catch (DashboardNotFoundException $e) {
+            $this->ajaxReturn(['status' => 0, 'info' => '仪表盘不存在']);
+        } catch (DashboardException $e) {
+            $this->logError('api_preview_widget_data failed', sprintf(
+                'uid=%s widget=%s err=%s', $uid, $widgetId, $e->getMessage()
+            ));
+            $this->ajaxReturn(['status' => 0, 'info' => $e->getMessage()]);
+        } catch (\InvalidArgumentException $e) {
+            $this->ajaxReturn(['status' => 0, 'info' => $e->getMessage()]);
+        } catch (\Exception $e) {
+            $this->logError('api_preview_widget_data failed', sprintf(
                 'uid=%s widget=%s err=%s', $uid, $widgetId, $e->getMessage()
             ));
             $this->ajaxReturn(['status' => 0, 'info' => '数据查询失败']);

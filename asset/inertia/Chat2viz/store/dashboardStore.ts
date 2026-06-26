@@ -85,10 +85,38 @@ export interface ActionCallResult {
   error?: string;
 }
 
-export interface DashboardPatch {
-  op: 'add' | 'remove' | 'replace';
-  path: string;
-  value?: unknown;
+/**
+ * Layout entry carried by DASHBOARD_REPLACE (contract §2). `i` == widget_id.
+ */
+export interface DashboardLayoutSlot {
+  i: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * Raw widget payload as it arrives on DASHBOARD_REPLACE (contract §2). Field
+ * names mirror the cross-repo contract (widget_id / chart_type / data|null /
+ * status / error_msg). replaceDashboard normalizes this into the store Widget
+ * shape (id / g2_spec / data / status / layout).
+ *
+ * `data: null` is the slim signal — the widget's SQL did not change
+ * (MergeScheduler REUSE/RE_SPEC), so the frontend reuses its cached data.
+ */
+export interface DashboardReplaceWidget {
+  widget_id?: string;
+  id?: string;
+  title?: string;
+  chart_type?: string;
+  status?: 'success' | 'error';
+  sql?: string;
+  g2_spec?: Record<string, unknown>;
+  data?: Record<string, unknown>[] | null;
+  error_msg?: string;
+  truncated?: boolean;
+  total?: number;
 }
 
 export type MessageStatus = 'streaming' | 'complete' | 'interrupted' | 'failed';
@@ -135,7 +163,12 @@ export type HistoryStatus = 'idle' | 'loading' | 'ready' | 'error';
 
 export interface AiStep {
   id: string;
-  type: 'tool_start' | 'sql_ready' | 'data_ready' | 'thinking';
+  /**
+   * declarative-frontend-adapter: the 'sql_ready'/'data_ready' variants were
+   * removed (sql_generated/data_preview events are gone). tool_start drives
+   * the AI-step indicator; 'thinking' is the pre-tool placeholder.
+   */
+  type: 'tool_start' | 'thinking';
   label: string;
   timestamp: string;
   completed: boolean;
@@ -167,9 +200,21 @@ export interface DashboardActions {
   addPanel: (widget: Widget) => void;
   removePanel: (widgetId: string) => void;
   updateWidget: (widgetId: string, partial: Partial<Widget>) => void;
-  /** Deep dotted-path set on widgets[widgetId], e.g. field 'g2_spec.type' sets
-   *  widgets[id].g2_spec.type. Used by WIDGET_UPDATE (edit-widget-snapshot-contract). */
-  updateWidgetPath: (widgetId: string, field: string, value: unknown) => void;
+  /**
+   * Whole-tree replace (declarative-frontend-adapter, contract §2).
+   *
+   * Clears the existing widgets map and rebuilds it from `newWidgets`,
+   * updating `layout` from `layoutSlots`. Widgets absent from the new tree
+   * are cleared. For a widget whose payload `data` is null (slim — its SQL
+   * did not change), the prior cached data is reused instead of being wiped.
+   *
+   * `layoutSlots` (from DASHBOARD_REPLACE.layout) overrides each widget's
+   * embedded layout slot; missing slots fall back to the embedded/default slot.
+   */
+  replaceDashboard: (
+    layoutSlots: DashboardLayoutSlot[],
+    newWidgets: Record<string, DashboardReplaceWidget>,
+  ) => void;
   /** Create a widget placeholder (status=loading, no g2_spec required). */
   createWidgetPlaceholder: (widgetId: string, partial: Partial<Widget>) => void;
   /** Inject data for a widget. Status is DERIVED from data + spec (not hardcoded).
@@ -404,22 +449,64 @@ const _store = _create()(
           });
         },
 
-        updateWidgetPath: (widgetId: string, field: string, value: unknown) => {
+        // declarative-frontend-adapter: whole-tree replace (contract §2). The
+        // store is a render-only cache — it never participates in state
+        // computation (no reducer / applyPatches). data:null slim widgets reuse
+        // the prior cached data (the frontend is the cache-reuse boundary).
+        replaceDashboard: (
+          layoutSlots: DashboardLayoutSlot[],
+          newWidgets: Record<string, DashboardReplaceWidget>,
+        ) => {
           set((state) => {
-            const widget = state.widgets[widgetId];
-            if (!widget) return;
-            // Walk the dotted path, creating intermediate objects as needed,
-            // and set the leaf. 'g2_spec.type' → widget.g2_spec.type = value.
-            const segments = field.split('.');
-            let target: Record<string, unknown> = widget as unknown as Record<string, unknown>;
-            for (let i = 0; i < segments.length - 1; i++) {
-              const seg = segments[i];
-              if (target[seg] == null || typeof target[seg] !== 'object') {
-                target[seg] = {};
+            const prior = state.widgets;
+            const slotById = new Map<string, DashboardLayoutSlot>();
+            for (const slot of layoutSlots ?? []) {
+              if (slot && typeof slot.i === 'string') {
+                slotById.set(slot.i, slot);
               }
-              target = target[seg] as Record<string, unknown>;
             }
-            target[segments[segments.length - 1]] = value;
+
+            const next: Record<string, Widget> = {};
+            for (const [id, w] of Object.entries(newWidgets)) {
+              const widgetId = (w && typeof w.widget_id === 'string' && w.widget_id) || id;
+              // data:null slim → reuse the prior cached data (the widget's SQL
+              // did not change, MergeScheduler REUSE/RE_SPEC). Anything else
+              // (array data, or absent with no cache) resolves to [].
+              const cached = prior[widgetId];
+              const priorData = cached?.data ?? [];
+              const payloadData = (w && w.data === null) ? priorData : normalizeRows(w?.data);
+
+              // event-level status → render-level status (mirrors the WIDGET_*
+              // status mapping: success→chart, error→error, else keep cached).
+              let status: WidgetStatus;
+              if (w?.status === 'error') {
+                status = 'error';
+              } else if (w?.status === 'success') {
+                status = 'chart';
+              } else {
+                status = cached?.status ?? 'loading';
+              }
+
+              const slot = slotById.get(widgetId);
+              const layout: WidgetLayout = slot
+                ? { x: slot.x, y: slot.y, w: slot.w, h: slot.h }
+                : (cached?.layout ?? { x: 0, y: 0, w: 12, h: suggestHeight({ spec: w?.g2_spec ?? {}, data: payloadData }) });
+
+              next[widgetId] = {
+                id: widgetId,
+                title: w?.title ?? cached?.title ?? '',
+                g2_spec: w?.g2_spec ?? cached?.g2_spec ?? {},
+                data: payloadData,
+                sql: typeof w?.sql === 'string' && w.sql !== '' ? w.sql : cached?.sql,
+                status,
+                layout,
+                ...(typeof w?.truncated === 'boolean' ? { truncated: w.truncated } : (cached?.truncated !== undefined ? { truncated: cached.truncated } : {})),
+                ...(typeof w?.total === 'number' ? { total: w.total } : (cached?.total !== undefined ? { total: cached.total } : {})),
+                ...(cached?.refreshInterval !== undefined ? { refreshInterval: cached.refreshInterval } : {}),
+              };
+            }
+
+            state.widgets = next;
             state.isDirty = true;
           });
         },

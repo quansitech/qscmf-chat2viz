@@ -81,26 +81,29 @@ interface ViewWidgetCardProps {
   uid: string;
   widget: SchemaWidget;
   showSql?: boolean;
+  /** fix-draft-view-restore: when true, fetch from the admin preview data
+   *  endpoint (current_schema, no ownership gate) instead of the public
+   *  endpoint (which rejects non-published dashboards). */
+  isAdminPreview?: boolean;
 }
 
-function ViewWidgetCard({ uid, widget, showSql = false }: ViewWidgetCardProps) {
+function ViewWidgetCard({ uid, widget, showSql = false, isAdminPreview = false }: ViewWidgetCardProps) {
   const { data, isLoading, isError, error } = useQuery({
-    queryKey: ['widget-data', uid, widget.id],
+    queryKey: ['widget-data', uid, widget.id, isAdminPreview ? 'preview' : 'public'],
     queryFn: async () => {
-      // fix-public-view-draft-exposure §2.1: the public view ONLY ever calls
-      // the extends-module public endpoint. The previous admin fallback
-      // (api_draft_widget_data) 302'd anonymous users to the login page →
-      // HTML response → JSON.parse failure ("Unexpected token <"). PHP now
-      // rejects non-published dashboards at the view action (§1.1), so this
-      // branch is unreachable for drafts in production; this is the
-      // belt-and-suspenders frontend half.
-      //
       // task 7.6: encode uid/widgetId defensively. PHP validates UUID
       // server-side, but encoding here prevents any value with special chars
       // from injecting path segments.
+      // fix-draft-view-restore: admin preview fetches draft data from
+      // current_schema via the admin endpoint (any logged-in admin; no
+      // ownership gate). The public endpoint rejects non-published dashboards.
+      // Query-string params match the edit page's api_draft_widget_data call
+      // (DashboardEdit.tsx) — the admin route parses them as ?uid=&widgetId=.
       const safeUid = encodeURIComponent(uid);
       const safeWidgetId = encodeURIComponent(widget.id);
-      const endpoint = `${PUBLIC_BASE}/api_widget_data/uid/${safeUid}/widgetId/${safeWidgetId}`;
+      const endpoint = isAdminPreview
+        ? `${ADMIN_BASE}/api_preview_widget_data?uid=${safeUid}&widgetId=${safeWidgetId}`
+        : `${PUBLIC_BASE}/api_widget_data/uid/${safeUid}/widgetId/${safeWidgetId}`;
       const resp = await fetch(endpoint, { credentials: 'same-origin' });
       const result = await resp.json();
       if (result.status !== 1) {
@@ -203,6 +206,12 @@ function DashboardViewInner() {
   // that would 404 / redirect. An "unpublished" state is not an error — it
   // is the absence of content — so we use Empty, not Alert.
   const isPublished = (dashboard?.dashboard_status ?? '') === 'published';
+  // fix-draft-view-restore: admin preview (/admin/.../preview) sets the
+  // __is_preview marker on the dashboard row. Under admin preview the React
+  // app renders draft/archived schemas (current_schema) instead of the
+  // "该仪表盘暂未发布" empty state. The public view path never sets this, so
+  // its §2.2 defense-in-depth draft gate stays intact.
+  const isAdminPreview = (dashboard as { __is_preview?: boolean } | null)?.__is_preview === true;
 
   // Build static layout from schema — all items are static (not draggable/resizable)
   const layout: Layout[] = useMemo(
@@ -236,9 +245,10 @@ function DashboardViewInner() {
 
       {/* Content */}
       <div style={styles.content}>
-        {!isPublished ? (
+        {!isPublished && !isAdminPreview ? (
           // §2.2 defense-in-depth: friendly empty state for non-published
-          // dashboards. No widget data is fetched in this branch.
+          // dashboards on the PUBLIC route. No widget data is fetched here.
+          // (admin preview bypasses this gate — see isAdminPreview above.)
           <div style={styles.empty}>
             <Empty description="该仪表盘暂未发布" />
           </div>
@@ -255,7 +265,7 @@ function DashboardViewInner() {
             >
               {widgets.map((w) => (
                 <div key={w.id}>
-                  <ViewWidgetCard uid={dashboard.uid} widget={w} showSql={show_sql} />
+                  <ViewWidgetCard uid={dashboard.uid} widget={w} showSql={show_sql} isAdminPreview={isAdminPreview} />
                 </div>
               ))}
             </ResponsiveGridLayout>

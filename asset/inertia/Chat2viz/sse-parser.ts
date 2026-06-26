@@ -30,12 +30,18 @@ const STANDARD_EVENT_TYPES = [
   'metadata',
 ] as const;
 
-/** The 4 additional dashboard-specific event types. */
+/**
+ * Dashboard-specific event types under the declarative-frontend-adapter
+ * whole-tree protocol (contract §1/§5). The deprecated DASHBOARD_INIT /
+ * WIDGET_DATA_UPDATE / dashboard_patch / WIDGET_UPDATE / WIDGET_REMOVE /
+ * dashboard_rollback / action_call / action_call_result were collapsed into
+ * DASHBOARD_REPLACE; tool_start / tool_result are the §5 tool-progress names.
+ */
 const DASHBOARD_EVENT_TYPES = [
-  'action_call',
-  'action_call_result',
-  'dashboard_patch',
-  'dashboard_rollback',
+  'DASHBOARD_REPLACE',
+  'WIDGET_ERROR',
+  'tool_start',
+  'tool_result',
 ] as const;
 
 export type StandardEventType = (typeof STANDARD_EVENT_TYPES)[number];
@@ -116,60 +122,3 @@ export function isDashboardEvent(type: string): type is DashboardEventType {
   return (DASHBOARD_EVENT_TYPES as readonly string[]).includes(type);
 }
 
-// ---------------------------------------------------------------------------
-// Dashboard event type definitions for downstream consumers
-// ---------------------------------------------------------------------------
-
-/** Emitted when the AI requests the frontend to execute an action. */
-export interface ActionCallEvent {
-  type: 'action_call';
-  data: {
-    action_type: string;
-    params: Record<string, unknown>;
-  };
-}
-
-/** Emitted to report the outcome of a previously dispatched action_call.
- *
- * DEF-07 / design D4 "耗尽即失败": when the edit-intent guard exhausts its
- * correction budget with no edit tool_call, the backend raises
- * EditIntentFailedError and ask_stream emits an ORPHAN action_call_result
- * (no preceding action_call) carrying success=false + error_code="EDIT_FAILED".
- * error_code/error are optional — only present on failure (legacy success-only
- * payloads remain valid). */
-export interface ActionCallResultEvent {
-  type: 'action_call_result';
-  data: {
-    success: boolean;
-    result?: unknown;
-    /** Stable machine-readable failure code (e.g. "EDIT_FAILED"). Absent on success. */
-    error_code?: string;
-    /** Human-readable failure detail. Absent on success. */
-    error?: string;
-  };
-}
-
-/** Emitted to apply partial updates (JSON-Patch style) to the dashboard. */
-export interface DashboardPatchEvent {
-  type: 'dashboard_patch';
-  data: {
-    patches: Array<{
-      op: 'add' | 'remove' | 'replace';
-      path: string;
-      value?: unknown;
-    }>;
-  };
-}
-
-/** Emitted to restore a widget to its pre-conversation state on critical failure. */
-export interface DashboardRollbackEvent {
-  type: 'dashboard_rollback';
-  data: {
-    widget_id: string;
-    snapshot: {
-      sql?: string;
-      g2_spec?: Record<string, unknown>;
-      title?: string;
-    };
-  };
-}

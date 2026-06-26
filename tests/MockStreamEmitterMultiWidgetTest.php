@@ -8,13 +8,16 @@ use Qscmf\Chat2Viz\Sse\MockStreamEmitter;
 use Qscmf\SseCore\SseEvent;
 
 /**
- * Unit tests for MockStreamEmitter::buildMultiWidgetEvents() (task 7.1).
+ * declarative-frontend-adapter: locks the whole-tree mock sequence.
  *
- * Locks the multi-widget mock sequence: DASHBOARD_INIT → N×WIDGET_DATA_UPDATE
- * → done. Verifies the single-widget emitMockQuery path is NOT replaced
- * (coexistence / zero regression is enforced at the integration layer).
+ * Sequence (collapsed from the deprecated DASHBOARD_INIT → N×WIDGET_DATA_UPDATE):
+ *   tool_start → DASHBOARD_REPLACE → tool_result → done
+ * The single DASHBOARD_REPLACE frame carries the complete tree (layout +
+ * widgets map + answer). Verifies the mock emulates the Python emitter under
+ * the whole-tree protocol (contract §2).
  *
  * @covers \Qscmf\Chat2Viz\Sse\MockStreamEmitter::buildMultiWidgetEvents
+ * @covers \Qscmf\Chat2Viz\Sse\MockStreamEmitter::buildDashboardReplace
  * @covers \Qscmf\Chat2Viz\Sse\MockStreamEmitter::emitMockMultiWidget
  */
 class MockStreamEmitterMultiWidgetTest extends TestCase
@@ -26,92 +29,90 @@ class MockStreamEmitterMultiWidgetTest extends TestCase
         $this->emitter = new MockStreamEmitter();
     }
 
-    public function testSequenceIsDashboardInitThenNUpdatesThenDone(): void
+    public function testSequenceIsToolStartThenReplaceThenToolResultThenDone(): void
     {
         $events = $this->emitter->buildMultiWidgetEvents(3);
 
-        // 1 DASHBOARD_INIT + 3 WIDGET_DATA_UPDATE + 1 done = 5 events
-        $this->assertCount(5, $events);
-        $this->assertSame('DASHBOARD_INIT', $events[0]->type);
-        $this->assertSame('WIDGET_DATA_UPDATE', $events[1]->type);
-        $this->assertSame('WIDGET_DATA_UPDATE', $events[2]->type);
-        $this->assertSame('WIDGET_DATA_UPDATE', $events[3]->type);
-        $this->assertSame('done', $events[4]->type);
+        // tool_start + DASHBOARD_REPLACE + tool_result + done = 4 events
+        $this->assertCount(4, $events);
+        $this->assertSame('tool_start', $events[0]->type);
+        $this->assertSame('DASHBOARD_REPLACE', $events[1]->type);
+        $this->assertSame('tool_result', $events[2]->type);
+        $this->assertSame('done', $events[3]->type);
     }
 
-    public function testDashboardInitDeclaresNWidgetPlaceholders(): void
+    public function testDashboardReplaceCarriesCompleteTreeForAllWidgets(): void
     {
         $events = $this->emitter->buildMultiWidgetEvents(3);
-        $init = $events[0];
+        $replace = $events[1];
 
-        // Contract §2: widgets is a map<widget_id, WidgetMeta> keyed by
-        // widget_id (NOT a flat list); each placeholder carries chart_type
-        // (the Python emitter field name). layout is an array<{i,x,y,w,h}>
-        // with i == widget_id.
-        $widgets = $init->data['widgets'] ?? null;
+        // Contract §2: widgets is a map<widget_id, Widget> keyed by widget_id;
+        // layout is an array<{i,x,y,w,h}> with i == widget_id.
+        $widgets = $replace->data['widgets'] ?? null;
         $this->assertIsArray($widgets);
         $this->assertCount(3, $widgets);
-        $this->assertArrayHasKey('w1', $widgets);
-        $this->assertArrayHasKey('w2', $widgets);
-        $this->assertArrayHasKey('w3', $widgets);
-        foreach ($widgets as $w) {
-            $this->assertNotEmpty($w['widget_id']);
+        $this->assertSame(['w1', 'w2', 'w3'], array_keys($widgets));
+        foreach ($widgets as $id => $w) {
+            $this->assertSame($id, $w['widget_id']);
             $this->assertNotEmpty($w['title']);
-            $this->assertNotEmpty($w['chart_type']);
+            $this->assertSame('success', $w['status']);
+            // Each widget carries the full record: sql + g2_spec + data +
+            // truncated/total (single-frame whole-tree delivery).
+            $this->assertArrayHasKey('sql', $w);
+            $this->assertArrayHasKey('g2_spec', $w);
+            $this->assertArrayHasKey('data', $w);
+            $this->assertArrayHasKey('truncated', $w);
+            $this->assertArrayHasKey('total', $w);
+            // total matches the row count (mock consistency with Python's
+            // sole-computation-authority role).
+            $this->assertSame(count($w['data']), $w['total']);
         }
 
-        $layout = $init->data['layout'] ?? null;
+        $layout = $replace->data['layout'] ?? null;
         $this->assertIsArray($layout);
         $this->assertCount(3, $layout);
-        $layoutIds = array_column($layout, 'i');
-        $this->assertSame(['w1', 'w2', 'w3'], $layoutIds);
-    }
+        $this->assertSame(['w1', 'w2', 'w3'], array_column($layout, 'i'));
 
-    public function testWidgetDataUpdatesCarryFourRequiredFields(): void
-    {
-        $events = $this->emitter->buildMultiWidgetEvents(2);
-        // First update frame (w1)
-        $u1 = $events[1];
-        $this->assertSame('WIDGET_DATA_UPDATE', $u1->type);
-        // widget_id / data / truncated / total must all be present
-        $this->assertSame('w1', $u1->data['widget_id']);
-        $this->assertArrayHasKey('data', $u1->data);
-        $this->assertArrayHasKey('truncated', $u1->data);
-        $this->assertArrayHasKey('total', $u1->data);
-        // sql present too (Python sets it; mock emulates)
-        $this->assertArrayHasKey('sql', $u1->data);
-        // total matches the row count (mock consistency)
-        $this->assertSame(count($u1->data['data']), $u1->data['total']);
-    }
-
-    public function testEachWidgetIdAppearsExactlyOnceInUpdates(): void
-    {
-        $events = $this->emitter->buildMultiWidgetEvents(3);
-        $updateIds = [];
-        for ($i = 1; $i <= 3; $i++) {
-            $updateIds[] = $events[$i]->data['widget_id'];
-        }
-        sort($updateIds);
-        $this->assertSame(['w1', 'w2', 'w3'], $updateIds);
+        // answer is present (contract §2 — DASHBOARD_REPLACE carries the LLM reply).
+        $this->assertArrayHasKey('answer', $replace->data);
     }
 
     public function testWidgetCountLowerBoundIsOne(): void
     {
-        // Even with 0 requested, at least one widget frame is emitted.
+        // Even with 0 requested, at least one widget is in the tree.
         $events = $this->emitter->buildMultiWidgetEvents(0);
-        $this->assertCount(3, $events); // 1 init + 1 update + 1 done
-        $this->assertSame('DASHBOARD_INIT', $events[0]->type);
-        $this->assertCount(1, $events[0]->data['widgets']);
+        // tool_start + DASHBOARD_REPLACE + tool_result + done = 4 events
+        $this->assertCount(4, $events);
+        $this->assertSame('DASHBOARD_REPLACE', $events[1]->type);
+        $this->assertCount(1, $events[1]->data['widgets']);
     }
 
-    public function testSingleWidgetMockPathNotReplaced(): void
+    public function testNoDeprecatedEventsEmitted(): void
     {
-        // chart_ready is fully removed (contract §5); both the single- and
-        // multi-widget paths now use the unified DASHBOARD_INIT +
-        // WIDGET_DATA_UPDATE delivery. The builder must never emit chart_ready.
+        // Whole-tree protocol: the mock MUST NOT emit the deprecated two-phase
+        // events or the incremental-edit events.
         $events = $this->emitter->buildMultiWidgetEvents(2);
         $types = array_map(static fn(SseEvent $e) => $e->type, $events);
-        $this->assertNotContains('chart_ready', $types);
-        $this->assertContains('DASHBOARD_INIT', $types);
+        foreach (['DASHBOARD_INIT', 'WIDGET_DATA_UPDATE', 'dashboard_patch',
+                  'WIDGET_UPDATE', 'WIDGET_REMOVE', 'dashboard_rollback',
+                  'sql_generated', 'data_preview', 'action_call', 'action_call_result',
+                  'chart_ready'] as $deprecated) {
+            $this->assertNotContains($deprecated, $types, "mock must not emit deprecated $deprecated");
+        }
+        $this->assertContains('DASHBOARD_REPLACE', $types);
+    }
+
+    public function testBuildDashboardReplaceFrameShape(): void
+    {
+        $frame = $this->emitter->buildDashboardReplace(
+            [['i' => 'w1', 'x' => 0, 'y' => 0, 'w' => 12, 'h' => 6]],
+            ['w1' => ['widget_id' => 'w1', 'status' => 'success', 'data' => null]],
+            '回复文本'
+        );
+
+        $this->assertSame('DASHBOARD_REPLACE', $frame->type);
+        $this->assertSame([['i' => 'w1', 'x' => 0, 'y' => 0, 'w' => 12, 'h' => 6]], $frame->data['layout']);
+        $this->assertArrayHasKey('w1', $frame->data['widgets']);
+        $this->assertSame('回复文本', $frame->data['answer']);
     }
 }

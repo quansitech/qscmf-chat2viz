@@ -44,36 +44,41 @@ class Nl2sqlEventTransformer
             'message_start' => $this->mapMessageStart($event),
             'content_block_delta' => $this->mapContentBlockDelta($event),
             'message_stop' => [new SseEvent(type: 'done', data: [], raw: '')],
-            'tool_start' => $this->mapToolStart($event),
-            'tool_result' => $this->mapToolResult($event),
-            'sql_ready' => [new SseEvent(type: 'sql_generated', data: ['sql' => $event->data['sql'] ?? ''], raw: '')],
-            'data_ready' => [new SseEvent(type: 'data_preview', data: $event->data, raw: '')],
+            'tool_start', 'tool_result' => [
+                // GAP-4 / declarative-frontend-adapter: tool_start/tool_result
+                // pass through verbatim (contract §5 base event names). The legacy
+                // rename to action_call/action_call_result is removed — the
+                // frontend consumes the contract names directly. No field
+                // rename, no parse.
+                new SseEvent(type: $event->type, data: $event->data, raw: $event->raw),
+            ],
             'error' => $this->mapError($event),
-            'dashboard_patch' => [new SseEvent(type: 'dashboard_patch', data: $event->data, raw: '')],
-            // multi-widget three events: 1:1 passthrough (no rename, no field add/remove,
-            // no parse, no recomputation of truncated/total). The WIDGET_DATA_UPDATE
-            // envelope {rows, columns} + sql + g2_spec flows verbatim to the frontend
-            // store boundary; normalization (envelope → bare Row[]) happens in the
-            // React store, NOT in this PHP passthrough layer.
-            // Dashboard/widget events: 1:1 verbatim passthrough (no rename, no
-            // field add/remove). The frontend store is the normalization boundary.
-            'DASHBOARD_INIT', 'WIDGET_DATA_UPDATE', 'WIDGET_ERROR',
-            'WIDGET_UPDATE', 'WIDGET_REMOVE',
-            // Tool-execution progress events emitted directly by sse_dispatcher
-            // (dispatch_tool_start/end send these names directly — NOT tool_start/
-            // tool_result, so the mapToolStart/mapToolResult cases above are legacy
-            // HTTP-path mappings that never fire on the socket path).
-            // Without explicit passthrough these fell through to default and were
-            // silently dropped, so the frontend's AI-step indicator never showed.
-            'action_call', 'action_call_result',
+            // declarative-frontend-adapter: DASHBOARD_REPLACE is the single
+            // whole-tree delivery event (generate + modify unified, contract §2).
+            // 1:1 verbatim passthrough — no rename, no field add/remove, no
+            // parse, no recomputation of truncated/total (Python is the sole
+            // computation authority). data:null slim widgets and status=error
+            // widgets are forwarded as-is; the frontend is the cache-reuse /
+            // local-degradation boundary, NOT this passthrough layer.
+            'DASHBOARD_REPLACE',
+            // WIDGET_ERROR is retained for mid-stream single-widget local
+            // degradation (contract §3). 1:1 verbatim passthrough.
+            'WIDGET_ERROR',
             // Dashboard lifecycle notices (non-critical UI hints).
-            'dashboard_notice', 'dashboard_rollback' => [
+            'dashboard_notice' => [
                 new SseEvent(type: $event->type, data: $event->data, raw: $event->raw),
             ],
             // Skip these events (return empty array)
             'content_block_start', 'content_block_stop', 'message_delta' => [],
             // Unknown event types: log a warning and pass through (do not silently drop).
             // Protects future/unknown events so the frontend actually receives them.
+            // NOTE (declarative-frontend-adapter): the deprecated events
+            // DASHBOARD_INIT / WIDGET_DATA_UPDATE / dashboard_patch /
+            // WIDGET_UPDATE / WIDGET_REMOVE / dashboard_rollback / sql_ready /
+            // data_ready / action_call / action_call_result have NO explicit
+            // case (contract §4 — Python never emits them under the whole-tree
+            // protocol). Any stray emission falls through here, is logged, and
+            // is forwarded as-is rather than silently dropped or renamed.
             default => $this->mapDefaultPassthrough($event),
         };
     }
@@ -121,32 +126,6 @@ class Nl2sqlEventTransformer
             return [];
         }
         return [new SseEvent(type: 'answer', data: ['text' => $text], raw: '')];
-    }
-
-    // tool_start → action_call (tool_name→action_type, tool_args→params)
-    private function mapToolStart(SseEvent $event): array
-    {
-        return [new SseEvent(
-            type: 'action_call',
-            data: [
-                'action_type' => $event->data['tool_name'] ?? '',
-                'params' => $event->data['tool_args'] ?? [],
-            ],
-            raw: '',
-        )];
-    }
-
-    // tool_result → action_call_result (summary→result, success: true)
-    private function mapToolResult(SseEvent $event): array
-    {
-        return [new SseEvent(
-            type: 'action_call_result',
-            data: [
-                'success' => true,
-                'result' => $event->data['summary'] ?? '',
-            ],
-            raw: '',
-        )];
     }
 
     // error → error (extract message → info; supports 3 formats)

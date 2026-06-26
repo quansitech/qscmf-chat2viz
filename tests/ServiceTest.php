@@ -283,60 +283,9 @@ class ServiceTest extends TestCase
     }
 
     // ─── EventRouter::backfillWidgetSql tests ───────────────────────────────
-
-    public function testEventRouterBackfillCallsRepoWithCorrectParams(): void
-    {
-        $captured = [];
-        $repo = new class($captured) implements \Qscmf\Chat2Viz\Repository\DashboardRepositoryInterface {
-            public array $captured;
-            public function __construct(array &$c) { $this->captured = &$c; }
-            public function list(int $page, int $perPage, array $filters = []): array { return []; }
-            public function findByUid(string $uid): ?array { return null; }
-            public function create(array $data): array { return []; }
-            public function update(string $uid, array $data): array { return []; }
-            public function archive(string $uid): bool { return true; }
-            public function delete(string $uid): bool { return true; }
-            public function publish(string $uid, ?int $publishedBy = null, string $title = ''): array { return []; }
-            public function getPublishedSchema(string $uid): ?array { return null; }
-            public function getVersions(string $uid, int $page = 1, int $perPage = 20): array { return []; }
-            public function updateWidgetSql(string $uid, string $widgetId, string $sql): void {
-                $this->captured = ['uid' => $uid, 'widgetId' => $widgetId, 'sql' => $sql];
-            }
-            public function executeRawQuery(string $sql): array { return []; }
-        };
-
-        $router = new EventRouter($repo, 'dash-uid-001');
-        $router->backfillWidgetSql('widget-1', 'SELECT * FROM sales');
-
-        $this->assertSame('dash-uid-001', $repo->captured['uid']);
-        $this->assertSame('widget-1', $repo->captured['widgetId']);
-        $this->assertSame('SELECT * FROM sales', $repo->captured['sql']);
-    }
-
-    public function testEventRouterSkipsBackfillWhenNoDashboardUid(): void
-    {
-        $called = false;
-        $repo = new class($called) implements \Qscmf\Chat2Viz\Repository\DashboardRepositoryInterface {
-            public bool $called;
-            public function __construct(bool &$c) { $this->called = &$c; }
-            public function list(int $page, int $perPage, array $filters = []): array { return []; }
-            public function findByUid(string $uid): ?array { return null; }
-            public function create(array $data): array { return []; }
-            public function update(string $uid, array $data): array { return []; }
-            public function archive(string $uid): bool { return true; }
-            public function delete(string $uid): bool { return true; }
-            public function publish(string $uid, ?int $publishedBy = null, string $title = ''): array { return []; }
-            public function getPublishedSchema(string $uid): ?array { return null; }
-            public function getVersions(string $uid, int $page = 1, int $perPage = 20): array { return []; }
-            public function updateWidgetSql(string $uid, string $widgetId, string $sql): void { $this->called = true; }
-            public function executeRawQuery(string $sql): array { return []; }
-        };
-
-        $router = new EventRouter($repo, '');
-        $router->backfillWidgetSql('widget-1', 'SELECT 1');
-
-        $this->assertFalse($repo->called);
-    }
+    // declarative-frontend-adapter: backfillWidgetSql was removed (SQL now lives
+    // inside DASHBOARD_REPLACE.widgets; the markdown-block SQL extraction
+    // fallback and per-widget SQL backfill are gone). No replacement tests.
 
     /**
      * J5 (§5): publish dialog title MUST flow through to the repository so the

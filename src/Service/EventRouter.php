@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Qscmf\Chat2Viz\Service;
 
 use Qscmf\Chat2Viz\Repository\DashboardRepositoryInterface;
-use Qscmf\Chat2Viz\Exception\DashboardNotFoundException;
 use Qscmf\Chat2Viz\Sse\StreamAccumulator;
 use Qscmf\SseCore\SseEvent;
 
@@ -31,6 +30,11 @@ class EventRouter
 
     /**
      * Route a transformed SSE event to the appropriate StreamAccumulator method.
+     *
+     * declarative-frontend-adapter: the whole-tree model collapsed the old
+     * DASHBOARD_INIT / WIDGET_DATA_UPDATE / sql_generated / action_call paths.
+     * Only answer text, the whole-tree DASHBOARD_REPLACE, mid-stream WIDGET_ERROR,
+     * reasoning, and tool_call accumulation remain.
      */
     public function routeEvent(
         StreamAccumulator $accumulator,
@@ -44,17 +48,8 @@ class EventRouter
                 $this->handleAnswer($accumulator, $conversation_id, $data);
                 break;
 
-            case 'sql_generated':
-                $this->handleSqlGenerated($accumulator, $conversation_id, $data);
-                break;
-
-            case 'action_call':
-                if ($accumulator->isRedisAvailable()) {
-                    $accumulator->accumulateActionCall($conversation_id, [
-                        'action_type' => $data['action_type'] ?? '',
-                        'params'      => $data['params'] ?? [],
-                    ]);
-                }
+            case 'DASHBOARD_REPLACE':
+                $this->handleDashboardReplace($accumulator, $conversation_id, $data);
                 break;
 
             case 'tool_call':
@@ -70,21 +65,17 @@ class EventRouter
                 }
                 break;
 
-            case 'DASHBOARD_INIT':
-                $this->handleDashboardInit($accumulator, $conversation_id, $data);
-                break;
-
-            case 'WIDGET_DATA_UPDATE':
-                $this->handleWidgetDataUpdate($accumulator, $conversation_id, $data);
-                break;
-
             case 'WIDGET_ERROR':
                 $this->handleWidgetError($accumulator, $conversation_id, $data);
                 break;
 
             default:
-                // No accumulation for: conversation_id, done, error, action_call_result,
-                // data_preview, dashboard_patch, comment/heartbeat events
+                // No accumulation for: conversation_id, done, error, tool_start,
+                // tool_result, content_block_*, dashboard_notice, comment/heartbeat,
+                // and any deprecated event that slipped through the transformer
+                // (DASHBOARD_INIT / WIDGET_DATA_UPDATE / dashboard_patch /
+                // WIDGET_UPDATE / WIDGET_REMOVE / dashboard_rollback / sql_ready /
+                // data_ready / action_call / action_call_result).
                 break;
         }
     }
@@ -100,102 +91,48 @@ class EventRouter
         }
 
         $accumulator->accumulateAnswer($conversation_id, $text);
-
-        // Fallback: extract SQL from markdown code blocks if no sql_generated event
-        $existingSql = $accumulator->peekField($conversation_id, 'sql');
-        if ($existingSql === '' || $existingSql === null) {
-            $content = $accumulator->peekField($conversation_id, 'content');
-            if (is_string($content) && $content !== ''
-                && preg_match_all('/```sql\s*\n([\s\S]*?)\n```/i', $content, $matches)
-                && !empty($matches[1])) {
-                $extractedSql = trim((string) end($matches[1]));
-                if ($extractedSql !== '') {
-                    $accumulator->accumulateSql($conversation_id, $extractedSql);
-                }
-            }
-        }
-    }
-
-    private function handleSqlGenerated(
-        StreamAccumulator $accumulator,
-        string $conversation_id,
-        array $data
-    ): void {
-        $sql = $data['sql'] ?? '';
-        if ($sql === '') {
-            return;
-        }
-
-        $accumulator->accumulateSql($conversation_id, $sql);
-
-        $existingWidgetId = $accumulator->peekField($conversation_id, 'widget_id');
-        if ($existingWidgetId !== '') {
-            $this->backfillWidgetSql($existingWidgetId, $sql);
-        }
+        // declarative-frontend-adapter: the markdown-block SQL extraction
+        // fallback was removed. SQL now lives inside DASHBOARD_REPLACE.widgets
+        // (Python is the sole authority), so the conversation metadata no
+        // longer carries a standalone 'sql' field.
     }
 
     /**
-     * Accumulate DASHBOARD_INIT: persist each declared widget placeholder's
-     * title/type into the conversation metadata, keyed by widget_id. Layout
-     * placeholders carry no sql/g2_spec yet — they are skeleton frames.
+     * Accumulate DASHBOARD_REPLACE: overlay the whole {layout, widgets} tree
+     * into the conversation metadata (contract §2). The frame also carries the
+     * LLM answer text (contract §2 `answer`) — accumulate it as content so
+     * finalizeStream persists the assistant reply (otherwise the message row
+     * is saved with an empty content and the conversation history shows no LLM
+     * reply). Verbatim — no per-field reducer, no recomputation of truncated/total.
      */
-    private function handleDashboardInit(
+    private function handleDashboardReplace(
         StreamAccumulator $accumulator,
         string $conversation_id,
         array $data
     ): void {
+        // The LLM answer rides on the DASHBOARD_REPLACE frame (contract §2).
+        // Accumulate it exactly like an `answer` event so it lands in the
+        // message content column on finalizeStream.
+        $answer = isset($data['answer']) && is_string($data['answer']) ? $data['answer'] : '';
+        if ($answer !== '') {
+            $accumulator->accumulateAnswer($conversation_id, $answer);
+        }
+
+        $layout = $data['layout'] ?? [];
         $widgets = $data['widgets'] ?? [];
+        if (!is_array($layout)) {
+            $layout = [];
+        }
         if (!is_array($widgets)) {
-            return;
+            $widgets = [];
         }
-        foreach ($widgets as $widget) {
-            if (!is_array($widget)) {
-                continue;
-            }
-            $widgetId = (string) ($widget['widget_id'] ?? $widget['id'] ?? '');
-            if ($widgetId === '') {
-                continue;
-            }
-            $payload = [];
-            if (isset($widget['title'])) {
-                $payload['title'] = $widget['title'];
-            }
-            // Skeleton widgets carry the chart kind as `chart_type` (contract §2
-            // Python emitter). Tolerate the `type` alias too. Without this the
-            // persisted skeleton silently loses its chart kind.
-            if (isset($widget['chart_type'])) {
-                $payload['chart_type'] = $widget['chart_type'];
-            } elseif (isset($widget['type'])) {
-                $payload['chart_type'] = $widget['type'];
-            }
-            $accumulator->accumulateWidgetData($conversation_id, $widgetId, $payload);
-        }
+        $accumulator->accumulateDashboardReplace($conversation_id, $layout, $widgets);
     }
 
     /**
-     * Accumulate WIDGET_DATA_UPDATE: store sql/data/truncated/total per widget_id.
-     * truncated/total are forwarded verbatim — never recomputed locally.
-     */
-    private function handleWidgetDataUpdate(
-        StreamAccumulator $accumulator,
-        string $conversation_id,
-        array $data
-    ): void {
-        $widgetId = (string) ($data['widget_id'] ?? $data['id'] ?? '');
-        if ($widgetId === '') {
-            return;
-        }
-        $payload = [];
-        foreach (['sql', 'data', 'truncated', 'total', 'g2_spec', 'chart_type'] as $field) {
-            if (array_key_exists($field, $data)) {
-                $payload[$field] = $data[$field];
-            }
-        }
-        $accumulator->accumulateWidgetData($conversation_id, $widgetId, $payload);
-    }
-
-    /**
-     * Accumulate WIDGET_ERROR: store the error message per widget_id.
+     * Accumulate WIDGET_ERROR: store the error message per widget_id (mid-stream
+     * local degradation, contract §3). Merges into the widgets map produced by
+     * the most recent DASHBOARD_REPLACE so the persisted tree carries the error.
      */
     private function handleWidgetError(
         StreamAccumulator $accumulator,
@@ -212,24 +149,7 @@ class EventRouter
         } elseif (isset($data['error'])) {
             $payload['error_msg'] = $data['error'];
         }
+        $payload['status'] = 'error';
         $accumulator->accumulateWidgetData($conversation_id, $widgetId, $payload);
-    }
-
-    /**
-     * Backfill the SQL field on an existing dashboard widget via Repository.
-     */
-    public function backfillWidgetSql(string $widget_id, string $sql): void
-    {
-        if ($this->dashboardUid === '') {
-            return;
-        }
-
-        try {
-            $this->dashboardRepo->updateWidgetSql($this->dashboardUid, $widget_id, $sql);
-        } catch (DashboardNotFoundException $e) {
-            // Dashboard not found — non-critical, skip
-        } catch (\Throwable $e) {
-            ($this->logger)('backfill widget sql failed', $e->getMessage());
-        }
     }
 }

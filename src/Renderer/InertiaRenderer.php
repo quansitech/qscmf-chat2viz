@@ -42,7 +42,7 @@ class InertiaRenderer implements PageRendererInterface
 
     public function renderShow(array $dashboard, array $schema): mixed
     {
-        return \Qscmf\Lib\Inertia\Inertia::render('Chat2viz/DashboardShow', [
+        return \Qscmf\Lib\Inertia\Inertia::render('Chat2viz/DashboardView', [
             'dashboard' => $dashboard,
             'schema'    => $schema,
             'show_sql'  => self::showSql(),
