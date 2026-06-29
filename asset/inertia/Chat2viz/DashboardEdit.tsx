@@ -304,6 +304,14 @@ function DashboardEditInner() {
               id: String(m.id ?? `${i}-${m.role}`),
               role: m.role,
               content: m.content || '',
+              // DEFECT_DIAGNOSIS 缺陷5: hydrate reasoning_content → thought so the
+              // "💭 AI 思考过程" panel survives page refresh. reasoning_content is
+              // written to DB by ConversationService.finalizeStream and returned by
+              // api_conversation_history (full-row ->toArray(), no select filter),
+              // but this hydration previously omitted it → ChatMessage.thought was
+              // always undefined after reload. The streaming path (appendThought →
+              // lastAssistant.thought) and the history path now share one field.
+              thought: m.reasoning_content || '',
               timestamp: m.created_at || new Date().toISOString(),
               message_status: (['streaming', 'complete', 'interrupted', 'failed'].includes(m.message_status)
                 ? m.message_status : 'complete') as MessageStatus | undefined,
@@ -481,7 +489,7 @@ function DashboardEditInner() {
       <div className="dashboard-edit-content" style={styles.content}>
         {!chatCollapsed && (
           <div className="dashboard-edit-chat-pane" style={styles.chatPane}>
-            <ChatPanel disabled={!socketAvailable} showSql={show_sql} />
+            <ChatPanel disabled={!socketAvailable} />
           </div>
         )}
         {/* Collapse toggle sits on the chat/preview divider line (vertical
