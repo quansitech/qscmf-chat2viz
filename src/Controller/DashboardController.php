@@ -68,8 +68,86 @@ class DashboardController extends BaseDashboardController
                 // The extends view button used a literal href for the same reason.
                 'href'  => '/admin/Chat2VizDashboard/preview/uid/__data_id__',
             ])
+            // 缺陷1: 已发布的仪表盘提供一个"复制链接"操作, 一键复制公开访问地址
+            // (PUBLIC_BASE/view/uid/<uid>). ListBuilder 的 {key}/{condition}/{value}
+            // 元属性让该按钮仅在 dashboard_status==='published' 时渲染 (见
+            // TGenButton::parseButtonList). 按钮不跳转(href=javascript:void), 改由
+            // data-url + 全局 click handler (chat2viz_copy_link 在 index.html 注入)
+            // 写入剪贴板 —— handler 内置 execCommand fallback, HTTP(非安全上下文)
+            // 下 navigator.clipboard 为 undefined 也能复制成功.
+            ->addRightButton('self', [
+                'title'      => '复制链接',
+                'class'      => 'qs-list-right-btn chat2viz-copy-link-btn',
+                // href 必填, 但本按钮不导航; 由全局 click handler 接管.
+                'href'       => 'javascript:void(0)',
+                // 注意: data-url 用 __uid__ 而非 __data_id__. ListBuilder 的
+                // compileRightButton 只对 href/data-id 做显式 __data_id__ 替换
+                // (TGenButton:108-119); 其他属性靠 parseData 按 __field__ 替换
+                // (TGenButton:131), 字段名需匹配行的实际 key(setTableDataListKey
+                // 设的是 'uid'), 用 __data_id__ 会得到未定义键 → 空串. __uid__ 正确.
+                'data-url'   => '/extends/Chat2VizDashboard/view/uid/__uid__',
+                '{key}'      => 'dashboard_status',
+                '{condition}' => 'eq',
+                '{value}'    => 'published',
+            ])
             ->addRightButton('delete')
+            ->addContentBottom($this->renderCopyLinkScript())
             ->build();
+    }
+
+    /**
+     * 缺陷1: 注入"复制链接"按钮的全局 click handler.
+     *
+     * ListBuilder 服务端渲染, 没有 React; 该脚本挂在 .chat2viz-copy-link-btn 上,
+     * 读 data-url 拼成完整公开地址并写入剪贴板. 内置 execCommand('copy') fallback,
+     * 在非安全上下文(内网 HTTP)下 navigator.clipboard 为 undefined 时也能成功 ——
+     * 与 React PublishDialog 的复制语义保持一致.
+     */
+    private function renderCopyLinkScript(): string
+    {
+        return <<<'HTML'
+<script>
+(function () {
+  function fallbackCopy(text) {
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+  function copyLink(url) {
+    var ok = false;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(url).then(function () {
+        window.alert ? alert('公开链接已复制：\n' + url) : '';
+      }).catch(function () {
+        if (!fallbackCopy(url)) { alert('复制失败，请手动复制：\n' + url); }
+        else { alert('公开链接已复制：\n' + url); }
+      });
+      return;
+    }
+    ok = fallbackCopy(url);
+    alert(ok ? '公开链接已复制：\n' + url : '复制失败，请手动复制：\n' + url);
+  }
+  document.addEventListener('click', function (e) {
+    var t = e.target instanceof Element ? e.target.closest('.chat2viz-copy-link-btn') : null;
+    if (!t) return;
+    e.preventDefault();
+    var raw = t.getAttribute('data-url') || '';
+    if (!raw) return;
+    copyLink(window.location.origin + raw);
+  });
+})();
+</script>
+HTML;
     }
 
     /**

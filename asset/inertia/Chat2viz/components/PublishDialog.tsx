@@ -3,6 +3,7 @@ import { Button, Input, Modal, Typography, message } from 'antd';
 import { CloudUploadOutlined } from '@ant-design/icons';
 import { navigate } from '../adapters';
 import { ADMIN_BASE, PUBLIC_BASE } from '../utils/routes';
+import { copyText } from '../utils/clipboard';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -88,12 +89,11 @@ export default function PublishDialog({ uid, title, visible, onClose }: PublishD
   }, [onClose]);
 
   const handleCopy = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText(shareUrl);
-      message.success('链接已复制');
-    } catch {
-      message.error('复制失败，请手动复制');
-    }
+    // 缺陷5: 走 utils/clipboard 的统一 fallback, 保证 HTTP(非安全上下文)下也能复制.
+    copyText(shareUrl,
+      () => message.success('链接已复制'),
+      () => message.error('复制失败，请手动复制'),
+    );
   }, [shareUrl]);
 
   const handleGoToView = useCallback(() => {
@@ -159,6 +159,8 @@ export default function PublishDialog({ uid, title, visible, onClose }: PublishD
     </Modal>
   );
 }
+
+// 缺陷5 的 fallback 实现统一抽到 utils/clipboard, 见 import copyText.
 
 // ---------------------------------------------------------------------------
 // Styles

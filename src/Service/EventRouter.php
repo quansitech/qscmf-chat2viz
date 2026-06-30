@@ -127,6 +127,56 @@ class EventRouter
             $widgets = [];
         }
         $accumulator->accumulateDashboardReplace($conversation_id, $layout, $widgets);
+
+        // declarative-frontend-adapter: backfill each widget's non-empty sql into
+        // dashboard.current_schema via updateWidgetSql (sourced from
+        // DASHBOARD_REPLACE.widgets[wid].sql). Without this, widget cards lack SQL
+        // and WidgetDataFetcher won't auto-fetch data on first refresh. The old
+        // per-event backfillWidgetSql (sourced from sql_generated) was deleted with
+        // the whole-tree refactor; this is its whole-tree successor.
+        $this->backfillWidgetSqlFromWidgets($widgets);
+    }
+
+    /**
+     * Backfill non-empty widget sql into current_schema.
+     *
+     * Iterates the widgets map from a DASHBOARD_REPLACE frame and, for each widget
+     * carrying a non-empty 'sql', persists it via the repository's updateWidgetSql.
+     * Skipped entirely when this router has no dashboard uid (e.g. transient mock
+     * / no-persist contexts) — matches the old backfillWidgetSql guard.
+     *
+     * @param array<string, array{widget_id?: string, sql?: string}> $widgets
+     */
+    private function backfillWidgetSqlFromWidgets(array $widgets): void
+    {
+        if ($this->dashboardUid === '') {
+            return;
+        }
+        foreach ($widgets as $wid => $widget) {
+            if (!is_array($widget)) {
+                continue;
+            }
+            $sql = $widget['sql'] ?? '';
+            if (!is_string($sql) || $sql === '') {
+                continue;
+            }
+            // widget_id preferred; fall back to the map key (the LLM uses the
+            // widget_id both as the JSON key and the widget_id field).
+            $widgetId = isset($widget['widget_id']) && is_string($widget['widget_id']) && $widget['widget_id'] !== ''
+                ? $widget['widget_id']
+                : (string) $wid;
+            // code-review MED: 回填是 best-effort, DB 写失败绝不能中断整条 SSE 流.
+            try {
+                $this->dashboardRepo->updateWidgetSql($this->dashboardUid, $widgetId, $sql);
+            } catch (\Throwable $e) {
+                ($this->logger)('backfillWidgetSql failed', sprintf(
+                    'uid=%s widget=%s err=%s',
+                    $this->dashboardUid,
+                    $widgetId,
+                    $e->getMessage(),
+                ));
+            }
+        }
     }
 
     /**

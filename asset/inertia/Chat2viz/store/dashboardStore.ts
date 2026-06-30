@@ -127,6 +127,7 @@ export interface ChatMessage {
   content: string;
   timestamp: string;
   message_status?: MessageStatus;
+  thought?: string;
   metadata?: {
     sql?: string;
     g2_spec?: Record<string, unknown>;
@@ -230,6 +231,7 @@ export interface DashboardActions {
   markWidgetUserSized: (widgetId: string) => void;
   executeAction: (action: ActionCall) => void;
   appendAnswer: (text: string) => void;
+  appendThought: (text: string) => void;
   setSql: (widgetId: string, sql: string) => void;
   /** Set the dashboard page title (update_page_title / WIDGET_UPDATE set_title). */
   setTitle: (title: string) => void;
@@ -399,6 +401,18 @@ const _store = _create()(
               .find((m) => m.role === 'assistant');
             if (lastAssistant) {
               lastAssistant.content += text;
+            }
+            state.isDirty = true;
+          });
+        },
+
+        appendThought: (text: string) => {
+          set((state) => {
+            const lastAssistant = [...state.messages]
+              .reverse()
+              .find((m) => m.role === 'assistant');
+            if (lastAssistant) {
+              lastAssistant.thought = (lastAssistant.thought || '') + text;
             }
             state.isDirty = true;
           });

@@ -112,4 +112,61 @@ class EventRouterAnswerTest extends TestCase
 
         $this->assertSame('第一段。第二段。', $log['cid'] ?? null);
     }
+
+    // fix-declarative-replace-regressions: handleDashboardReplace MUST backfill
+    // each widget's non-empty sql into dashboard.current_schema via
+    // updateWidgetSql — the whole-tree successor to the deleted backfillWidgetSql
+    // (sourced from DASHBOARD_REPLACE.widgets[wid].sql). Without this, widget
+    // cards lack SQL and WidgetDataFetcher won't auto-fetch data on first refresh.
+    public function testDashboardReplaceBackfillsWidgetSqlIntoCurrentSchema(): void
+    {
+        $calls = [];
+        $log = [];
+        $acc = $this->makeAccumulator($log);
+        $router = $this->makeRecordingRouter($calls);
+
+        $router->routeEvent($acc, 'cid', new SseEvent(
+            type: 'DASHBOARD_REPLACE',
+            data: [
+                'layout' => [],
+                'widgets' => [
+                    'w1' => ['widget_id' => 'w1', 'sql' => 'SELECT 1'],
+                    'w2' => ['widget_id' => 'w2', 'sql' => ''],
+                    'w3' => ['widget_id' => 'w3'],
+                ],
+                'answer' => 'ok',
+            ],
+            raw: '',
+        ));
+
+        // Only w1 has a non-empty sql → exactly one updateWidgetSql call.
+        $this->assertCount(1, $calls);
+        $this->assertSame(['test-dash-uid', 'w1', 'SELECT 1'], $calls[0]);
+    }
+
+    /**
+     * Router whose repo records every updateWidgetSql(uid, widgetId, sql) call.
+     */
+    private function makeRecordingRouter(array &$calls): EventRouter
+    {
+        $repo = new class($calls) implements \Qscmf\Chat2Viz\Repository\DashboardRepositoryInterface {
+            public array $calls;
+            public function __construct(array &$c) { $this->calls = &$c; }
+            public function list(int $page, int $perPage, array $filters = []): array { return []; }
+            public function findByUid(string $uid): ?array { return null; }
+            public function create(array $data): array { return []; }
+            public function update(string $uid, array $data): array { return []; }
+            public function archive(string $uid): bool { return true; }
+            public function delete(string $uid): bool { return true; }
+            public function publish(string $uid, ?int $publishedBy = null, string $title = ''): array { return []; }
+            public function getPublishedSchema(string $uid): ?array { return null; }
+            public function getVersions(string $uid, int $page = 1, int $perPage = 20): array { return []; }
+            public function updateWidgetSql(string $uid, string $widgetId, string $sql): void
+            {
+                $this->calls[] = [$uid, $widgetId, $sql];
+            }
+            public function executeRawQuery(string $sql): array { return []; }
+        };
+        return new EventRouter($repo, 'test-dash-uid');
+    }
 }

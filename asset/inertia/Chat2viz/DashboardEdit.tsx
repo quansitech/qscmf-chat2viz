@@ -454,6 +454,7 @@ function DashboardEditInner() {
             <Button
               type="text"
               icon={<ArrowLeftOutlined />}
+              aria-label="返回列表"
               onClick={() => navigate(`${ADMIN_BASE}/index`)}
             />
           </Tooltip>
@@ -501,6 +502,7 @@ function DashboardEditInner() {
               className="chat-collapse-btn"
               shape="circle"
               icon={<MessageOutlined />}
+              aria-label="收起对话区"
               onClick={() => setChatCollapsed(true)}
               disabled={streamingState !== 'idle'}
               style={{
@@ -526,6 +528,7 @@ function DashboardEditInner() {
             type="primary"
             shape="circle"
             icon={<MessageOutlined />}
+            aria-label="展开对话区"
             onClick={() => setChatCollapsed(false)}
             style={{
               ...styles.fab,

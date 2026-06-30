@@ -402,7 +402,15 @@ class ThinkModelDashboardRepository implements DashboardRepositoryInterface
         $widgets = $schema['widgets'] ?? [];
         $found = false;
         foreach ($widgets as $index => $widget) {
-            if (is_array($widget) && ($widget['id'] ?? '') === $widgetId) {
+            // code-review HIGH-1: 兼容 current_schema.widgets 的两种持久化形态——
+            // 整树数组形态 {id, sql, g2_spec}(PublicSchemaSanitizer/WidgetDataService
+            // 都按 id 匹配)与 SSE 帧的 map 形态 {widget_id, sql}。回填源
+            // (EventRouter::backfillWidgetSqlFromWidgets)从 DASHBOARD_REPLACE 帧取
+            // widget_id 字段,而持久化数组用 id 字段;两者值通常相同(都 'w1'),
+            // 但字段名不同时按单一键匹配会静默 no-op。同时匹配两键保证回填真正落地。
+            if (is_array($widget)
+                && (($widget['id'] ?? '') === $widgetId
+                    || ($widget['widget_id'] ?? '') === $widgetId)) {
                 $widgets[$index]['sql'] = $sql;
                 $found = true;
                 break;

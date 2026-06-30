@@ -24,6 +24,9 @@ asset/chat2viz-dashboard/*.css
 asset/chat2viz-dashboard/*.LICENSE.txt
 # Source maps (contain original source — never commit)
 asset/chat2viz-dashboard/*.js.map
+asset/chat2viz-dashboard/*.css.map
+# Playwright/test runner output (regenerated each run)
+asset/chat2viz-dashboard/test-results/
 
 # Frontend dependencies
 frontend/node_modules/

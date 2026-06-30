@@ -266,7 +266,10 @@ class EloquentDashboardRepository implements DashboardRepositoryInterface
         $widgets = $schema['widgets'] ?? [];
         $found = false;
         foreach ($widgets as $index => $widget) {
-            if (is_array($widget) && ($widget['id'] ?? '') === $widgetId) {
+            // code-review HIGH-1: 兼容 id / widget_id 两种持久化形态(见 ThinkModel 同名方法注释)。
+            if (is_array($widget)
+                && (($widget['id'] ?? '') === $widgetId
+                    || ($widget['widget_id'] ?? '') === $widgetId)) {
                 $widgets[$index]['sql'] = $sql;
                 $found = true;
                 break;

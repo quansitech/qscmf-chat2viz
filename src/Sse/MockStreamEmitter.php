@@ -146,8 +146,44 @@ class MockStreamEmitter
 
     // ── Mock SSE event emitters per intent ───────────────────────────────
 
+    /**
+     * 缺陷2: 流式发射 reasoning(思考过程)事件, 分多个增量帧.
+     *
+     * 与真实 Python 服务(qs-chat2viz app/agent/sinks.php:283
+     * sse_frame("reasoning", {"text": text})) 的形状一致 —— 每帧 {text: 片段}.
+     * 前端 useSseStream 的 case 'reasoning' → store.appendThought → ChatPanel
+     * "💭 AI 思考过程" 折叠面板由此接通. 调用方必须在 answer/DASHBOARD_REPLACE
+     * 之前发射(真实场景中思考先于回答/图表).
+     *
+     * 分 2-3 帧而非一帧, 是为了模拟真实 token 流的增量累积(appendThought 是
+     * 追加语义), 让前端的光标闪烁 / 折叠面板实时更新效果可被肉眼验证.
+     */
+    private function emitMockReasoning(SseWriter $writer, string $question): void
+    {
+        $questionLabel = trim($question) !== '' ? '「' . mb_substr($question, 0, 24) . '」' : '该问题';
+        $chunks = [
+            '用户想要分析' . $questionLabel . '，我需要先确定涉及哪些表。' . "\n",
+            '检查可用表结构，选择合适的聚合维度，生成对应的 SQL。' . "\n",
+            '生成图表配置并执行查询…',
+        ];
+        foreach ($chunks as $chunk) {
+            $writer->sendEvent(new SseEvent(
+                type: 'reasoning',
+                data: ['text' => $chunk],
+                raw: '',
+            ));
+        }
+    }
+
     private function emitMockQuery(SseWriter $writer, string $question): void
     {
+        // 缺陷2: 发射增量 reasoning 事件, 让前端的"💭 AI 思考过程"流式面板在
+        // mock 模式下可验证. 与真实 Python 服务(qs-chat2viz sinks.py 的
+        // sse_frame("reasoning", {"text":...})) 形状一致 —— 前端 useSseStream 的
+        // case 'reasoning' → appendThought → ChatPanel thought Collapse 由此接通.
+        // 必须在 answer/DASHBOARD_REPLACE 之前发射(真实场景思考先于回答).
+        $this->emitMockReasoning($writer, $question);
+
         $writer->sendEvent(new SseEvent(type: 'answer', data: ['text' => '正在分析'], raw: ''));
 
         $sql = 'SELECT category, COUNT(*) AS cnt FROM qs_film GROUP BY category ORDER BY cnt DESC';
@@ -288,6 +324,9 @@ class MockStreamEmitter
 
     private function emitMockAddChart(SseWriter $writer, string $question): void
     {
+        // 缺陷2: 生成路径也流式发射思考过程(见 emitMockQuery 的说明).
+        $this->emitMockReasoning($writer, $question);
+
         $writer->sendEvent(new SseEvent(type: 'answer', data: ['text' => '正在生成新图表...'], raw: ''));
 
         $sql = 'SELECT year, SUM(revenue) AS revenue FROM qs_film_yearly GROUP BY year ORDER BY year';

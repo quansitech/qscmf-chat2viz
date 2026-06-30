@@ -273,6 +273,19 @@ export function useSseStream() {
     if (abortRef.current) {
       abortRef.current.abort();
       abortRef.current = null;
+      // code-review HIGH-3: 仅当确实处于流式生成(submitted/streaming)且最后一条
+      // assistant 仍是 streaming 态时, 才标 interrupted —— 否则会把"错误关闭时
+      // 历史里已成功的 assistant 消息"误标成已中断。错误 Alert 关闭也调 cancel,
+      // 此时若最后 assistant 已是完成态(idle/无 status), 不应改动它。
+      const state = useDashboardStore.getState();
+      const lastAssistant = [...state.messages].reverse().find((m) => m.role === 'assistant');
+      const inFlight = state.streamingState === 'submitted' || state.streamingState === 'streaming';
+      if (inFlight && lastAssistant && (lastAssistant.message_status === 'streaming' || lastAssistant.message_status === undefined)) {
+        useDashboardStore.setState((s) => {
+          const la = [...s.messages].reverse().find((m) => m.role === 'assistant');
+          if (la) la.message_status = 'interrupted';
+        });
+      }
       useDashboardStore.getState().completeConversation();
     }
   }, []);
@@ -464,6 +477,15 @@ function dispatchEvent(event: SseEvent | null): boolean {
       // First real frame — flip 'submitted' → 'streaming'.
       useDashboardStore.getState().markStreaming();
       store.appendAnswer(str(event.data.text));
+      break;
+    }
+
+    case 'reasoning': {
+      // thought/answer split: ReAct 推理过程(如"先查一下表结构")累积到
+      // message.thought,供可折叠"AI 思考过程"面板展示。不影响 answer 通道。
+      // markStreaming 让 submitted watchdog 在首帧 reasoning 时就清除(不再超时)。
+      useDashboardStore.getState().markStreaming();
+      store.appendThought(str(event.data.text));
       break;
     }
 

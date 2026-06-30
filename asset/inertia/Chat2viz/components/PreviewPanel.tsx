@@ -184,8 +184,10 @@ export default function PreviewPanel({ showSql = false }: PreviewPanelProps) {
         }}
         compactType={COMPACT_TYPE}
         draggableHandle=".widget-header"
-        isResizable={true}
-        isDraggable={true}
+        // 流式生成期间禁止拖拽/缩放: AI 基于旧 schema 生成新图表时, 用户若同时
+        // 手动改动已有图表会与 AI 的整树替换冲突, 导致布局/状态错乱.
+        isResizable={streamingState === 'idle'}
+        isDraggable={streamingState === 'idle'}
         margin={[12, 12]}
         useCSSTransforms={true}
       >
@@ -203,18 +205,30 @@ export default function PreviewPanel({ showSql = false }: PreviewPanelProps) {
           </div>
         ))}
       </ResponsiveGridLayout>
+      {/*
+        流式生成期间整个图表区域显示 loading 遮罩:
+          - 主防线(功能层): RGL isDraggable/isResizable={false}(见上方) +
+            WidgetCard 删除/刷新按钮禁用, 从根上阻止拖拽/缩放/删除.
+          - 视觉层(本遮罩): 整个图表区半透明蒙层 + 居中大 Spin + 文案, 明确告诉
+            用户"AI 正在生成, 请稍候". 蒙层覆盖容器可视区, 因画布已锁定用户无需
+            滚动查看具体内容; 交互阻断由主防线负责, 不依赖本蒙层拦指针.
+      */}
       {streamingState !== 'idle' && hasWidgets && (
         <div style={{
           position: 'absolute',
           top: 0, left: 0, right: 0, bottom: 0,
-          background: 'rgba(255, 255, 255, 0.6)',
+          background: 'rgba(255, 255, 255, 0.75)',
           display: 'flex',
+          flexDirection: 'column',
           alignItems: 'center',
           justifyContent: 'center',
-          cursor: 'not-allowed',
-          zIndex: 10,
+          gap: 12,
+          zIndex: 20,
         }}>
-          <Spin tip="AI 正在生成图表..." />
+          <Spin size="large" />
+          <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+            AI 正在生成图表，请稍候…
+          </Typography.Text>
         </div>
       )}
       <style>{widgetFadeInCss}</style>

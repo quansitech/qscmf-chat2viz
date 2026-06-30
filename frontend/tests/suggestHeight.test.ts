@@ -11,7 +11,7 @@ describe('suggestHeight — content-aware widget height (议题4c)', () => {
   it('scales table height with row count, clamped to [5, 16]', () => {
     const tableSpec = { type: 'table' };
     expect(suggestHeight({ spec: tableSpec, data: [] })).toBe(5);
-    expect(suggestHeight({ spec: tableSpec, data: Array(8) })).toBe(4); // 2 + ceil(8/4) = 4 → clamped to 5
+    expect(suggestHeight({ spec: tableSpec, data: Array(8) })).toBe(5); // 2 + ceil(8/4) = 4 → clamped up to 5 (源码 Math.max(5, ...))
     expect(suggestHeight({ spec: tableSpec, data: Array(20) })).toBe(7); // 2 + 5
     expect(suggestHeight({ spec: tableSpec, data: Array(200) })).toBe(16); // clamped
   });

@@ -40,7 +40,7 @@ class StreamAccumulator
      * documented as lossy in the degraded path (see redis-degrade-persistence
      * spec). SQL now lives inside widgets, so the fallback no longer carries it.
      */
-    private array $fallbackBuffer = ['content' => ''];
+    private array $fallbackBuffer = ['content' => '', 'widgets' => null];
 
     public function __construct()
     {
@@ -84,12 +84,19 @@ class StreamAccumulator
      * NOT the cache-reuse boundary (the frontend is). Each call replaces the
      * prior tree entirely (whole-tree semantics, contract §2).
      *
-     * Falls back to no-op if Redis is unavailable (lossy degrade, like every
-     * other accumulate* method).
+     * Falls back to the request-scoped fallback buffer if Redis is unavailable:
+     * fix-declarative-replace-regressions — the whole-tree widgets map (which
+     * carries each widget's sql/g2_spec/data) is kept so SQL+charts survive a
+     * Redis outage and can be persisted via finalizeStream. This is the
+     * whole-tree successor to the legacy standalone `sql` fallback. Whole-tree
+     * overlay semantics (latest frame overwrites the prior tree, not append).
      */
     public function accumulateDashboardReplace(string $conversationId, array $layout, array $widgets): void
     {
         if (!$this->ensureRedis($conversationId)) {
+            // Degraded path: overlay the latest tree into the fallback buffer.
+            // layout is intentionally lossy here (frontend has suggestHeight).
+            $this->fallbackBuffer['widgets'] = $widgets;
             return;
         }
 
@@ -220,12 +227,19 @@ class StreamAccumulator
 
         if (!$this->redisAvailable) {
             // fix-redis-degrade: serve from the fallback buffer so the reply text
-            // survives even when Redis is down for the whole request. Widgets are
-            // lossy in the degraded path (sql now lives inside widgets, so there
-            // is no standalone sql to carry either).
+            // survives even when Redis is down for the whole request.
+            // fix-declarative-replace-regressions: the most recent whole-tree
+            // widgets map is also kept (each widget's sql/g2_spec/data lives
+            // inside it), so the reply's charts + SQL survive a Redis outage
+            // and can be persisted via finalizeStream. layout remains lossy
+            // (frontend has suggestHeight fallback).
+            $metadata = [];
+            if (!empty($this->fallbackBuffer['widgets'])) {
+                $metadata['widgets'] = $this->fallbackBuffer['widgets'];
+            }
             return [
                 'content'           => $this->fallbackBuffer['content'],
-                'metadata'          => [],
+                'metadata'          => $metadata,
                 'reasoning_content' => '',
                 'tool_calls'        => [],
             ];

@@ -110,26 +110,37 @@ export default function WidgetCard({ widget, onTitleChange, onRemove, onRefresh,
           )}
         </div>
         <div style={styles.headerActions}>
-          {onRefresh && status === 'chart' && (
-            <Tooltip title="刷新该图表数据">
-              {refreshing ? (
-                <LoadingOutlined style={styles.iconBtn} spin />
-              ) : (
-                <ReloadOutlined
-                  onClick={() => onRefresh(widget.id)}
-                  style={styles.iconBtn}
-                />
-              )}
-            </Tooltip>
-          )}
-          <Popconfirm
-            title="确定移除该图表？"
-            onConfirm={() => onRemove(widget.id)}
-            okText="移除"
-            cancelText="取消"
-          >
-            <DeleteOutlined style={styles.iconBtn} />
-          </Popconfirm>
+          {/* 流式生成期间禁用刷新/删除: 防止用户改动已有图表与 AI 的整树替换冲突.
+              用 locked 标志统一降透明度 + 拦截指针(antd 图标无 disabled prop). */}
+          {(() => {
+            const locked = streamingState !== 'idle';
+            const lockStyle = locked ? { ...styles.iconBtn, opacity: 0.35, pointerEvents: 'none' as const, cursor: 'not-allowed' as const } : styles.iconBtn;
+            return (
+              <>
+                {onRefresh && status === 'chart' && (
+                  <Tooltip title={locked ? 'AI 生成中，暂不可操作' : '刷新该图表数据'}>
+                    {refreshing ? (
+                      <LoadingOutlined style={lockStyle} spin />
+                    ) : (
+                      <ReloadOutlined
+                        onClick={() => !locked && onRefresh(widget.id)}
+                        style={lockStyle}
+                      />
+                    )}
+                  </Tooltip>
+                )}
+                <Popconfirm
+                  title="确定移除该图表？"
+                  onConfirm={() => onRemove(widget.id)}
+                  okText="移除"
+                  cancelText="取消"
+                  disabled={locked}
+                >
+                  <DeleteOutlined style={lockStyle} />
+                </Popconfirm>
+              </>
+            );
+          })()}
         </div>
       </div>
 

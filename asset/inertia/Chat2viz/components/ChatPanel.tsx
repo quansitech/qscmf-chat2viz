@@ -5,6 +5,7 @@ import ReactMarkdown from 'react-markdown';
 import rehypeSanitize from 'rehype-sanitize';
 import { useDashboardStore } from '../store/dashboardStore';
 import { useSseStream } from '../hooks/useSseStream';
+import { copyText } from '../utils/clipboard';
 import type { ChatMessage } from '../store/dashboardStore';
 
 // ---------------------------------------------------------------------------
@@ -65,13 +66,6 @@ const CHAT_MARKDOWN_CSS = `
 .chat-markdown a { word-break: break-all; }
 .chat-markdown img { max-width: 100%; }
 `;
-
-/** Selector: does the last assistant message have content? */
-function selectLastAssistantHasContent(s: { messages: ChatMessage[] }): boolean {
-  const msgs = s.messages;
-  const last = [...msgs].reverse().find((m) => m.role === 'assistant');
-  return !!last?.content;
-}
 
 // ---------------------------------------------------------------------------
 // AiStepsIndicator — renders progress badges from store.aiSteps
@@ -154,11 +148,9 @@ function AiStepsIndicator() {
 
 interface ChatPanelProps {
   disabled?: boolean;
-  /** Feature flag: show the "查询语句" panel in assistant bubbles (env-driven). */
-  showSql?: boolean;
 }
 
-export default function ChatPanel({ disabled = false, showSql = false }: ChatPanelProps) {
+export default function ChatPanel({ disabled = false }: ChatPanelProps) {
   const messages = useDashboardStore((s) => s.messages);
   const isLoading = useDashboardStore((s) => s.isLoading);
   const streamingState = useDashboardStore((s) => s.streamingState);
@@ -169,11 +161,15 @@ export default function ChatPanel({ disabled = false, showSql = false }: ChatPan
   // (WIDGET_ERROR) are surfaced inside each WidgetCard and MUST NOT set this.
   const globalError = useDashboardStore((s) => s.error);
   const { sendQuestion, cancel } = useSseStream();
-  const lastAssistantHasContent = useDashboardStore(selectLastAssistantHasContent);
 
   const [inputValue, setInputValue] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textAreaRef = useRef<{ focus: () => void; resizableTextArea?: { textArea: HTMLTextAreaElement } } | null>(null);
+  // UX-H2: 智能滚动. 用 ref 跟踪"用户是否贴底", 仅在贴底时自动滚动 —— 否则流式
+  // token 到达会把正在向上翻阅历史的用户强行拽回底部. ref 而非 state: 避免每次
+  // scroll 事件触发 re-render (平滑滚动 + 流式 appendAnswer 已足够频繁).
+  const messageListRef = useRef<HTMLDivElement>(null);
+  const isAtBottomRef = useRef(true);
 
   /** Refocus the input so the user can keep typing the next question. */
   const refocusInput = useCallback(() => {
@@ -185,8 +181,15 @@ export default function ChatPanel({ disabled = false, showSql = false }: ChatPan
   // History still loading → block sending until the conversation is hydrated.
   const historyLoading = historyStatus === 'loading';
 
-  // ---- Auto-scroll to bottom on new messages ----
+  // UX-H2: 主动发送(用户发起提问)时强制贴底 —— 自己发的问题当然要看回复.
+  const forceScrollToBottom = useCallback(() => {
+    isAtBottomRef.current = true;
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, []);
+
+  // ---- Auto-scroll to bottom on new messages (仅当用户已贴底) ----
   useEffect(() => {
+    if (!isAtBottomRef.current) return;
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
@@ -196,10 +199,12 @@ export default function ChatPanel({ disabled = false, showSql = false }: ChatPan
     if (!question || isLoading) return;
     setInputValue('');
     sendQuestion(question);
+    // 用户主动发送 → 强制滚到底部看回复.
+    forceScrollToBottom();
     // Keep focus in the input so the user can immediately type the next
     // follow-up question (industry convention for chat inputs).
     refocusInput();
-  }, [inputValue, isLoading, sendQuestion, refocusInput]);
+  }, [inputValue, isLoading, sendQuestion, refocusInput, forceScrollToBottom]);
 
   // ---- Enter to send, Shift+Enter for newline ----
   const handleKeyDown = useCallback(
@@ -213,13 +218,27 @@ export default function ChatPanel({ disabled = false, showSql = false }: ChatPan
   );
 
   // ---- Example question click ----
+  // UX-H5: 与 handleSend 同样的守卫 —— 流式中(isLoading/streamingState!=='idle')
+  // 不允许再发, 否则并发两个 SSE 会留下孤儿空 assistant 气泡(useSseStream 的 abort
+  // 只中断 fetch, 不清 startConversation 已 push 的消息).
+  const isBusy = isLoading || streamingState !== 'idle' || historyLoading;
   const handleExampleClick = useCallback(
     (q: string) => {
+      if (isBusy) return;
       setInputValue('');
       sendQuestion(q);
+      forceScrollToBottom();
     },
-    [sendQuestion],
+    [sendQuestion, isBusy, forceScrollToBottom],
   );
+
+  // UX-H2: scroll 事件维护 isAtBottomRef. 阈值 80px 容忍平滑滚动的微小偏差.
+  const handleMessageListScroll = useCallback(() => {
+    const el = messageListRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    isAtBottomRef.current = distanceFromBottom < 80;
+  }, []);
 
   const hasMessages = messages.length > 0;
 
@@ -252,7 +271,14 @@ export default function ChatPanel({ disabled = false, showSql = false }: ChatPan
             showIcon
             message={globalError}
             closable
-            onClose={() => useDashboardStore.setState({ error: '' })}
+            onClose={() => {
+              // UX-H3: 关闭错误提示时, 不只清 error 文本 —— setError 把
+              // streamingState 设成了 'error' 且永不复位, 导致发送键卡成"停止"、
+              // 关掉 Alert 也无法发新问题. 这里同时 cancel()(中断可能仍在跑的
+              // in-flight fetch) 并复位 idle, 恢复可发送状态.
+              cancel();
+              useDashboardStore.setState({ error: '', streamingState: 'idle', isLoading: false });
+            }}
           />
         </div>
       )}
@@ -261,13 +287,18 @@ export default function ChatPanel({ disabled = false, showSql = false }: ChatPan
       {hasMessages && (
         <div style={styles.panelHeader}>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {messages.length} messages
+            {/* UX-M2: 中文化, 且只统计真实消息(user/assistant), 排除 system 占位. */}
+            {messages.filter((m) => m.role === 'user' || m.role === 'assistant').length} 条对话
           </Typography.Text>
         </div>
       )}
 
       {/* ---- Message List ---- */}
-      <div style={styles.messageList}>
+      <div
+        ref={messageListRef}
+        onScroll={handleMessageListScroll}
+        style={styles.messageList}
+      >
         {!hasMessages && (
           <div style={styles.emptyState}>
             <Empty
@@ -276,8 +307,14 @@ export default function ChatPanel({ disabled = false, showSql = false }: ChatPan
                 <div>
                   <Typography.Text type="secondary">向数据提问</Typography.Text>
                   <div style={styles.examples}>
+                    {/* UX-H5: 流式中也禁用示例按钮(disabled||isBusy), 避免并发提问. */}
                     {EXAMPLE_QUESTIONS.map((q) => (
-                      <button key={q} onClick={() => !disabled && handleExampleClick(q)} disabled={disabled} style={{ ...styles.exampleBtn, opacity: disabled ? 0.5 : 1, cursor: disabled ? 'not-allowed' : 'pointer' }}>
+                      <button
+                        key={q}
+                        onClick={() => !disabled && !isBusy && handleExampleClick(q)}
+                        disabled={disabled || isBusy}
+                        style={{ ...styles.exampleBtn, opacity: (disabled || isBusy) ? 0.5 : 1, cursor: (disabled || isBusy) ? 'not-allowed' : 'pointer' }}
+                      >
                         {q}
                       </button>
                     ))}
@@ -289,7 +326,7 @@ export default function ChatPanel({ disabled = false, showSql = false }: ChatPan
         )}
 
         {messages.map((msg) => (
-          <MessageBubble key={msg.id} message={msg} showSql={showSql} />
+          <MessageBubble key={msg.id} message={msg} />
         ))}
 
         <AiStepsIndicator />
@@ -302,7 +339,12 @@ export default function ChatPanel({ disabled = false, showSql = false }: ChatPan
 
         <style>{CHAT_MARKDOWN_CSS}</style>
         <div ref={messagesEndRef} />
-        {streamingState !== 'idle' && lastAssistantHasContent && (
+        {/* 缺陷3: TYPING_CURSOR_CSS 同时承载 .typing-cursor 光标与 .typing-dots 三点
+            loading 的样式/动画(见 line 22 的 CSS 字符串). submitted 态(首帧未到)时
+            AiStepsIndicator 渲染了三点 <span>, 但若按 lastAssistantHasContent(此时为
+            false) 门控注入 CSS, 三点会退化成无样式无动画的隐形 span —— 用户看不到
+            "正在思考". 因此只要 streamingState !== 'idle' 就注入, 首帧前三点立即可见. */}
+        {streamingState !== 'idle' && (
           <style>{TYPING_CURSOR_CSS}</style>
         )}
       </div>
@@ -340,10 +382,9 @@ export default function ChatPanel({ disabled = false, showSql = false }: ChatPan
 
 interface MessageBubbleProps {
   message: ChatMessage;
-  showSql?: boolean;
 }
 
-function MessageBubble({ message, showSql = false }: MessageBubbleProps) {
+function MessageBubble({ message }: MessageBubbleProps) {
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
 
@@ -374,12 +415,13 @@ function MessageBubble({ message, showSql = false }: MessageBubbleProps) {
   const handleRetry = useCallback(async () => {
     const cur = useDashboardStore.getState();
     const msgs = cur.messages;
-    // 找最后一条 assistant 之前的 user 问题(即触发本轮回复的问题)
+    // 找最后一条 user 问题及其下标(即触发本轮回复的问题).
+    let lastUserIndex = -1;
     let lastUserQuestion = '';
     for (let i = msgs.length - 1; i >= 0; i--) {
-      if (msgs[i].role === 'user') { lastUserQuestion = msgs[i].content; break; }
+      if (msgs[i].role === 'user') { lastUserIndex = i; lastUserQuestion = msgs[i].content; break; }
     }
-    if (!lastUserQuestion) return;
+    if (lastUserIndex < 0 || !lastUserQuestion) return;
 
     // 先调后端清理上一轮消息对(dashboard 所有权校验在后端完成)。
     // 失败则不删前端 store、不重试,避免脏数据退回到原 bug。
@@ -404,9 +446,12 @@ function MessageBubble({ message, showSql = false }: MessageBubbleProps) {
       return;
     }
 
-    // 后端成功后才删前端 store 的本轮两条并重新发送。
+    // 后端成功后才删前端 store 的本轮消息并重新发送.
+    // UX-H4: 旧实现无脑 slice(0, -2) 假定尾部正好是 [user, assistant] —— 但流式中断/
+    // tool 消息/历史过滤异常时尾部可能不是这一对, 会误删(删掉 user 留下孤立 assistant,
+    // 或删掉两轮 assistant). 改为定位最后一条 user 的下标精准切片.
     useDashboardStore.setState((state) => ({
-      messages: state.messages.slice(0, -2),
+      messages: state.messages.slice(0, lastUserIndex),
     }));
     sendQuestion(lastUserQuestion);
   }, [sendQuestion]);
@@ -450,23 +495,11 @@ function MessageBubble({ message, showSql = false }: MessageBubbleProps) {
   const handleCopyAnswer = () => {
     const text = message.content ?? '';
     if (!text) return;
-    const done = () => notify.success('已复制回答', 1.2);
-    if (navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
-    } else {
-      fallbackCopy(text, done);
-    }
-  };
-  // Copy the SQL statement (debugging convenience when show_sql is on).
-  const handleCopySql = () => {
-    const sql = message.metadata?.sql ?? '';
-    if (!sql) return;
-    const done = () => notify.success('已复制查询语句', 1.2);
-    if (navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(sql).then(done).catch(() => fallbackCopy(sql, done));
-    } else {
-      fallbackCopy(sql, done);
-    }
+    // 统一走 utils/clipboard 的 fallback(HTTP 非安全上下文也能复制).
+    copyText(text,
+      () => notify.success('已复制回答', 1.2),
+      () => notify.error('复制失败，请手动复制', 1.2),
+    );
   };
 
   // Show the copy-answer button only for completed assistant bubbles.
@@ -476,21 +509,61 @@ function MessageBubble({ message, showSql = false }: MessageBubbleProps) {
     <div style={{ ...styles.bubbleRow, justifyContent: isUser ? 'flex-end' : 'flex-start' }}>
       <div style={isUser ? styles.userBubble : styles.assistantBubble}>
         {/* Status indicators for non-complete messages */}
+        {/* UX-M1: 中文化(其余 UI 全是中文, 这三个英文标签很突兀). */}
         {!isUser && status === 'streaming' && (
-          <Tag color="processing" style={styles.statusTag}>AI was generating...</Tag>
+          <Tag color="processing" style={styles.statusTag}>生成中…</Tag>
         )}
         {!isUser && status === 'interrupted' && (
-          <Tag color="warning" style={styles.statusTag}>Interrupted</Tag>
+          <Tag color="warning" style={styles.statusTag}>已中断</Tag>
         )}
         {!isUser && status === 'failed' && (
-          <Tag color="error" style={styles.statusTag}>Failed</Tag>
+          <Tag color="error" style={styles.statusTag}>生成失败</Tag>
         )}
 
         {/* Copy-answer affordance (top-right of assistant bubbles) */}
         {canCopyAnswer && (
           <Tooltip title="复制回答">
-            <CopyOutlined onClick={handleCopyAnswer} style={styles.copyBtn} />
+            <CopyOutlined
+              onClick={handleCopyAnswer}
+              style={styles.copyBtn}
+              role="button"
+              tabIndex={0}
+              aria-label="复制回答"
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleCopyAnswer(); } }}
+            />
           </Tooltip>
+        )}
+
+        {/* thought/answer split: 可折叠"AI 思考过程"面板。仅在 message.thought
+            非空时渲染(后端 reasoning 事件累积)。默认折叠,不打扰主回答流。
+            展示后用户可看到 ReAct 推理过程(如"先查一下表结构")。 */}
+        {!isUser && message.thought && (
+          <Collapse
+            ghost
+            size="small"
+            style={{ marginBottom: 4 }}
+            items={[{
+              key: 'thought',
+              label: <span style={{ fontSize: 12, color: '#999' }}>💭 AI 思考过程</span>,
+              children: (
+                <div style={{
+                  fontSize: 12,
+                  color: '#888',
+                  lineHeight: 1.6,
+                  whiteSpace: 'pre-wrap',
+                  // 长英文/代码/时间戳串(如 2006-02-15 05:03:42、release_year、
+                  // 长 SQL/路径)在 pre-wrap 下不会在空白外换行, 会水平溢出气泡
+                  // 右边界与正文重叠. 强制任意字符处可断行 + 溢出隐藏兜底.
+                  overflowWrap: 'anywhere',
+                  wordBreak: 'break-word',
+                  overflow: 'hidden',
+                }}>
+                  {message.thought}
+                  {streamingState !== 'idle' && <span className="typing-cursor" />}
+                </div>
+              ),
+            }]}
+          />
         )}
 
         {/* DEF-12: render AI answer as markdown (bold, lists, code) via
@@ -504,6 +577,15 @@ function MessageBubble({ message, showSql = false }: MessageBubbleProps) {
               {message.content}
             </ReactMarkdown>
             {showCursor && <span className="typing-cursor" />}
+          </div>
+        )}
+
+        {/* UX-M5: 流结束后只有 thought 没有 answer 的气泡(例如只收到 reasoning
+            帧就中断)会只剩一个"💭 AI 思考过程"折叠面板、主回答区空白, 看起来坏掉.
+            已完成(idle)且无 content 时给一条兜底提示, 区分于正常空状态. */}
+        {!isUser && !message.content && streamingState === 'idle' && (
+          <div style={{ ...styles.bubbleContent, color: '#999', fontStyle: 'italic' }}>
+            AI 未返回回答内容，请重试或换个问法。
           </div>
         )}
 
@@ -552,52 +634,12 @@ function MessageBubble({ message, showSql = false }: MessageBubbleProps) {
             )}
           </div>
         )}
-
-        {/* SQL collapse — hidden unless the CHAT2VIZ_SHOW_SQL feature flag is on */}
-        {showSql && message.metadata?.sql && (
-          <Collapse
-            ghost
-            size="small"
-            style={{ marginTop: 4 }}
-            items={[
-              {
-                key: 'sql',
-                label: (
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                    <Typography.Text type="secondary" style={{ fontSize: 11 }}>查询语句</Typography.Text>
-                    <Tooltip title="复制 SQL">
-                      <CopyOutlined onClick={handleCopySql} style={{ fontSize: 11, color: '#999', cursor: 'pointer' }} />
-                    </Tooltip>
-                  </span>
-                ),
-                children: (
-                  <pre style={styles.sqlBlock}>{message.metadata.sql}</pre>
-                ),
-              },
-            ]}
-          />
-        )}
       </div>
     </div>
   );
 }
 
-// Legacy clipboard fallback for browsers without the async Clipboard API.
-function fallbackCopy(text: string, done: () => void): void {
-  try {
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    ta.style.position = 'fixed';
-    ta.style.opacity = '0';
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand('copy');
-    document.body.removeChild(ta);
-    done();
-  } catch {
-    notify.error('复制失败');
-  }
-}
+// clipboard fallback 已抽到 utils/clipboard.ts(统一 copyText)。
 
 // ---------------------------------------------------------------------------
 // Styles
@@ -730,15 +772,6 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 13,
     lineHeight: 1.6,
     whiteSpace: 'pre-wrap' as const,
-  },
-  sqlBlock: {
-    background: '#fff',
-    padding: 6,
-    borderRadius: 4,
-    fontSize: 11,
-    overflow: 'auto',
-    margin: 0,
-    maxHeight: 100,
   },
   statusTag: {
     fontSize: 11,

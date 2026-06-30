@@ -282,10 +282,13 @@ class ServiceTest extends TestCase
         };
     }
 
-    // ─── EventRouter::backfillWidgetSql tests ───────────────────────────────
-    // declarative-frontend-adapter: backfillWidgetSql was removed (SQL now lives
-    // inside DASHBOARD_REPLACE.widgets; the markdown-block SQL extraction
-    // fallback and per-widget SQL backfill are gone). No replacement tests.
+    // 注: 原本这里有 testEventRouterBackfill* / testEventRouterSkipsBackfill*
+    // 两个测试, 直接调用已被删除的 EventRouter::backfillWidgetSql() 方法。
+    // declarative-frontend-adapter 重构后, 回填逻辑改为 handleDashboardReplace
+    // 内部遍历 DASHBOARD_REPLACE.widgets, 对非空 sql 调 repo->updateWidgetSql
+    // (源码见 EventRouter::backfillWidgetSqlFromWidgets)。该契约现在由
+    // EventRouterAnswerTest::testDashboardReplaceBackfillsWidgetSqlIntoCurrentSchema
+    // 守护(整树回填, 而非旧的单 widget 事件), 这两个旧测试已废弃并删除。
 
     /**
      * J5 (§5): publish dialog title MUST flow through to the repository so the

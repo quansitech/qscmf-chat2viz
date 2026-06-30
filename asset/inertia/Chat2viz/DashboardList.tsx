@@ -1,9 +1,10 @@
 import { useCallback } from 'react';
-import { Button, Empty, Table, Tag, message } from 'antd';
+import { Button, Empty, Table, Tag, Tooltip, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { PlusOutlined } from '@ant-design/icons';
+import { PlusOutlined, LinkOutlined } from '@ant-design/icons';
 import { getPageProps, navigate } from './adapters';
 import { ADMIN_BASE, PUBLIC_BASE } from './utils/routes';
+import { copyText } from './utils/clipboard';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -87,7 +88,7 @@ export default function DashboardList() {
     {
       title: '操作',
       key: 'actions',
-      width: 160,
+      width: 220,
       render: (_: unknown, record: DashboardItem) => (
         <div style={{ display: 'flex', gap: 8 }}>
           <Button
@@ -103,10 +104,33 @@ export default function DashboardList() {
           >
             编辑
           </Button>
+          {/* 缺陷1: 已发布仪表盘提供"复制公开链接", 与 v13 ListBuilder 的
+              chat2viz-copy-link-btn 行为对齐. 复制走 execCommand fallback,
+              非安全上下文(HTTP)下 navigator.clipboard 缺失也能成功. */}
+          {record.dashboard_status === 'published' && (
+            <Tooltip title="复制公开链接">
+              <Button
+                size="small"
+                icon={<LinkOutlined />}
+                aria-label="复制公开链接"
+                onClick={() => copyPublicLink(record.uid)}
+              />
+            </Tooltip>
+          )}
         </div>
       ),
     },
   ];
+
+  // 缺陷1: 复制公开链接到剪贴板. 走 utils/clipboard 的统一 fallback, 保证 HTTP
+  // (非安全上下文)下 navigator.clipboard 为 undefined 时仍可复制.
+  const copyPublicLink = useCallback((uid: string) => {
+    const url = `${window.location.origin}${PUBLIC_BASE}/view/uid/${uid}`;
+    copyText(url,
+      () => message.success('公开链接已复制', 1.2),
+      () => message.error('复制失败，请手动复制', 1.2),
+    );
+  }, []);
 
   // ---- Create new dashboard ----
   const handleCreate = useCallback(async () => {

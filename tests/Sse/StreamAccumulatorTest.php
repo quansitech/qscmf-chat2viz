@@ -51,11 +51,60 @@ class StreamAccumulatorTest extends TestCase
         $flushed = $acc->flush($cid);
 
         $this->assertSame('Hello, world!', $flushed['content']);
-        // Degraded path keeps metadata empty (no widgets accumulated; sql now
-        // lives inside widgets, so the degraded path no longer carries sql).
+        // Degraded path keeps metadata empty ONLY when nothing was accumulated.
+        // (answer-only stream → no widgets → metadata still []. Widgets are
+        // asserted separately in test_accumulateDashboardReplace_fallbackKeepsWidgetsWhenRedisDown.)
         $this->assertSame([], $flushed['metadata']);
         $this->assertSame('', $flushed['reasoning_content']);
         $this->assertSame([], $flushed['tool_calls']);
+    }
+
+    // fix-declarative-replace-regressions: the degraded (Redis-down) path MUST
+    // keep the most recent whole-tree widgets map in the fallback buffer, so SQL
+    // (now living inside widgets) + chart config survive Redis failure and can be
+    // persisted via finalizeStream. This is the whole-tree successor to the
+    // legacy standalone `sql` fallback that declarative-frontend-adapter removed.
+    public function test_accumulateDashboardReplace_fallbackKeepsWidgetsWhenRedisDown(): void
+    {
+        $acc = $this->degradedAccumulator();
+        $cid = 'conv-degrade-tree';
+
+        $widgets = [
+            'w1' => ['widget_id' => 'w1', 'status' => 'success', 'sql' => 'SELECT 1', 'data' => [['x' => 1]]],
+            'w2' => ['widget_id' => 'w2', 'status' => 'success', 'data' => null],
+        ];
+
+        $acc->accumulateDashboardReplace($cid, [['i' => 'w1', 'x' => 0, 'y' => 0, 'w' => 12, 'h' => 6]], $widgets);
+        $acc->accumulateAnswer($cid, '回复文本');
+
+        $flushed = $acc->flush($cid);
+
+        // content survives (legacy behavior).
+        $this->assertSame('回复文本', $flushed['content']);
+        // widgets survive (regression fix): the whole-tree map carries each
+        // widget's sql/g2_spec/data so the reply's charts can be rebuilt from
+        // message history after a Redis outage.
+        $this->assertArrayHasKey('widgets', $flushed['metadata']);
+        $this->assertSame($widgets, $flushed['metadata']['widgets']);
+        $this->assertSame('SELECT 1', $flushed['metadata']['widgets']['w1']['sql']);
+    }
+
+    // fix-declarative-replace-regressions: whole-tree overlay semantics in the
+    // degraded path — a later DASHBOARD_REPLACE overwrites the prior tree (it
+    // does NOT append), matching the Redis-available overlay behavior.
+    public function test_accumulateDashboardReplace_fallbackOverlaysWholeTree(): void
+    {
+        $acc = $this->degradedAccumulator();
+        $cid = 'conv-degrade-overlay';
+
+        $acc->accumulateDashboardReplace($cid, [], ['w1' => ['widget_id' => 'w1', 'sql' => 'OLD']]);
+        $acc->accumulateDashboardReplace($cid, [], ['w2' => ['widget_id' => 'w2', 'sql' => 'NEW']]);
+
+        $flushed = $acc->flush($cid);
+
+        // Latest tree wins; w1 is gone (whole-tree replacement, not merge).
+        $this->assertSame(['w2'], array_keys($flushed['metadata']['widgets']));
+        $this->assertSame('NEW', $flushed['metadata']['widgets']['w2']['sql']);
     }
 
     // ─── 4.1 accumulateDashboardReplace writes widgets + layout into the hash ─
@@ -67,15 +116,20 @@ class StreamAccumulatorTest extends TestCase
         // recomputation of truncated/total). We assert by reading back via the
         // public peekField() which already reads the same hash fields.
         $acc = $this->degradedAccumulator();
-        // Redis unavailable → the call MUST no-op silently (degrade, never throw),
-        // matching the contract of every other accumulate* method.
+        // Redis unavailable → the call MUST NOT throw; it now writes the tree
+        // into the fallback buffer (fix-declarative-replace-regressions: degraded
+        // path keeps widgets so SQL/charts survive Redis failure).
+        $widgets = ['w1' => ['widget_id' => 'w1', 'title' => 'A', 'data' => null]];
         $acc->accumulateDashboardReplace('cid-tree',
             [['i' => 'w1', 'x' => 0, 'y' => 0, 'w' => 12, 'h' => 6]],
-            ['w1' => ['widget_id' => 'w1', 'title' => 'A', 'data' => null]]
+            $widgets
         );
 
-        // Degraded path is lossy for widgets — flush must not synthesize them.
-        $this->assertSame([], $acc->flush('cid-tree')['metadata']);
+        // Degraded path now carries the whole-tree widgets in metadata.
+        $flushed = $acc->flush('cid-tree');
+        $this->assertSame($widgets, $flushed['metadata']['widgets']);
+        // layout is lossy in the degraded path (frontend has suggestHeight fallback).
+        $this->assertArrayNotHasKey('layout', $flushed['metadata']);
     }
 
     // When Redis IS available, the serialized tree round-trips through flush().
