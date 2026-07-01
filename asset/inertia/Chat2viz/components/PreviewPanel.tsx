@@ -2,27 +2,12 @@ import { useCallback, useMemo, useState } from 'react';
 import { Empty, Spin, Typography } from 'antd';
 import { LayoutOutlined } from '@ant-design/icons';
 import { useQueryClient } from '@tanstack/react-query';
-import RGL, { WidthProvider, Layout } from 'react-grid-layout';
-import 'react-grid-layout/css/styles.css';
-import 'react-grid-layout/css/react-resizable.css';
+import type { Layout } from 'react-grid-layout';
+import DashboardGrid from './DashboardGrid';
 import WidgetCard from './WidgetCard';
 import { useDashboardStore } from '../store/dashboardStore';
 import { ADMIN_BASE } from '../utils/routes';
 import type { Widget, WidgetLayout } from '../store/dashboardStore';
-
-// ---------------------------------------------------------------------------
-// WidthProvider wraps RGL to auto-track container width
-// ---------------------------------------------------------------------------
-
-const ResponsiveGridLayout = WidthProvider(RGL);
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-const COLS = 24;
-const ROW_HEIGHT = 60;
-const COMPACT_TYPE: ('vertical' | 'horizontal' | null) = 'vertical';
 
 // ---------------------------------------------------------------------------
 // Component
@@ -48,25 +33,7 @@ export default function PreviewPanel({ showSql = false }: PreviewPanelProps) {
   const widgetList = useMemo(() => Object.values(widgets) as Widget[], [widgets]);
   const hasWidgets = widgetList.length > 0;
 
-  // ---- Build react-grid-layout layout array from store widgets ----
-  const layout: Layout[] = useMemo(
-    () =>
-      widgetList.map((w) => {
-        const l = w.layout || { x: 0, y: 0, w: 12, h: 6 };
-        return {
-          i: w.id,
-          x: l.x,
-          y: l.y,
-          w: l.w,
-          h: l.h,
-          minW: 4,
-          minH: 3,
-        };
-      }),
-    [widgetList],
-  );
-
-  // ---- Layout change handler ----
+  // ---- Layout change handler (writes back to the store) ----
   const handleLayoutChange = useCallback(
     (newLayout: Layout[]) => {
       for (const item of newLayout) {
@@ -169,45 +136,31 @@ export default function PreviewPanel({ showSql = false }: PreviewPanelProps) {
             ✋ 拖拽移动 · 边角缩放 · 🗑️ 删除
           </Typography.Text>
         </div>
-        <ResponsiveGridLayout
-          layout={layout}
-          cols={COLS}
-          rowHeight={ROW_HEIGHT}
+        <DashboardGrid
+          widgets={widgetList}
+          readonly={streamingState !== 'idle'}
           onLayoutChange={handleLayoutChange}
           onDragStart={() => setDragging(true)}
           onDragStop={() => setDragging(false)}
           onResizeStart={() => setDragging(true)}
-          onResizeStop={(_layout, oldItem) => {
-            setDragging(false);
+          onResizeStop={(oldItem) => {
             // User manually resized → freeze auto-height for this widget so its
             // chosen size isn't recomputed on the next data refresh.
-            if (oldItem) markWidgetUserSized(oldItem.i);
+            markWidgetUserSized(oldItem.i);
           }}
-          compactType={COMPACT_TYPE}
-          draggableHandle=".widget-header"
-          // 流式生成期间禁止拖拽/缩放: AI 基于旧 schema 生成新图表时, 用户若同时
-          // 手动改动已有图表会与 AI 的整树替换冲突, 导致布局/状态错乱.
-          isResizable={streamingState === 'idle'}
-          isDraggable={streamingState === 'idle'}
-          margin={[12, 12]}
-          useCSSTransforms={true}
-        >
-          {widgetList.map((w) => (
-            <div key={w.id} style={styles.gridItem}>
-              <WidgetCard
-                widget={w}
-                onTitleChange={handleTitleChange}
-                onRemove={handleRemove}
-                onRefresh={handleRefresh}
-                onRegenerate={handleRegenerate}
-                refreshing={!!refreshing[w.id]}
-                showSql={showSql}
-                editable={streamingState === 'idle'}
-              />
-            </div>
-          ))}
-        </ResponsiveGridLayout>
-        <style>{widgetFadeInCss}</style>
+          renderCard={(w) => (
+            <WidgetCard
+              widget={w as Widget}
+              onTitleChange={handleTitleChange}
+              onRemove={handleRemove}
+              onRefresh={handleRefresh}
+              onRegenerate={handleRegenerate}
+              refreshing={!!refreshing[w.id]}
+              showSql={showSql}
+              editable={streamingState === 'idle'}
+            />
+          )}
+        />
       </div>
       {/*
         流式生成期间整个图表区域显示 loading 遮罩。遮罩挂在 viewportWrap(不可滚动,
@@ -244,17 +197,6 @@ export default function PreviewPanel({ showSql = false }: PreviewPanelProps) {
 }
 
 // ---------------------------------------------------------------------------
-// CSS for entry animation
-// ---------------------------------------------------------------------------
-
-const widgetFadeInCss = `
-@keyframes widgetFadeIn {
-  from { opacity: 0; transform: translateY(8px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-`;
-
-// ---------------------------------------------------------------------------
 // Styles
 // ---------------------------------------------------------------------------
 
@@ -285,12 +227,5 @@ const styles: Record<string, React.CSSProperties> = {
     height: '100%',
     background: '#fafafa',
     borderRadius: 8,
-  },
-  gridItem: {
-    // task 8.6: react-grid-layout positions each child via absolute
-    // positioning; the child must explicitly fill the cell (100% × 100%) or
-    // WidgetCard's height:100% collapses to auto and the chart area underflows.
-    width: '100%',
-    height: '100%',
   },
 };

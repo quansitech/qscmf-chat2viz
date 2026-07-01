@@ -17,20 +17,56 @@ export interface LazyG2RendererProps {
   height?: number;
   /** Extra CSS class name. */
   className?: string;
+  /**
+   * Enable IntersectionObserver-based lazy mounting. Defaults to false.
+   *
+   * Rationale: dashboard widgets live inside an `overflow:auto` scroll container,
+   * NOT the viewport. The browser's IntersectionObserver with `root:null`
+   * (viewport) misjudges off-screen-but-in-scroll-container cards as invisible,
+   * leaving them stuck on the skeleton forever. Since dashboards typically have
+   * a handful of widgets (single digits), eager rendering is both simpler and
+   * correct. Lazy mounting is opt-in for future high-density scenarios.
+   */
+  lazy?: boolean;
 }
 
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
-export default function LazyG2Renderer({ spec, data, width, height, className }: LazyG2RendererProps) {
-  const [isVisible, setIsVisible] = useState(false);
+export default function LazyG2Renderer({
+  spec,
+  data,
+  width,
+  height,
+  className,
+  lazy = false,
+}: LazyG2RendererProps) {
+  const [isVisible, setIsVisible] = useState(!lazy);
   const containerRef = useRef<HTMLDivElement>(null);
   const observerRef = useRef<IntersectionObserver | null>(null);
 
   useEffect(() => {
+    // Eager mode — nothing to observe, render immediately.
+    if (!lazy) return;
+
     const el = containerRef.current;
     if (!el) return;
+
+    // Find the nearest scrollable ancestor to use as the IntersectionObserver
+    // root. Falling back to null (viewport) is only correct when the container
+    // chain has no intermediate scroll element — which is not the case for the
+    // dashboard grid (it scrolls inside an overflow:auto panel).
+    let root: Element | null = null;
+    let node: Element | null = el.parentElement;
+    while (node) {
+      const style = getComputedStyle(node);
+      if (/(auto|scroll|overlay)/.test(style.overflowY)) {
+        root = node;
+        break;
+      }
+      node = node.parentElement;
+    }
 
     observerRef.current = new IntersectionObserver(
       ([entry]) => {
@@ -43,7 +79,7 @@ export default function LazyG2Renderer({ spec, data, width, height, className }:
           }
         }
       },
-      { rootMargin: '200px' },
+      { root, rootMargin: '200px' },
     );
 
     observerRef.current.observe(el);
@@ -54,7 +90,7 @@ export default function LazyG2Renderer({ spec, data, width, height, className }:
         observerRef.current = null;
       }
     };
-  }, []);
+  }, [lazy]);
 
   return (
     <div ref={containerRef} className={className} style={{ minHeight: height ?? 300 }}>

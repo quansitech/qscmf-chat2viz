@@ -2,6 +2,38 @@ import { useEffect, useRef, useCallback } from 'react';
 import { hasChartSpec } from './store/dashboardStore';
 
 // ---------------------------------------------------------------------------
+// Global guard for G2 internal async noise
+// ---------------------------------------------------------------------------
+// G2 v5 spawns isolated promises (label layout, interaction handling, animation
+// settle) that are NOT chained off the `chart.render()` promise we hold. Some
+// specs — e.g. interval marks whose `labels` block omits a `text` channel (KPI
+// single-value cards) — make one of those internal promises reject with
+// `o.flatMap is not a function`. Because the promise is detached, our
+// `.render().catch()` cannot reach it, and it surfaces as an
+// `Uncaught (in promise)` that floods the console. The chart itself renders
+// fine — the rejection happens during a post-render cleanup step — so this is
+// cosmetic noise, not a real failure.
+//
+// Install a one-shot global `unhandledrejection` listener that swallows ONLY
+// these known G2 internal errors (matched by the signature `.flatMap is not a
+// function`), leaving every other rejection untouched. Installed once per page.
+let g2NoiseGuardInstalled = false;
+function installG2NoiseGuard(): void {
+  if (g2NoiseGuardInstalled || typeof window === 'undefined') return;
+  g2NoiseGuardInstalled = true;
+  window.addEventListener('unhandledrejection', (event) => {
+    const reason = event.reason;
+    const msg = (reason && typeof reason === 'object' && 'message' in reason
+      ? String((reason as Error).message)
+      : String(reason));
+    // G2's detached label/interaction promise — non-fatal, chart already drew.
+    if (/\.flatMap is not a function/.test(msg)) {
+      event.preventDefault();
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
@@ -101,6 +133,35 @@ function sanitizeChartData(data: Record<string, unknown>[] | undefined): Record<
   return data;
 }
 
+/**
+ * Build a `.catch()` handler for a G2 `render()`/`changeData()` promise.
+ *
+ * G2 v5's `chart.options(spec).render()` returns a Promise that can reject
+ * asynchronously (e.g. label/interaction processing on malformed or data-less
+ * specs surfaces as `o.flatMap is not a function`). The sync `try/catch` in
+ * renderChart only catches throws before the promise settles; async rejections
+ * would otherwise escape as "Uncaught (in promise)" and spam the console.
+ *
+ * On rejection this destroys the chart (best-effort) and reports it back via
+ * the `onDestroyed` callback so the caller can null its ref — leaving the
+ * container blank instead of a half-rendered, broken canvas.
+ */
+function makeRenderCatchHandler(
+  chart: any,
+  onDestroyed?: () => void,
+): (err: unknown) => void {
+  return (err: unknown) => {
+    // Swallow the rejection — a broken chart is non-fatal; the parent
+    // component's error/empty branch renders a friendly placeholder.
+    try {
+      if (chart && typeof chart.destroy === 'function') chart.destroy();
+    } catch {
+      /* ignore */
+    }
+    if (onDestroyed) onDestroyed();
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -110,6 +171,11 @@ export default function G2Renderer({ spec, data, width, height, className }: G2R
   const chartRef = useRef<any>(null);
   const prevSpecRef = useRef<Record<string, unknown> | null>(null);
   const prevDataRef = useRef<Record<string, unknown>[] | undefined>(undefined);
+
+  // Install the global G2 internal-noise guard once per page (idempotent).
+  useEffect(() => {
+    installG2NoiseGuard();
+  }, []);
 
   // --- Chart creation / update logic ---
   const renderChart = useCallback(() => {
@@ -124,6 +190,13 @@ export default function G2Renderer({ spec, data, width, height, className }: G2R
 
     const safeData = sanitizeChartData(data);
 
+    // G2 v5 can throw asynchronously (e.g. label/interaction `flatMap` on a
+    // data-less spec) when rendered with no data and no spec-embedded data.
+    // Skip rendering until real data arrives — the parent's loading/empty
+    // branch covers the interim, so the container simply stays blank rather
+    // than spawning an uncaught rejection.
+    if (!safeData) return;
+
     switch (level) {
       case 'changeData': {
         // Level 1: Only data changed -> use changeData() for performance
@@ -133,7 +206,9 @@ export default function G2Renderer({ spec, data, width, height, className }: G2R
           } catch {
             // Fallback to options re-render if changeData fails
             try {
-              chartRef.current.options(spec).render();
+              chartRef.current.options(spec).render().catch(
+                makeRenderCatchHandler(chartRef.current, () => { chartRef.current = null; }),
+              );
             } catch {
               // Both changeData and options failed — destroy and recreate next cycle
               try { chartRef.current.destroy(); } catch { /* ignore */ }
@@ -148,14 +223,18 @@ export default function G2Renderer({ spec, data, width, height, className }: G2R
         // Level 2: Config/style changed -> re-apply options
         if (chartRef.current) {
           try {
-            chartRef.current.options({ ...spec, ...(safeData ? { data: safeData } : {}) }).render();
+            chartRef.current.options({ ...spec, ...(safeData ? { data: safeData } : {}) }).render().catch(
+              makeRenderCatchHandler(chartRef.current, () => { chartRef.current = null; }),
+            );
           } catch {
             // Fallback: destroy and recreate
             try { chartRef.current.destroy(); } catch { /* ignore */ }
             chartRef.current = null;
             try {
               const chart = new G2.Chart({ container, autoFit: true });
-              chart.options({ ...spec, ...(safeData ? { data: safeData } : {}) }).render();
+              chart.options({ ...spec, ...(safeData ? { data: safeData } : {}) }).render().catch(
+                makeRenderCatchHandler(chart, () => { chartRef.current = null; }),
+              );
               chartRef.current = chart;
             } catch {
               // Recreation also failed — leave chartRef null
@@ -178,7 +257,9 @@ export default function G2Renderer({ spec, data, width, height, className }: G2R
         }
         try {
           const chart = new G2.Chart({ container, autoFit: true });
-          chart.options({ ...spec, ...(safeData ? { data: safeData } : {}) }).render();
+          chart.options({ ...spec, ...(safeData ? { data: safeData } : {}) }).render().catch(
+            makeRenderCatchHandler(chart, () => { chartRef.current = null; }),
+          );
           chartRef.current = chart;
         } catch (renderErr) {
           // G2 render failed (malformed spec, null data, etc.) — do not crash the component tree

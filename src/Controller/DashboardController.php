@@ -77,7 +77,7 @@ class DashboardController extends BaseDashboardController
             // 下 navigator.clipboard 为 undefined 也能复制成功.
             ->addRightButton('self', [
                 'title'      => '复制链接',
-                'class'      => 'qs-list-right-btn chat2viz-copy-link-btn',
+                'class'      => 'qs-list-right-btn chat2viz-copy-link-btn info',
                 // href 必填, 但本按钮不导航; 由全局 click handler 接管.
                 'href'       => 'javascript:void(0)',
                 // 注意: data-url 用 __uid__ 而非 __data_id__. ListBuilder 的

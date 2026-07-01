@@ -1,23 +1,12 @@
 import { useMemo, useState } from 'react';
-import { Button, Empty, Alert, Skeleton, Spin, Typography, Collapse } from 'antd';
+import { Button, Empty, Typography } from 'antd';
 import { ArrowLeftOutlined } from '@ant-design/icons';
-import { useQuery, QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import RGL, { WidthProvider, Layout } from 'react-grid-layout';
-import 'react-grid-layout/css/styles.css';
-import 'react-grid-layout/css/react-resizable.css';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { getPageProps, navigate } from './adapters';
-import { ADMIN_BASE, PUBLIC_BASE } from './utils/routes';
-import { createSemaphore } from './utils/concurrency';
-import LazyG2Renderer from './components/LazyG2Renderer';
-import WidgetTable from './components/WidgetTable';
-import { hasChartSpec } from './store/dashboardStore';
-import type { WidgetLayout } from './store/dashboardStore';
-
-// ---------------------------------------------------------------------------
-// WidthProvider wraps RGL to auto-track container width
-// ---------------------------------------------------------------------------
-
-const ResponsiveGridLayout = WidthProvider(RGL);
+import { ADMIN_BASE } from './utils/routes';
+import DashboardGrid from './components/DashboardGrid';
+import ViewWidgetCard from './components/ViewWidgetCard';
+import type { GridWidget } from './components/DashboardGrid';
 
 // ---------------------------------------------------------------------------
 // QueryClient — scoped to this view page
@@ -45,7 +34,7 @@ interface SchemaWidget {
   id: string;
   title?: string;
   g2_spec?: Record<string, unknown>;
-  layout?: WidgetLayout;
+  layout?: { x: number; y: number; w: number; h: number; userSized?: boolean };
   sql?: string;
   refreshInterval?: number;
 }
@@ -65,159 +54,23 @@ interface DashboardViewPageProps {
 }
 
 // ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-const COLS = 24;
-const ROW_HEIGHT = 60;
-
-/**
- * Shared concurrency cap (6) wrapping every widget-data HTTP request on this
- * page. react-query already de-dupes by key and honors the 5min staleTime; this
- * semaphore is a defensive backstop that protects the public endpoint's
- * per-IP rate limit (60 req/min) and aligns with the browser's HTTP/1.1
- * per-origin connection ceiling (~6). Mirrors DashboardEdit.tsx.
- */
-const limitWidgetFetch = createSemaphore(6);
-
-// ---------------------------------------------------------------------------
-// Widget Data Fetcher Component
-//
-// Each widget gets its own useQuery for error isolation — a failure in one
-// widget does not affect others.
-// ---------------------------------------------------------------------------
-
-interface ViewWidgetCardProps {
-  uid: string;
-  widget: SchemaWidget;
-  showSql?: boolean;
-  /** fix-draft-view-restore: when true, fetch from the admin preview data
-   *  endpoint (current_schema, no ownership gate) instead of the public
-   *  endpoint (which rejects non-published dashboards). */
-  isAdminPreview?: boolean;
-}
-
-function ViewWidgetCard({ uid, widget, showSql = false, isAdminPreview = false }: ViewWidgetCardProps) {
-  const { data, isLoading, isError, error } = useQuery({
-    queryKey: ['widget-data', uid, widget.id, isAdminPreview ? 'preview' : 'public'],
-    queryFn: async () => {
-      // task 7.6: encode uid/widgetId defensively. PHP validates UUID
-      // server-side, but encoding here prevents any value with special chars
-      // from injecting path segments.
-      // fix-draft-view-restore: admin preview fetches draft data from
-      // current_schema via the admin endpoint (any logged-in admin; no
-      // ownership gate). The public endpoint rejects non-published dashboards.
-      // Query-string params match the edit page's api_draft_widget_data call
-      // (DashboardEdit.tsx) — the admin route parses them as ?uid=&widgetId=.
-      return limitWidgetFetch(async () => {
-        const safeUid = encodeURIComponent(uid);
-        const safeWidgetId = encodeURIComponent(widget.id);
-        const endpoint = isAdminPreview
-          ? `${ADMIN_BASE}/api_preview_widget_data?uid=${safeUid}&widgetId=${safeWidgetId}`
-          : `${PUBLIC_BASE}/api_widget_data/uid/${safeUid}/widgetId/${safeWidgetId}`;
-        const resp = await fetch(endpoint, { credentials: 'same-origin' });
-        const result = await resp.json();
-        if (result.status !== 1) {
-          throw new Error(result.info || '加载图表数据失败');
-        }
-        return result.data as Record<string, unknown>[];
-      });
-    },
-    staleTime: 5 * 60 * 1000,
-    retry: 1,
-    ...(widget.refreshInterval && widget.refreshInterval > 0
-      ? { refetchInterval: widget.refreshInterval * 1000 }
-      : {}),
-  });
-
-  // Unified chart-existence judgment (DESIGN_BASIS #7): type OR mark OR children.
-  const hasSpec = hasChartSpec(widget.g2_spec);
-
-  // G2 v5 has no `composition.table` mark — route table specs to the native
-  // renderer to avoid "Unknown Component" + a blank widget (mirrors WidgetCard).
-  const isTable = widget.g2_spec?.type === 'table';
-
-  return (
-    <div style={styles.widgetCard}>
-      {/* Header */}
-      <div style={styles.widgetHeader}>
-        <Typography.Text strong>{widget.title || '未命名图表'}</Typography.Text>
-      </div>
-
-      {/* Chart Area */}
-      <div style={styles.chartArea}>
-        {isError && (
-          <Alert
-            type="error"
-            message={error instanceof Error ? error.message : '数据加载错误'}
-            showIcon
-            style={{ margin: 12 }}
-          />
-        )}
-        {!isError && isLoading && (
-          // Skeleton frame + progress hint, mirroring the edit page's
-          // WidgetCard loading branch. The semaphore throttles concurrent
-          // fetches to 6, so beyond the first batch widgets wait in queue —
-          // the skeleton keeps the grid visibly populated instead of blank.
-          <div style={styles.emptyChart}>
-            <Skeleton active paragraph={{ rows: 4 }} />
-            <div style={styles.loadingHint}>
-              <Spin size="small" />
-              <Typography.Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
-                加载中…
-              </Typography.Text>
-            </div>
-          </div>
-        )}
-        {!isError && !isLoading && hasSpec && widget.g2_spec && isTable && (
-          <WidgetTable
-            spec={widget.g2_spec}
-            data={Array.isArray(data) ? data : []}
-          />
-        )}
-        {!isError && !isLoading && hasSpec && widget.g2_spec && !isTable && (
-          <LazyG2Renderer
-            spec={widget.g2_spec}
-            data={data}
-          />
-        )}
-        {!isError && !isLoading && !hasSpec && (
-          <div style={styles.emptyChart}>
-            <Empty description="暂无图表规格" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-          </div>
-        )}
-      </div>
-
-      {/* Footer */}
-      {showSql && widget.sql && (
-        <div style={styles.footer}>
-          <Collapse
-            ghost
-            size="small"
-            items={[{
-              key: 'sql',
-              label: <Typography.Text type="secondary" style={{ fontSize: 11 }}>查询语句</Typography.Text>,
-              children: (
-                <pre style={{ background: '#fff', padding: 6, borderRadius: 4, fontSize: 11, overflow: 'auto', margin: 0, maxHeight: 120 }}>
-                  {widget.sql}
-                </pre>
-              ),
-            }]}
-          />
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Inner Component (uses hooks, wrapped by QueryClientProvider)
 // ---------------------------------------------------------------------------
 
 function DashboardViewInner() {
   const { dashboard, schema, show_sql = false } = getPageProps<DashboardViewPageProps>();
 
-  const widgets = useMemo(() => schema?.widgets ?? [], [schema]);
+  const widgets = useMemo<GridWidget[]>(
+    () => (schema?.widgets ?? []).map((w) => ({
+      id: w.id,
+      title: w.title,
+      g2_spec: w.g2_spec,
+      sql: w.sql,
+      refreshInterval: w.refreshInterval,
+      layout: w.layout,
+    })),
+    [schema],
+  );
   const hasWidgets = widgets.length > 0;
 
   // fix-public-view-draft-exposure §2.2: belt-and-suspenders guard. PHP
@@ -234,20 +87,6 @@ function DashboardViewInner() {
   // "该仪表盘暂未发布" empty state. The public view path never sets this, so
   // its §2.2 defense-in-depth draft gate stays intact.
   const isAdminPreview = (dashboard as { __is_preview?: boolean } | null)?.__is_preview === true;
-
-  // Build static layout from schema — all items are static (not draggable/resizable)
-  const layout: Layout[] = useMemo(
-    () =>
-      widgets.map((w) => ({
-        i: w.id,
-        x: w.layout?.x ?? 0,
-        y: w.layout?.y ?? 0,
-        w: w.layout?.w ?? 12,
-        h: w.layout?.h ?? 6,
-        static: true,
-      })),
-    [widgets],
-  );
 
   return (
     <div style={styles.root}>
@@ -276,21 +115,25 @@ function DashboardViewInner() {
           </div>
         ) : hasWidgets ? (
           <div style={styles.gridWrapper}>
-            <ResponsiveGridLayout
-              layout={layout}
-              cols={COLS}
-              rowHeight={ROW_HEIGHT}
-              isDraggable={false}
-              isResizable={false}
-              margin={[12, 12]}
-              useCSSTransforms={true}
-            >
-              {widgets.map((w) => (
-                <div key={w.id}>
-                  <ViewWidgetCard uid={dashboard.uid} widget={w} showSql={show_sql} isAdminPreview={isAdminPreview} />
-                </div>
-              ))}
-            </ResponsiveGridLayout>
+            {/*
+              Shared grid — identical layout math (suggestHeight, compactType,
+              minW/minH, margins) as the edit page's PreviewPanel. This is the
+              single reuse point guaranteeing a 1:1 visual match between edit
+              preview and published view. renderCard injects ViewWidgetCard
+              (react-query data fetching + WidgetCard readonly rendering).
+            */}
+            <DashboardGrid
+              widgets={widgets}
+              readonly
+              renderCard={(w) => (
+                <ViewWidgetCard
+                  uid={dashboard.uid}
+                  widget={w}
+                  showSql={show_sql}
+                  isAdminPreview={isAdminPreview}
+                />
+              )}
+            />
           </div>
         ) : (
           <div style={styles.empty}>
@@ -349,47 +192,6 @@ const styles: Record<string, React.CSSProperties> = {
     maxWidth: 1400,
     margin: '0 auto',
     width: '100%',
-  },
-  widgetCard: {
-    background: '#fff',
-    borderRadius: 8,
-    border: '1px solid #f0f0f0',
-    display: 'flex',
-    flexDirection: 'column',
-    height: '100%',
-    overflow: 'hidden',
-  },
-  widgetHeader: {
-    display: 'flex',
-    alignItems: 'center',
-    padding: '8px 12px',
-    borderBottom: '1px solid #f5f5f5',
-  },
-  chartArea: {
-    flex: 1,
-    minHeight: 200,
-    position: 'relative',
-  },
-  emptyChart: {
-    display: 'flex',
-    flexDirection: 'column' as const,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 12,
-    height: '100%',
-    minHeight: 200,
-    padding: 12,
-  },
-  loadingHint: {
-    display: 'flex',
-    alignItems: 'center',
-  },
-  footer: {
-    borderTop: '1px solid #f5f5f5',
-    padding: '4px 12px',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap' as const,
   },
   empty: {
     display: 'flex',
