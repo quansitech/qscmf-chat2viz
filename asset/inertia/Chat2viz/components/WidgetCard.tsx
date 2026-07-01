@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { Alert, Collapse, Popconfirm, Skeleton, Spin, Tooltip, Typography } from 'antd';
-import { DeleteOutlined, EditOutlined, LoadingOutlined, ReloadOutlined } from '@ant-design/icons';
+import { DeleteOutlined, EditOutlined, InboxOutlined, LoadingOutlined, ReloadOutlined } from '@ant-design/icons';
 import LazyG2Renderer from './LazyG2Renderer';
 import WidgetTable from './WidgetTable';
 import { hasChartSpec, useDashboardStore } from '../store/dashboardStore';
@@ -27,7 +27,7 @@ export interface WidgetCardProps {
  * default to 'chart' (defensive fallback for any persisted widget that
  * predates the status field or arrived via a non-standard path).
  */
-function effectiveStatus(widget: Widget): 'loading' | 'error' | 'chart' {
+function effectiveStatus(widget: Widget): 'loading' | 'error' | 'chart' | 'empty' {
   return widget.status ?? 'chart';
 }
 
@@ -182,6 +182,36 @@ export default function WidgetCard({ widget, onTitleChange, onRemove, onRefresh,
           </div>
         )}
 
+        {status === 'empty' && (
+          // P0-A: SQL succeeded with 0 rows — a legitimate "no data" result
+          // (NOT an error). Render a friendly empty card with the deterministic
+          // explanation instead of a blank chart. suspect_value_mismatch hints
+          // the LLM may have guessed a WHERE literal wrong (advisory).
+          <div style={styles.emptyCard}>
+            <InboxOutlined style={{ fontSize: 36, color: '#faad14', marginBottom: 8 }} />
+            <Typography.Text strong style={{ marginBottom: 4 }}>
+              未查询到数据
+            </Typography.Text>
+            {widget.data_explain && (
+              <Typography.Paragraph
+                type="secondary"
+                style={{ fontSize: 12, margin: 0, textAlign: 'center', lineHeight: 1.6 }}
+              >
+                {widget.data_explain}
+              </Typography.Paragraph>
+            )}
+            {widget.suspect_value_mismatch && onRegenerate && (
+              <Typography.Link
+                onClick={() => onRegenerate(widget.id)}
+                style={{ fontSize: 12, marginTop: 8 }}
+              >
+                <ReloadOutlined style={{ marginRight: 4 }} />
+                检查取值并重新生成
+              </Typography.Link>
+            )}
+          </div>
+        )}
+
         {status === 'chart' && (
           <>
             {!hasSpec && (
@@ -315,12 +345,22 @@ const styles: Record<string, React.CSSProperties> = {
   },
   errorCard: {
     display: 'flex',
-    flexDirection: 'column',
+    flexDirection: 'column' as const,
     alignItems: 'center',
     justifyContent: 'center',
     height: '100%',
     minHeight: 200,
     padding: 12,
+  },
+  emptyCard: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    height: '100%',
+    minHeight: 200,
+    padding: 16,
   },
   truncationNotice: {
     padding: '4px 12px',

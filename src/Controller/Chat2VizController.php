@@ -464,12 +464,21 @@ class Chat2VizController extends GyController
     private function adapt(array $raw): array
     {
         if (isset($raw['answer'])) {
+            // conversation-suggested-followup (P0-B): pass through the derived
+            // follow-up suggestions (≤3 strings) when present, so the sync /ask
+            // path mirrors the SSE DASHBOARD_REPLACE frame contract. Defaults to
+            // an empty array for backward-compat with older Python builds.
+            $followups = isset($raw['suggested_followups']) && is_array($raw['suggested_followups'])
+                ? array_values(array_filter($raw['suggested_followups'], 'is_string'))
+                : [];
+
             return [
                 'status' => 1,
                 'data'   => [
-                    'answer'   => $raw['answer'],
-                    'sql'      => $raw['sql'] ?? null,
-                    'g2_spec'  => $raw['g2_spec'] ?? null,
+                    'answer'              => $raw['answer'],
+                    'sql'                 => $raw['sql'] ?? null,
+                    'g2_spec'             => $raw['g2_spec'] ?? null,
+                    'suggested_followups' => $followups,
                 ],
             ];
         }

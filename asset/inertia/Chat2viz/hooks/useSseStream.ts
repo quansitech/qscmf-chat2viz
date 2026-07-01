@@ -387,6 +387,14 @@ function dispatchEvent(event: SseEvent | null): boolean {
         useDashboardStore.getState().appendAnswer(answer);
       }
 
+      // P0-B: capture suggested follow-ups (≤3 derived questions) carried on
+      // the frame. ChatPanel renders them as clickable chips after the answer.
+      const rawFollowups = (event.data as { suggested_followups?: unknown }).suggested_followups;
+      const followups = Array.isArray(rawFollowups)
+        ? rawFollowups.filter((f): f is string => typeof f === 'string' && f.trim() !== '')
+        : [];
+      useDashboardStore.getState().setSuggestedFollowups(followups);
+
       runWatchdog();
       break;
     }

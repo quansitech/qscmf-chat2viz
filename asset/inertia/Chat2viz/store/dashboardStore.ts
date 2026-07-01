@@ -45,11 +45,13 @@ export interface WidgetLayout {
 
 /**
  * Render-level widget status (distinct from the contract's event-level status).
- * Event-level: pending | success | error → mapped to render-level before store write:
- *   pending→loading, success→chart, error→error.
+ * Event-level: pending | success | error | empty → mapped to render-level before store write:
+ *   pending→loading, success→chart, error→error, empty→empty.
  * Legacy widgets without a status field default to 'chart' (zero-regression).
+ * 'empty' (P0-A): SQL succeeded but returned 0 rows — a legitimate result,
+ * rendered as a friendly "no data" card with an explanation instead of a blank chart.
  */
-export type WidgetStatus = 'loading' | 'error' | 'chart';
+export type WidgetStatus = 'loading' | 'error' | 'chart' | 'empty';
 
 export interface Widget {
   id: string;
@@ -59,7 +61,7 @@ export interface Widget {
    *  updateWidgetData is the sole normalization boundary. */
   data: Record<string, unknown>[];
   sql?: string;
-  /** Render-level status driving PreviewPanel's three render branches. */
+  /** Render-level status driving PreviewPanel's render branches. */
   status?: WidgetStatus;
   /** When true, the widget's data was truncated by the dispatcher row cap. */
   truncated?: boolean;
@@ -69,6 +71,10 @@ export interface Widget {
   /** Monotonically increasing counter set to Date.now() on manual refresh. */
   refreshKey?: number;
   layout: WidgetLayout;
+  /** P0-A: deterministic explanation shown when status='empty' (0 rows). */
+  data_explain?: string;
+  /** P0-A: advisory flag — WHERE may reference a non-existent literal value. */
+  suspect_value_mismatch?: boolean;
 }
 
 export interface ActionCall {
@@ -110,13 +116,17 @@ export interface DashboardReplaceWidget {
   id?: string;
   title?: string;
   chart_type?: string;
-  status?: 'success' | 'error';
+  status?: 'success' | 'error' | 'empty';
   sql?: string;
   g2_spec?: Record<string, unknown>;
   data?: Record<string, unknown>[] | null;
   error_msg?: string;
   truncated?: boolean;
   total?: number;
+  /** P0-A: deterministic explanation shown when status='empty'. */
+  data_explain?: string;
+  /** P0-A: advisory — WHERE may reference a non-existent literal. */
+  suspect_value_mismatch?: boolean;
 }
 
 export type MessageStatus = 'streaming' | 'complete' | 'interrupted' | 'failed';
@@ -190,6 +200,8 @@ export interface DashboardState {
   autoSaveEnabled: boolean;
   isDirty: boolean;
   lastSavedAt: string | null;
+  /** P0-B: suggested follow-ups from the last DASHBOARD_REPLACE (≤3 strings). */
+  lastSuggestedFollowups: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -239,6 +251,8 @@ export interface DashboardActions {
   completeConversation: () => void;
   /** Transition from 'submitted' to 'streaming' on the first real SSE frame. */
   markStreaming: () => void;
+  /** P0-B: store the latest suggested follow-ups (from DASHBOARD_REPLACE). */
+  setSuggestedFollowups: (followups: string[]) => void;
   saveDraft: () => Promise<void>;
   setConversationId: (id: string) => void;
   resetConversation: () => void;
@@ -276,6 +290,7 @@ const initialState: DashboardState = {
   autoSaveEnabled: true,
   isDirty: false,
   lastSavedAt: null,
+  lastSuggestedFollowups: [] as string[],
 };
 
 // ---------------------------------------------------------------------------
@@ -435,6 +450,14 @@ const _store = _create()(
           });
         },
 
+        setSuggestedFollowups: (followups: string[]) => {
+          set((state) => {
+            state.lastSuggestedFollowups = Array.isArray(followups)
+              ? followups.filter((f) => typeof f === 'string' && f.trim() !== '').slice(0, 3)
+              : [];
+          });
+        },
+
         // ------- Widget CRUD -------
 
         addPanel: (widget: Widget) => {
@@ -491,10 +514,14 @@ const _store = _create()(
               const payloadData = (w && w.data === null) ? priorData : normalizeRows(w?.data);
 
               // event-level status → render-level status (mirrors the WIDGET_*
-              // status mapping: success→chart, error→error, else keep cached).
+              // status mapping: success→chart, error→error, empty→empty, else keep cached).
               let status: WidgetStatus;
               if (w?.status === 'error') {
                 status = 'error';
+              } else if (w?.status === 'empty') {
+                // P0-A: SQL succeeded with 0 rows — a legitimate "no data" result,
+                // not an error. Rendered as a friendly empty card with data_explain.
+                status = 'empty';
               } else if (w?.status === 'success') {
                 status = 'chart';
               } else {
@@ -517,6 +544,9 @@ const _store = _create()(
                 ...(typeof w?.truncated === 'boolean' ? { truncated: w.truncated } : (cached?.truncated !== undefined ? { truncated: cached.truncated } : {})),
                 ...(typeof w?.total === 'number' ? { total: w.total } : (cached?.total !== undefined ? { total: cached.total } : {})),
                 ...(cached?.refreshInterval !== undefined ? { refreshInterval: cached.refreshInterval } : {}),
+                // P0-A: pass through empty-data fields (only meaningful when status='empty').
+                ...(typeof w?.data_explain === 'string' && w.data_explain ? { data_explain: w.data_explain } : {}),
+                ...(w?.suspect_value_mismatch === true ? { suspect_value_mismatch: true } : {}),
               };
             }
 

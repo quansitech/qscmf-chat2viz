@@ -59,7 +59,7 @@ export interface SSEDashboardReplace {
     widget_id: string;
     title: string;
     chart_type: string;
-    status: 'success' | 'error';
+    status: 'success' | 'error' | 'empty';
     /** Present when status=success. The widget's SQL text. */
     sql?: string;
     /** Present when status=success. G2 config — MUST NOT contain inline data. */
@@ -73,9 +73,15 @@ export interface SSEDashboardReplace {
     error_msg?: string;
     truncated?: boolean;
     total?: number;
+    /** P0-A: present when status=empty. Deterministic Chinese explanation. */
+    data_explain?: string;
+    /** P0-A: advisory flag — WHERE may reference a non-existent literal. */
+    suspect_value_mismatch?: boolean;
   }>;
   /** LLM natural-language reply. */
   answer: string;
+  /** P0-B: ≤3 derived follow-up question suggestions (may be empty array). */
+  suggested_followups?: string[];
   [key: string]: unknown;
 }
 

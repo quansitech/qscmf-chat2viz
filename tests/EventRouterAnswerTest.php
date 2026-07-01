@@ -144,6 +144,34 @@ class EventRouterAnswerTest extends TestCase
         $this->assertSame(['test-dash-uid', 'w1', 'SELECT 1'], $calls[0]);
     }
 
+    // fix-declarative-replace-regressions task 2.2: when no widget carries a
+    // non-empty sql, backfillWidgetSqlFromWidgets MUST NOT call updateWidgetSql
+    // at all (guard against spurious DB writes on answer-only / sql-less frames).
+    public function testDashboardReplaceWithNoSqlWidgetsDoesNotCallUpdateWidgetSql(): void
+    {
+        $calls = [];
+        $log = [];
+        $acc = $this->makeAccumulator($log);
+        $router = $this->makeRecordingRouter($calls);
+
+        $router->routeEvent($acc, 'cid', new SseEvent(
+            type: 'DASHBOARD_REPLACE',
+            data: [
+                'layout' => [],
+                'widgets' => [
+                    'w1' => ['widget_id' => 'w1', 'sql' => ''],
+                    'w2' => ['widget_id' => 'w2'],
+                    'w3' => ['widget_id' => 'w3', 'sql' => null],
+                ],
+                'answer' => 'ok',
+            ],
+            raw: '',
+        ));
+
+        // No widget has a non-empty sql → zero updateWidgetSql calls.
+        $this->assertCount(0, $calls);
+    }
+
     /**
      * Router whose repo records every updateWidgetSql(uid, widgetId, sql) call.
      */

@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
 import { Alert, Badge, Button, Collapse, Empty, Input, message as notify, Popconfirm, Spin, Tag, Tooltip, Typography } from 'antd';
-import { SendOutlined, QuestionCircleOutlined, CopyOutlined, LikeOutlined, DislikeOutlined, RedoOutlined } from '@ant-design/icons';
+import { SendOutlined, QuestionCircleOutlined, CopyOutlined, LikeOutlined, DislikeOutlined, RedoOutlined, EditOutlined } from '@ant-design/icons';
 import ReactMarkdown from 'react-markdown';
 import rehypeSanitize from 'rehype-sanitize';
 import { useDashboardStore } from '../store/dashboardStore';
@@ -65,6 +65,14 @@ const CHAT_MARKDOWN_CSS = `
 }
 .chat-markdown a { word-break: break-all; }
 .chat-markdown img { max-width: 100%; }
+`;
+
+// 最后一条 user 气泡 hover 时浮现"编辑问题"图标。由于 userBubble 是动态内联
+// style(无法在 <style> 里精确选中"最后一条"), 这里用宽松规则: 任何带 .user-edit-trigger
+// 的元素, 当其所在的最近 .user-bubble 祖先被 hover 时显示。.user-bubble class 由
+// 下方渲染时挂到 userBubble 容器上。
+const USER_BUBBLE_HOVER_CSS = `
+.user-bubble:hover .user-edit-trigger { opacity: 1; }
 `;
 
 // ---------------------------------------------------------------------------
@@ -160,6 +168,8 @@ export default function ChatPanel({ disabled = false }: ChatPanelProps) {
   // failures (connection/auth/stream-level errors). Widget-level local errors
   // (WIDGET_ERROR) are surfaced inside each WidgetCard and MUST NOT set this.
   const globalError = useDashboardStore((s) => s.error);
+  // P0-B: derived follow-up suggestions from the last DASHBOARD_REPLACE.
+  const suggestedFollowups = useDashboardStore((s) => s.lastSuggestedFollowups);
   const { sendQuestion, cancel } = useSseStream();
 
   const [inputValue, setInputValue] = useState('');
@@ -329,6 +339,25 @@ export default function ChatPanel({ disabled = false }: ChatPanelProps) {
           <MessageBubble key={msg.id} message={msg} />
         ))}
 
+        {/* P0-B: suggested follow-up questions — rendered as clickable chips
+            after the last assistant message, only when streaming has finished
+            (streamingState==='idle') and suggestions are present. Clicking a
+            chip sends it as a new question (reuses the example-question path). */}
+        {hasMessages && streamingState === 'idle' && suggestedFollowups.length > 0 && !disabled && (
+          <div style={styles.followupsRow}>
+            {suggestedFollowups.map((q) => (
+              <button
+                key={q}
+                onClick={() => handleExampleClick(q)}
+                style={styles.followupChip}
+                title={q}
+              >
+                {q}
+              </button>
+            ))}
+          </div>
+        )}
+
         <AiStepsIndicator />
 
         {/* Endpoint-level streaming errors are surfaced via the global Alert
@@ -338,6 +367,7 @@ export default function ChatPanel({ disabled = false }: ChatPanelProps) {
             event) the user can send a new question. */}
 
         <style>{CHAT_MARKDOWN_CSS}</style>
+        <style>{USER_BUBBLE_HOVER_CSS}</style>
         <div ref={messagesEndRef} />
         {/* 缺陷3: TYPING_CURSOR_CSS 同时承载 .typing-cursor 光标与 .typing-dots 三点
             loading 的样式/动画(见 line 22 的 CSS 字符串). submitted 态(首帧未到)时
@@ -394,6 +424,19 @@ function MessageBubble({ message }: MessageBubbleProps) {
     messages[messages.length - 1]?.id === message.id;
   const showCursor = isLastAssistant && streamingState !== 'idle';
 
+  // 是否为"最后一条 user 消息"(倒序第一个 user)。该条可编辑/重发:
+  // 改写后发送 = 删除本轮重新生成(等同 retry 流程)。仅 idle 时允许编辑,
+  // 流式生成中不响应。历史 user 消息(非最后一条)不可编辑。
+  const isLastUser = isUser && (() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') return messages[i].id === message.id;
+    }
+    return false;
+  })();
+  // 编辑态 local state(仅最后一条 user 进入编辑时使用)。
+  const [isEditingQuestion, setIsEditingQuestion] = useState(false);
+  const [questionDraft, setQuestionDraft] = useState(message.content);
+
   const status = message.message_status;
 
   // DEF-06: feedback (thumbs up/down) state + handler.
@@ -403,16 +446,20 @@ function MessageBubble({ message }: MessageBubbleProps) {
   // empty-content placeholder path (which used to early-return) and a path
   // that rendered this useState. Keep hooks above the returns below.
   const [feedbackGiven, setFeedbackGiven] = useState<string | null>(null);
+  // regenerateLastTurn 防重入: delete+resend 的网络往返期间, 同时门控"重新生成"
+  // 按钮与"编辑提交"按钮(disabled+loading), 防止用户连点导致并发 delete / 消息错乱。
+  const [isRegenerating, setIsRegenerating] = useState(false);
 
-  // 重试(仅最后一条 AI 消息):删除上一轮的 user+assistant 两条消息,用上一条
-  // 用户问题重新发送。图表不动 —— 后端重新生成时按需更新。独立于 feedback
-  // 状态(用户可"点赞但仍想重试换个角度")。
+  // 重试/编辑重发(仅最后一条 user 触发的本轮): 删除本轮 user+其后所有 assistant
+  // (后端事务删), 再用 questionOverride(若提供, 即编辑改写后的问题)或原问题重新发送。
+  // 图表不动 —— 后端重新生成时按需更新。独立于 feedback 状态。
   // fix-redis-degrade-and-retry-dedup: the backend DELETE runs first; only on
   // success do we trim the frontend store + resend. This prevents the duplicate-
   // user-row regression (frontend trimmed, backend untouched, resend INSERTs a
-  // third copy). On failure we abort the retry with a toast instead.
+  // third copy). On failure we abort with a toast instead.
   const { sendQuestion } = useSseStream();
-  const handleRetry = useCallback(async () => {
+  const regenerateLastTurn = useCallback(async (questionOverride?: string) => {
+    if (isRegenerating) return;
     const cur = useDashboardStore.getState();
     const msgs = cur.messages;
     // 找最后一条 user 问题及其下标(即触发本轮回复的问题).
@@ -423,6 +470,10 @@ function MessageBubble({ message }: MessageBubbleProps) {
     }
     if (lastUserIndex < 0 || !lastUserQuestion) return;
 
+    const questionToSend = (questionOverride ?? '').trim();
+    const effectiveQuestion = questionToSend !== '' ? questionToSend : lastUserQuestion;
+
+    setIsRegenerating(true);
     // 先调后端清理上一轮消息对(dashboard 所有权校验在后端完成)。
     // 失败则不删前端 store、不重试,避免脏数据退回到原 bug。
     const ADMIN_BASE_RETRY = (window as any).__ADMIN_BASE__ || '';
@@ -444,6 +495,8 @@ function MessageBubble({ message }: MessageBubbleProps) {
     } catch {
       notify.error('网络错误，无法重试');
       return;
+    } finally {
+      setIsRegenerating(false);
     }
 
     // 后端成功后才删前端 store 的本轮消息并重新发送.
@@ -453,8 +506,13 @@ function MessageBubble({ message }: MessageBubbleProps) {
     useDashboardStore.setState((state) => ({
       messages: state.messages.slice(0, lastUserIndex),
     }));
-    sendQuestion(lastUserQuestion);
-  }, [sendQuestion]);
+    sendQuestion(effectiveQuestion);
+  }, [sendQuestion, isRegenerating]);
+
+  // "重新生成" = 原样重试(不改问题文本)。与编辑提交共享 regenerateLastTurn 的防重入。
+  const handleRetry = useCallback(async () => {
+    await regenerateLastTurn();
+  }, [regenerateLastTurn]);
   const handleFeedback = useCallback(async (msg: any, thumbs: 'up' | 'down') => {
     try {
       const ADMIN_BASE = (window as any).__ADMIN_BASE__ || '';
@@ -505,9 +563,43 @@ function MessageBubble({ message }: MessageBubbleProps) {
   // Show the copy-answer button only for completed assistant bubbles.
   const canCopyAnswer = !isUser && streamingState === 'idle' && !!message.content;
 
+  // ---- 最后一条 user 消息的编辑/重发 ----
+  const canEditQuestion = isLastUser && streamingState === 'idle' && !isRegenerating;
+
+  const handleStartEdit = useCallback(() => {
+    setQuestionDraft(message.content);
+    setIsEditingQuestion(true);
+  }, [message.content]);
+
+  const handleCancelEdit = useCallback(() => {
+    setIsEditingQuestion(false);
+  }, []);
+
+  const handleSubmitEdit = useCallback(() => {
+    const trimmed = questionDraft.trim();
+    if (!trimmed) return; // 空文本不提交
+    setIsEditingQuestion(false);
+    // 改写后发送 = 删除本轮重新生成(questionOverride 覆盖原问题)。
+    // 原样不改文本直接提交也允许, 等价于"重新生成"。
+    void regenerateLastTurn(trimmed);
+  }, [questionDraft, regenerateLastTurn]);
+
+  const handleEditKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        handleSubmitEdit();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        handleCancelEdit();
+      }
+    },
+    [handleSubmitEdit, handleCancelEdit],
+  );
+
   return (
     <div style={{ ...styles.bubbleRow, justifyContent: isUser ? 'flex-end' : 'flex-start' }}>
-      <div style={isUser ? styles.userBubble : styles.assistantBubble}>
+      <div style={isUser ? styles.userBubble : styles.assistantBubble} className={isUser ? 'user-bubble' : undefined}>
         {/* Status indicators for non-complete messages */}
         {/* UX-M1: 中文化(其余 UI 全是中文, 这三个英文标签很突兀). */}
         {!isUser && status === 'streaming' && (
@@ -566,12 +658,59 @@ function MessageBubble({ message }: MessageBubbleProps) {
           />
         )}
 
+        {/* 最后一条 user 消息: 编辑态下渲染 TextArea + 发送/取消, 替代纯文本。
+            改写后发送 = 删除本轮重新生成(等同 retry 流程), 原样发送 = 重新生成。
+            仅 idle 且非重生成中可进入编辑(canEditQuestion 门控)。 */}
+        {isUser && isEditingQuestion && (
+          <div style={styles.editWrap}>
+            <Input.TextArea
+              value={questionDraft}
+              onChange={(e) => setQuestionDraft(e.target.value)}
+              onKeyDown={handleEditKeyDown}
+              autoSize={{ minRows: 1, maxRows: 6 }}
+              autoFocus
+              style={styles.editTextArea}
+            />
+            <div style={styles.editActions}>
+              <Button size="small" onClick={handleCancelEdit}>取消</Button>
+              <Button
+                size="small"
+                type="primary"
+                icon={<SendOutlined />}
+                onClick={handleSubmitEdit}
+                disabled={!questionDraft.trim()}
+                loading={isRegenerating}
+              >
+                发送
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* 最后一条 user 消息: 非编辑态时, 在气泡左下角 hover 浮现"编辑"图标。
+            点击进入编辑态。安静不打扰, 符合主流 chat 产品惯例。 */}
+        {isUser && canEditQuestion && !isEditingQuestion && (
+          <div className="user-edit-trigger" style={styles.editIconWrap}>
+            <Tooltip title="编辑问题">
+              <EditOutlined
+                onClick={handleStartEdit}
+                style={styles.editIcon}
+                role="button"
+                tabIndex={0}
+                aria-label="编辑问题"
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleStartEdit(); } }}
+              />
+            </Tooltip>
+          </div>
+        )}
+
         {/* DEF-12: render AI answer as markdown (bold, lists, code) via
             react-markdown + rehype-sanitize (whitelist, strips script/onclick).
             Cursor is placed AFTER the markdown block (not inline) because
             markdown produces block-level <p> elements — inline cursor would
-            break layout. The typing-cursor class still provides the blink. */}
-        {message.content && (
+            break layout. The typing-cursor class still provides the blink.
+            user 消息编辑态时不重复渲染纯文本(避免与编辑器重复)。 */}
+        {message.content && !(isUser && isEditingQuestion) && (
           <div className="chat-markdown" style={styles.bubbleContent}>
             <ReactMarkdown rehypePlugins={[rehypeSanitize]}>
               {message.content}
@@ -623,12 +762,15 @@ function MessageBubble({ message }: MessageBubbleProps) {
                 okText="重新生成"
                 cancelText="取消"
                 onConfirm={handleRetry}
+                disabled={isRegenerating}
               >
                 <Button
                   size="small"
                   type="text"
                   icon={<RedoOutlined />}
+                  loading={isRegenerating}
                   style={{ color: '#999', padding: '0 4px' }}
+                  disabled={isRegenerating}
                 />
               </Popconfirm>
             )}
@@ -711,6 +853,27 @@ const styles: Record<string, React.CSSProperties> = {
     textAlign: 'left',
     transition: 'background 0.15s',
   },
+  // P0-B: suggested-followups chip row (rendered after the last answer).
+  followupsRow: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 6,
+    padding: '6px 0 2px',
+  },
+  followupChip: {
+    background: '#e8f0fe',
+    border: '1px solid #d2e3fc',
+    borderRadius: 14,
+    padding: '4px 12px',
+    fontSize: 12,
+    color: '#1a73e8',
+    cursor: 'pointer',
+    maxWidth: '100%',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    transition: 'background 0.15s',
+  },
   loadingIndicator: {
     display: 'flex',
     alignItems: 'center',
@@ -750,6 +913,7 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '8px 12px',
     maxWidth: '85%',
     wordBreak: 'break-word' as const,
+    position: 'relative' as const, // anchor for the edit icon (last user message)
   },
   assistantBubble: {
     background: '#f5f5f5',
@@ -776,5 +940,35 @@ const styles: Record<string, React.CSSProperties> = {
   statusTag: {
     fontSize: 11,
     marginBottom: 4,
+  },
+  // ---- 最后一条 user 消息编辑态 ----
+  editWrap: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 6,
+    minWidth: 200,
+  },
+  editTextArea: {
+    resize: 'none' as const,
+    background: '#fff',
+  },
+  editActions: {
+    display: 'flex',
+    justifyContent: 'flex-end',
+    gap: 6,
+  },
+  // hover 浮现的"编辑问题"图标定位在 user 气泡左下角外侧。默认 opacity:0,
+  // 由 USER_BUBBLE_HOVER_CSS 在父气泡 hover 时提升到 1。
+  editIconWrap: {
+    position: 'absolute' as const,
+    left: -26,
+    bottom: 0,
+    opacity: 0,
+    transition: 'opacity 0.15s',
+  },
+  editIcon: {
+    fontSize: 13,
+    color: '#999',
+    cursor: 'pointer' as const,
   },
 };
