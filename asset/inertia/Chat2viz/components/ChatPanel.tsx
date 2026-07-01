@@ -67,14 +67,6 @@ const CHAT_MARKDOWN_CSS = `
 .chat-markdown img { max-width: 100%; }
 `;
 
-// 最后一条 user 气泡 hover 时浮现"编辑问题"图标。由于 userBubble 是动态内联
-// style(无法在 <style> 里精确选中"最后一条"), 这里用宽松规则: 任何带 .user-edit-trigger
-// 的元素, 当其所在的最近 .user-bubble 祖先被 hover 时显示。.user-bubble class 由
-// 下方渲染时挂到 userBubble 容器上。
-const USER_BUBBLE_HOVER_CSS = `
-.user-bubble:hover .user-edit-trigger { opacity: 1; }
-`;
-
 // ---------------------------------------------------------------------------
 // AiStepsIndicator — renders progress badges from store.aiSteps
 // ---------------------------------------------------------------------------
@@ -367,7 +359,6 @@ export default function ChatPanel({ disabled = false }: ChatPanelProps) {
             event) the user can send a new question. */}
 
         <style>{CHAT_MARKDOWN_CSS}</style>
-        <style>{USER_BUBBLE_HOVER_CSS}</style>
         <div ref={messagesEndRef} />
         {/* 缺陷3: TYPING_CURSOR_CSS 同时承载 .typing-cursor 光标与 .typing-dots 三点
             loading 的样式/动画(见 line 22 的 CSS 字符串). submitted 态(首帧未到)时
@@ -436,6 +427,9 @@ function MessageBubble({ message }: MessageBubbleProps) {
   // 编辑态 local state(仅最后一条 user 进入编辑时使用)。
   const [isEditingQuestion, setIsEditingQuestion] = useState(false);
   const [questionDraft, setQuestionDraft] = useState(message.content);
+  // hover 显隐: 用 React state 而非 CSS :hover 伪类 —— 后者在合成事件/部分自动化
+  // 场景下不可靠, 且 state 驱动对触屏(无 hover)也能平滑降级(focus 时也显示)。
+  const [isUserBubbleHovered, setIsUserBubbleHovered] = useState(false);
 
   const status = message.message_status;
 
@@ -538,34 +532,11 @@ function MessageBubble({ message }: MessageBubbleProps) {
     }
   }, []);
 
-  if (isSystem) return null;
-
-  // The last assistant message is created empty by startConversation() as a
-  // write-target for appendAnswer(). While it has no content yet, the
-  // AiStepsIndicator (three-dot / step badges) is the SINGLE loading affordance
-  // — skip the empty grey bubble so the two never coexist.
-  if (!isUser && isLastAssistant && !message.content && streamingState !== 'idle') {
-    return null;
-  }
-
-  // Copy the assistant answer text. Only enabled when not streaming and there
-  // is content — a common affordance for chat answers.
-  const handleCopyAnswer = () => {
-    const text = message.content ?? '';
-    if (!text) return;
-    // 统一走 utils/clipboard 的 fallback(HTTP 非安全上下文也能复制).
-    copyText(text,
-      () => notify.success('已复制回答', 1.2),
-      () => notify.error('复制失败，请手动复制', 1.2),
-    );
-  };
-
-  // Show the copy-answer button only for completed assistant bubbles.
-  const canCopyAnswer = !isUser && streamingState === 'idle' && !!message.content;
-
-  // ---- 最后一条 user 消息的编辑/重发 ----
-  const canEditQuestion = isLastUser && streamingState === 'idle' && !isRegenerating;
-
+  // ---- 最后一条 user 消息的编辑/重发 hooks ----
+  // CRITICAL: 这些 useCallback MUST 在下方两个早返回 (isSystem / 空 assistant 流式)
+  // 之前执行。否则当最后一条 assistant 从"空内容"(命中早返回, 不跑这些 hooks)变为
+  // "有内容"(不早返回, 跑这些 hooks)时, 同一组件实例两次 render 的 hooks 数量不同,
+  // 触发 React error #310 (Rendered more hooks than during the previous render)。
   const handleStartEdit = useCallback(() => {
     setQuestionDraft(message.content);
     setIsEditingQuestion(true);
@@ -597,9 +568,42 @@ function MessageBubble({ message }: MessageBubbleProps) {
     [handleSubmitEdit, handleCancelEdit],
   );
 
+  if (isSystem) return null;
+
+  // The last assistant message is created empty by startConversation() as a
+  // write-target for appendAnswer(). While it has no content yet, the
+  // AiStepsIndicator (three-dot / step badges) is the SINGLE loading affordance
+  // — skip the empty grey bubble so the two never coexist.
+  if (!isUser && isLastAssistant && !message.content && streamingState !== 'idle') {
+    return null;
+  }
+
+  // Copy the assistant answer text. Only enabled when not streaming and there
+  // is content — a common affordance for chat answers.
+  const handleCopyAnswer = () => {
+    const text = message.content ?? '';
+    if (!text) return;
+    // 统一走 utils/clipboard 的 fallback(HTTP 非安全上下文也能复制).
+    copyText(text,
+      () => notify.success('已复制回答', 1.2),
+      () => notify.error('复制失败，请手动复制', 1.2),
+    );
+  };
+
+  // Show the copy-answer button only for completed assistant bubbles.
+  const canCopyAnswer = !isUser && streamingState === 'idle' && !!message.content;
+
+  // ---- 最后一条 user 消息的编辑/重发 ----
+  const canEditQuestion = isLastUser && streamingState === 'idle' && !isRegenerating;
+
   return (
     <div style={{ ...styles.bubbleRow, justifyContent: isUser ? 'flex-end' : 'flex-start' }}>
-      <div style={isUser ? styles.userBubble : styles.assistantBubble} className={isUser ? 'user-bubble' : undefined}>
+      <div
+        style={isUser ? styles.userBubble : styles.assistantBubble}
+        className={isUser ? 'user-bubble' : undefined}
+        onMouseEnter={isUser ? () => setIsUserBubbleHovered(true) : undefined}
+        onMouseLeave={isUser ? () => setIsUserBubbleHovered(false) : undefined}
+      >
         {/* Status indicators for non-complete messages */}
         {/* UX-M1: 中文化(其余 UI 全是中文, 这三个英文标签很突兀). */}
         {!isUser && status === 'streaming' && (
@@ -688,9 +692,11 @@ function MessageBubble({ message }: MessageBubbleProps) {
         )}
 
         {/* 最后一条 user 消息: 非编辑态时, 在气泡左下角 hover 浮现"编辑"图标。
-            点击进入编辑态。安静不打扰, 符合主流 chat 产品惯例。 */}
+            点击进入编辑态。安静不打扰, 符合主流 chat 产品惯例。
+            显隐由 isUserBubbleHovered state 驱动(React onMouseEnter/Leave),
+            不依赖 CSS :hover 伪类(后者在合成事件/自动化/触屏下不可靠)。 */}
         {isUser && canEditQuestion && !isEditingQuestion && (
-          <div className="user-edit-trigger" style={styles.editIconWrap}>
+          <div className="user-edit-trigger" style={{ ...styles.editIconWrap, opacity: isUserBubbleHovered ? 1 : 0 }}>
             <Tooltip title="编辑问题">
               <EditOutlined
                 onClick={handleStartEdit}
@@ -958,12 +964,12 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 6,
   },
   // hover 浮现的"编辑问题"图标定位在 user 气泡左下角外侧。默认 opacity:0,
-  // 由 USER_BUBBLE_HOVER_CSS 在父气泡 hover 时提升到 1。
+  // 定位(left/bottom)与过渡(transition)走内联 style; 显隐 opacity 由渲染时的
+  // isUserBubbleHovered state 动态注入(不在此固定, 也不依赖 CSS :hover 伪类)。
   editIconWrap: {
     position: 'absolute' as const,
     left: -26,
     bottom: 0,
-    opacity: 0,
     transition: 'opacity 0.15s',
   },
   editIcon: {
