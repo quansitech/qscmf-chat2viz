@@ -18,8 +18,15 @@ export interface WidgetCardProps {
   onRegenerate?: (widgetId: string) => void;
   /** True while this widget's data is being re-fetched on manual refresh. */
   refreshing?: boolean;
-  /** Feature flag: show the "查询语句" panel (CHAT2VIZ_SHOW_SQL). */
+  /** Feature flag: show the per-widget "查询语句" panel (CHAT2VIZ_SHOW_SQL). */
   showSql?: boolean;
+  /**
+   * 统一的"可编辑"开关(默认 true)。false 时禁用所有会改数据/布局的交互:
+   * 标题双击编辑、刷新、删除、重新生成。流式生成期间由 PreviewPanel 传入
+   * streamingState==='idle', 一处控制全部 widget, 替代之前零散的 streamingState
+   * 判断。只读查看类交互(SQL 折叠面板)不受影响。
+   */
+  editable?: boolean;
 }
 
 /**
@@ -35,7 +42,7 @@ function effectiveStatus(widget: Widget): 'loading' | 'error' | 'chart' | 'empty
 // Component
 // ---------------------------------------------------------------------------
 
-export default function WidgetCard({ widget, onTitleChange, onRemove, onRefresh, onRegenerate, refreshing = false, showSql = false }: WidgetCardProps) {
+export default function WidgetCard({ widget, onTitleChange, onRemove, onRefresh, onRegenerate, refreshing = false, showSql = false, editable = true }: WidgetCardProps) {
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState(widget.title);
 
@@ -66,7 +73,12 @@ export default function WidgetCard({ widget, onTitleChange, onRemove, onRefresh,
   // Effective render status — legacy widgets without a status field default to 'chart'.
   const status = effectiveStatus(widget);
   // Streaming state — used to vary the loading hint ("正在查询…" vs "加载中…").
+  // NOTE: 交互门控改用统一的 `editable` prop(由 PreviewPanel 传入), 不再直接依赖
+  // streamingState 判断可否操作 —— 这样未来若有其它"只读"场景(如已发布预览)只需
+  // 传 editable={false}, 无需重复耦合 streamingState 语义。
   const streamingState = useDashboardStore((s) => s.streamingState);
+  // locked = 不可编辑(流式生成中或显式只读)。统一门控所有改数据/布局的交互。
+  const locked = !editable;
 
   // Unified chart-existence judgment (DESIGN_BASIS #7): type OR mark OR children.
   const hasSpec = hasChartSpec(widget.g2_spec);
@@ -101,19 +113,19 @@ export default function WidgetCard({ widget, onTitleChange, onRemove, onRefresh,
           ) : (
             <Typography.Text
               strong
-              onDoubleClick={handleTitleDoubleClick}
-              style={{ cursor: 'pointer', flex: 1 }}
+              onDoubleClick={editable ? handleTitleDoubleClick : undefined}
+              style={{ cursor: editable ? 'pointer' : 'default', flex: 1 }}
             >
               {widget.title || '未命名图表'}
-              <EditOutlined style={{ marginLeft: 6, fontSize: 11, opacity: 0.5 }} />
+              {editable && <EditOutlined style={{ marginLeft: 6, fontSize: 11, opacity: 0.5 }} />}
             </Typography.Text>
           )}
         </div>
         <div style={styles.headerActions}>
-          {/* 流式生成期间禁用刷新/删除: 防止用户改动已有图表与 AI 的整树替换冲突.
-              用 locked 标志统一降透明度 + 拦截指针(antd 图标无 disabled prop). */}
+          {/* locked(= !editable, 流式生成中或只读)时禁用刷新/删除: 防止用户改动
+              已有图表与 AI 的整树替换冲突。统一降透明度 + 拦截指针(antd 图标无
+              disabled prop)。locked 由外部 editable prop 驱动, 见组件顶部定义。 */}
           {(() => {
-            const locked = streamingState !== 'idle';
             const lockStyle = locked ? { ...styles.iconBtn, opacity: 0.35, pointerEvents: 'none' as const, cursor: 'not-allowed' as const } : styles.iconBtn;
             return (
               <>
@@ -174,7 +186,10 @@ export default function WidgetCard({ widget, onTitleChange, onRemove, onRefresh,
               style={{ marginBottom: 8 }}
             />
             {onRegenerate && (
-              <Typography.Link onClick={() => onRegenerate(widget.id)}>
+              <Typography.Link
+                onClick={() => !locked && onRegenerate(widget.id)}
+                style={locked ? { pointerEvents: 'none', opacity: 0.4 } : undefined}
+              >
                 <ReloadOutlined style={{ marginRight: 4 }} />
                 重新生成
               </Typography.Link>
@@ -202,8 +217,8 @@ export default function WidgetCard({ widget, onTitleChange, onRemove, onRefresh,
             )}
             {widget.suspect_value_mismatch && onRegenerate && (
               <Typography.Link
-                onClick={() => onRegenerate(widget.id)}
-                style={{ fontSize: 12, marginTop: 8 }}
+                onClick={() => !locked && onRegenerate(widget.id)}
+                style={{ fontSize: 12, marginTop: 8, ...(locked ? { pointerEvents: 'none', opacity: 0.4 } : {}) }}
               >
                 <ReloadOutlined style={{ marginRight: 4 }} />
                 检查取值并重新生成

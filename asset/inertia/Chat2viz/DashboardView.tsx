@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Button, Empty, Alert, Spin, Typography, Collapse } from 'antd';
+import { Button, Empty, Alert, Skeleton, Spin, Typography, Collapse } from 'antd';
 import { ArrowLeftOutlined } from '@ant-design/icons';
 import { useQuery, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import RGL, { WidthProvider, Layout } from 'react-grid-layout';
@@ -7,6 +7,7 @@ import 'react-grid-layout/css/styles.css';
 import 'react-grid-layout/css/react-resizable.css';
 import { getPageProps, navigate } from './adapters';
 import { ADMIN_BASE, PUBLIC_BASE } from './utils/routes';
+import { createSemaphore } from './utils/concurrency';
 import LazyG2Renderer from './components/LazyG2Renderer';
 import WidgetTable from './components/WidgetTable';
 import { hasChartSpec } from './store/dashboardStore';
@@ -70,6 +71,15 @@ interface DashboardViewPageProps {
 const COLS = 24;
 const ROW_HEIGHT = 60;
 
+/**
+ * Shared concurrency cap (6) wrapping every widget-data HTTP request on this
+ * page. react-query already de-dupes by key and honors the 5min staleTime; this
+ * semaphore is a defensive backstop that protects the public endpoint's
+ * per-IP rate limit (60 req/min) and aligns with the browser's HTTP/1.1
+ * per-origin connection ceiling (~6). Mirrors DashboardEdit.tsx.
+ */
+const limitWidgetFetch = createSemaphore(6);
+
 // ---------------------------------------------------------------------------
 // Widget Data Fetcher Component
 //
@@ -99,17 +109,19 @@ function ViewWidgetCard({ uid, widget, showSql = false, isAdminPreview = false }
       // ownership gate). The public endpoint rejects non-published dashboards.
       // Query-string params match the edit page's api_draft_widget_data call
       // (DashboardEdit.tsx) — the admin route parses them as ?uid=&widgetId=.
-      const safeUid = encodeURIComponent(uid);
-      const safeWidgetId = encodeURIComponent(widget.id);
-      const endpoint = isAdminPreview
-        ? `${ADMIN_BASE}/api_preview_widget_data?uid=${safeUid}&widgetId=${safeWidgetId}`
-        : `${PUBLIC_BASE}/api_widget_data/uid/${safeUid}/widgetId/${safeWidgetId}`;
-      const resp = await fetch(endpoint, { credentials: 'same-origin' });
-      const result = await resp.json();
-      if (result.status !== 1) {
-        throw new Error(result.info || '加载图表数据失败');
-      }
-      return result.data as Record<string, unknown>[];
+      return limitWidgetFetch(async () => {
+        const safeUid = encodeURIComponent(uid);
+        const safeWidgetId = encodeURIComponent(widget.id);
+        const endpoint = isAdminPreview
+          ? `${ADMIN_BASE}/api_preview_widget_data?uid=${safeUid}&widgetId=${safeWidgetId}`
+          : `${PUBLIC_BASE}/api_widget_data/uid/${safeUid}/widgetId/${safeWidgetId}`;
+        const resp = await fetch(endpoint, { credentials: 'same-origin' });
+        const result = await resp.json();
+        if (result.status !== 1) {
+          throw new Error(result.info || '加载图表数据失败');
+        }
+        return result.data as Record<string, unknown>[];
+      });
     },
     staleTime: 5 * 60 * 1000,
     retry: 1,
@@ -143,8 +155,18 @@ function ViewWidgetCard({ uid, widget, showSql = false, isAdminPreview = false }
           />
         )}
         {!isError && isLoading && (
-          <div style={styles.loading}>
-            <Spin tip="加载中..." />
+          // Skeleton frame + progress hint, mirroring the edit page's
+          // WidgetCard loading branch. The semaphore throttles concurrent
+          // fetches to 6, so beyond the first batch widgets wait in queue —
+          // the skeleton keeps the grid visibly populated instead of blank.
+          <div style={styles.emptyChart}>
+            <Skeleton active paragraph={{ rows: 4 }} />
+            <div style={styles.loadingHint}>
+              <Spin size="small" />
+              <Typography.Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
+                加载中…
+              </Typography.Text>
+            </div>
           </div>
         )}
         {!isError && !isLoading && hasSpec && widget.g2_spec && isTable && (
@@ -348,19 +370,19 @@ const styles: Record<string, React.CSSProperties> = {
     minHeight: 200,
     position: 'relative',
   },
-  loading: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    height: '100%',
-    minHeight: 200,
-  },
   emptyChart: {
     display: 'flex',
+    flexDirection: 'column' as const,
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 12,
     height: '100%',
     minHeight: 200,
+    padding: 12,
+  },
+  loadingHint: {
+    display: 'flex',
+    alignItems: 'center',
   },
   footer: {
     borderTop: '1px solid #f5f5f5',

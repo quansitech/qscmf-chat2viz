@@ -159,59 +159,67 @@ export default function PreviewPanel({ showSql = false }: PreviewPanelProps) {
   }
 
   return (
-    <div style={{ ...styles.container, overflow: dragging ? 'hidden' : 'auto' }}>
-      {/* 常驻布局提示:有图表时引导用户手动操作(拖拽/缩放/删除),
-          不让这些空间类操作走 LLM 对话。极低视觉权重(灰字小号),
-          始终可见——空状态有自己的引导,故仅此处显示。 */}
-      <div style={{ padding: '4px 12px', borderBottom: '1px solid #f0f0f0' }}>
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          ✋ 拖拽移动 · 边角缩放 · 🗑️ 删除
-        </Typography.Text>
+    <div style={styles.viewportWrap}>
+      <div style={{ ...styles.container, overflow: dragging ? 'hidden' : 'auto' }}>
+        {/* 常驻布局提示:有图表时引导用户手动操作(拖拽/缩放/删除),
+            不让这些空间类操作走 LLM 对话。极低视觉权重(灰字小号),
+            始终可见——空状态有自己的引导,故仅此处显示。 */}
+        <div style={{ padding: '4px 12px', borderBottom: '1px solid #f0f0f0' }}>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            ✋ 拖拽移动 · 边角缩放 · 🗑️ 删除
+          </Typography.Text>
+        </div>
+        <ResponsiveGridLayout
+          layout={layout}
+          cols={COLS}
+          rowHeight={ROW_HEIGHT}
+          onLayoutChange={handleLayoutChange}
+          onDragStart={() => setDragging(true)}
+          onDragStop={() => setDragging(false)}
+          onResizeStart={() => setDragging(true)}
+          onResizeStop={(_layout, oldItem) => {
+            setDragging(false);
+            // User manually resized → freeze auto-height for this widget so its
+            // chosen size isn't recomputed on the next data refresh.
+            if (oldItem) markWidgetUserSized(oldItem.i);
+          }}
+          compactType={COMPACT_TYPE}
+          draggableHandle=".widget-header"
+          // 流式生成期间禁止拖拽/缩放: AI 基于旧 schema 生成新图表时, 用户若同时
+          // 手动改动已有图表会与 AI 的整树替换冲突, 导致布局/状态错乱.
+          isResizable={streamingState === 'idle'}
+          isDraggable={streamingState === 'idle'}
+          margin={[12, 12]}
+          useCSSTransforms={true}
+        >
+          {widgetList.map((w) => (
+            <div key={w.id} style={styles.gridItem}>
+              <WidgetCard
+                widget={w}
+                onTitleChange={handleTitleChange}
+                onRemove={handleRemove}
+                onRefresh={handleRefresh}
+                onRegenerate={handleRegenerate}
+                refreshing={!!refreshing[w.id]}
+                showSql={showSql}
+                editable={streamingState === 'idle'}
+              />
+            </div>
+          ))}
+        </ResponsiveGridLayout>
+        <style>{widgetFadeInCss}</style>
       </div>
-      <ResponsiveGridLayout
-        layout={layout}
-        cols={COLS}
-        rowHeight={ROW_HEIGHT}
-        onLayoutChange={handleLayoutChange}
-        onDragStart={() => setDragging(true)}
-        onDragStop={() => setDragging(false)}
-        onResizeStart={() => setDragging(true)}
-        onResizeStop={(_layout, oldItem) => {
-          setDragging(false);
-          // User manually resized → freeze auto-height for this widget so its
-          // chosen size isn't recomputed on the next data refresh.
-          if (oldItem) markWidgetUserSized(oldItem.i);
-        }}
-        compactType={COMPACT_TYPE}
-        draggableHandle=".widget-header"
-        // 流式生成期间禁止拖拽/缩放: AI 基于旧 schema 生成新图表时, 用户若同时
-        // 手动改动已有图表会与 AI 的整树替换冲突, 导致布局/状态错乱.
-        isResizable={streamingState === 'idle'}
-        isDraggable={streamingState === 'idle'}
-        margin={[12, 12]}
-        useCSSTransforms={true}
-      >
-        {widgetList.map((w) => (
-          <div key={w.id} style={styles.gridItem}>
-            <WidgetCard
-              widget={w}
-              onTitleChange={handleTitleChange}
-              onRemove={handleRemove}
-              onRefresh={handleRefresh}
-              onRegenerate={handleRegenerate}
-              refreshing={!!refreshing[w.id]}
-              showSql={showSql}
-            />
-          </div>
-        ))}
-      </ResponsiveGridLayout>
       {/*
-        流式生成期间整个图表区域显示 loading 遮罩:
-          - 主防线(功能层): RGL isDraggable/isResizable={false}(见上方) +
-            WidgetCard 删除/刷新按钮禁用, 从根上阻止拖拽/缩放/删除.
-          - 视觉层(本遮罩): 整个图表区半透明蒙层 + 居中大 Spin + 文案, 明确告诉
-            用户"AI 正在生成, 请稍候". 蒙层覆盖容器可视区, 因画布已锁定用户无需
-            滚动查看具体内容; 交互阻断由主防线负责, 不依赖本蒙层拦指针.
+        流式生成期间整个图表区域显示 loading 遮罩。遮罩挂在 viewportWrap(不可滚动,
+        高度=视口可视区) 而非内部的滚动 container 上 —— 旧实现 absolute 锚定到可
+        滚动 container 的 bottom:0, 多图表时 container 实际高度远超视口, 遮罩要么
+        只盖住初始视口、滚出去的图表露在外面仍可交互, 要么居中 Spin 跑到滚动区中段
+        看不见。现在遮罩覆盖 viewportWrap 的整个可视区, 滚动内容在其下方独立滚动,
+        遮罩始终钉在视口上。
+          - 主防线(功能层): RGL isDraggable/isResizable={false} + WidgetCard
+            editable={false} 禁用所有交互, 从根上阻止拖拽/缩放/删除/编辑.
+          - 视觉+交互层(本遮罩): 半透明蒙层 + 居中大 Spin + 文案, 且 pointer-events
+            拦截指针作为双重防线.
       */}
       {streamingState !== 'idle' && hasWidgets && (
         <div style={{
@@ -231,7 +239,6 @@ export default function PreviewPanel({ showSql = false }: PreviewPanelProps) {
           </Typography.Text>
         </div>
       )}
-      <style>{widgetFadeInCss}</style>
     </div>
   );
 }
@@ -252,9 +259,21 @@ const widgetFadeInCss = `
 // ---------------------------------------------------------------------------
 
 const styles: Record<string, React.CSSProperties> = {
-  container: {
-    position: 'relative',
+  // viewportWrap: 不可滚动的定位上下文, 高度填满父级(previewPane)。loading 遮罩
+  // 以它为 absolute 锚点, 因此遮罩永远覆盖整个可视区, 不随内部滚动内容移动。
+  // overflow:hidden 防止内部 container 的滚动溢出影响遮罩定位。
+  viewportWrap: {
+    position: 'relative' as const,
     height: '100%',
+    width: '100%',
+    overflow: 'hidden' as const,
+    display: 'flex',
+    flexDirection: 'column' as const,
+  },
+  // container: 实际的滚动容器, flex:1 填满 viewportWrap 的剩余空间并独立滚动。
+  container: {
+    flex: 1,
+    minHeight: 0,
     overflow: 'auto',
     padding: 12,
     background: '#fafafa',
