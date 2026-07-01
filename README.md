@@ -2,24 +2,21 @@
 
 QSCMF 自然语言数据可视化集成包：**自然语言 → SQL → G2 图表**。
 
-> **版本匹配**：本分支（`master`）仅兼容 QSCMF v15+。
-> - QSCMF v13 请使用 `quansitech/qscmf-chat2viz:^1.0`
+> **版本匹配**：本分支（`v13`）仅兼容 QSCMF v13。
 > - QSCMF v14 请使用 `quansitech/qscmf-chat2viz:^2.0`
+> - QSCMF v15+ 请使用 `quansitech/qscmf-chat2viz:^3.0`
 
 ## 它做什么
 
-- 后台菜单 `数据可视化 → 智能分析` 提供自然语言问答入口（v14 需手动配置菜单）
-- PHP 端把问题代理到 Python `/api/v1/ask` 和 `/api/v1/ask/stream`，携带 `X-API-Key` 鉴权
-- SSE 流式端点通过 `quansitech/qscmf-sse-core` 包透传上游事件，前端渐进式渲染
-- 前端接收 G2 图表规格 + SQL + 自然语言回答，用 G2 渲染（Inertia + React）
+- 后台菜单 `数据可视化 → 智能分析` 提供自然语言问答入口
+- PHP 端把问题代理到 Python `/api/v1/ask`，携带 `X-API-Key` 鉴权
+- 前端接收 G2 图表规格 + SQL + 自然语言回答，用 G2（CDN）渲染
 - 内置 Sakila 16 表测试夹具（含中文 COMMENT），用于本地开发与回归测试
 
 ## 安装
 
 ```bash
-composer require quansitech/qscmf-chat2viz:^3.0
-composer dump-autoload
-npm run build:backend
+composer require quansitech/qscmf-chat2viz:^1.0
 ```
 
 ## 环境变量
@@ -27,53 +24,7 @@ npm run build:backend
 | 变量 | 必填 | 说明 |
 |------|------|------|
 | `CHAT2VIZ_SERVICE_URL` | 是 | Python 服务 base URL（不含尾部 `/`） |
-| `CHAT2VIZ_API_KEY` | 否 | 与 Python 服务端一致，作为 `X-API-Key` 头部传递 |
-
-## SSE 流式端点
-
-`POST /extends/Chat2Viz/api_ask_stream`
-
-SSE 流式端点通过 `quansitech/qscmf-sse-core` 包实现透明代理：后端收到请求后，以 `STREAM=true` 模式连接 Python `/api/v1/ask/stream`，逐事件转发到浏览器。
-
-请求格式同 `api_ask`（JSON body `{"question": "..."}`），响应为 `text/event-stream`：
-
-```
-event: answer
-data: {"delta": "SELECT"}
-
-event: sql
-data: {"sql": "SELECT ..."}
-
-event: tool
-data: {"name": "search_objects"}
-
-event: g2_spec
-data: {"type": "line", ...}
-
-event: done
-data: {}
-```
-
-错误事件格式：`event: error\ndata: {"type": "upstream_disconnected", "info": "分析服务连接中断"}`
-
-## 前端构建
-
-本包的前端源码位于 `asset/inertia/Chat2viz/`：
-
-- `Index.tsx` — 主界面（Inertia + React + AntD + G2）
-- `sse-parser.ts` — SSE 解析模块（纯 TS，无 React 依赖）
-- `G2Renderer.tsx` — G2 图表渲染组件
-
-**构建产物路径契约**：源码在 `asset/inertia/Chat2viz/`，构建产物由宿主项目的 `npm run build` 产出到 `resources/js/backend/Pages/Chat2viz/...`。本包的 `Chat2VizServiceProvider` 通过软链 `WWW_DIR/Public/inertia-chat2viz → asset/inertia/Chat2viz` 暴露前端资源，宿主项目的 Vite/webpack 配置负责将 TS 源码编译到 Inertia 页面入口。
-
-SSE 解析模块导出：
-
-- `parseSseBlock(raw: string): SseEvent | null` — 解析单个 SSE 块
-- `createSseProcessor(onEvent)` — 创建流式处理器（缓冲 + 分块）
-
-## Laravel 集成
-
-Laravel Artisan 命令（`chat2viz:seed-sakila` / `chat2viz:unseed-sakila`）通过 `composer.json` 的 `extra.laravel.providers` 自动注册。如宿主项目未启用自动发现，需在 `config/app.php` 的 `providers` 数组中手动添加 `Qscmf\Chat2Viz\Chat2VizServiceProvider`。
+| `CHAT2VIZ_API_KEY` | 是 | 与 Python 服务端 `CHAT2VIZ_API_KEY` 一致，作为 `X-API-Key` 头部传递 |
 
 ## 协议
 
@@ -106,6 +57,32 @@ Laravel Artisan 命令（`chat2viz:seed-sakila` / `chat2viz:unseed-sakila`）通
 - `conversation_id`：可选，匹配 `^[a-f0-9\-]{1,64}$`
 - 错误时返回 `{status: 0, info: "..."}`
 
+## 公开视图（Public Dashboard View）
+
+发布后的仪表盘可通过公开路由匿名访问：
+
+```
+GET /extends/Chat2VizDashboard/view/uid/{uid}
+```
+
+**安全边界**：
+
+- 仅 `dashboard_status = 'published'` 的仪表盘可被匿名访问。草稿（`draft`）和归档（`archived`）状态返回与"UID 不存在"完全一致的错误页，避免状态枚举。
+- 公开视图渲染前会剥离 schema 中每个 widget 的 `sql` 字段（仅暴露图表渲染所需的 `g2_spec` / 标题 / 布局）。SQL 字符串属于"查询意图"，不应进浏览器 View Source。`g2_spec` 是图表规格（不是 SQL），保留。
+- 图表数据通过公开端点 `GET /extends/Chat2VizDashboard/api_widget_data/uid/{uid}/widgetId/{widgetId}` 获取，服务端依据持久化的 SQL 执行查询，前端 schema 不需要 SQL 即可渲染。
+- `api_widget_data` 受 SqlValidator（SELECT-only + UNION 禁止 + 危险函数黑名单）和 IP 速率限制（APCu 可用 60 次/分钟，不可用 30 次/分钟）双重防护。
+- admin 模块（`/admin/Chat2VizDashboard/*`）与公开模块（`/extends/Chat2VizDashboard/*`）独立鉴权：公开路由不携带 admin session；内部 API（`api_read` / `api_update` 等）强制 `created_by === currentUserId` 所有权校验。
+
+## 工作原理
+
+```
+QSCMF 后台 → Chat2Viz Controller → Python NL2SQL 服务 → 返回 G2 规格 → 前端渲染
+```
+
+- PHP 包只做 HTTP 代理、字段校验、`X-API-Key` 鉴权传递
+- NL2SQL、SQL 安全校验、`g2_spec` 生成都在 Python 服务端（LangGraph 编排）
+- 前端用 G2 声明式规格直接渲染，无需 ECharts option 适配
+
 ## 开发与测试
 
 ```bash
@@ -116,8 +93,13 @@ php artisan chat2viz:unseed-sakila            # 卸载
 
 数据文件位于 `src/Sakila/data/`，含中文表/字段 COMMENT，便于 NL2SQL 模型识别业务字段。
 
-PHPUnit 测试：
+## 常见问题
 
-```bash
-vendor/bin/phpunit
-```
+**Q: 必须用 Sakila 吗？**
+不必须，是开发/测试夹具，生产环境对接你自己的业务库。
+
+**Q: Python 服务没启动会怎样？**
+`api_ask` 返回 `分析服务不可用`，前端展示对应错误；不阻塞页面渲染。
+
+**Q: 为什么用 G2 而不是 ECharts？**
+G2 是 AntV 声明式图表库，与 Python 端 `g2_spec` 规格化输出天然契合；ECharts 是命令式 option。

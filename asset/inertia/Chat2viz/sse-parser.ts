@@ -1,150 +1,124 @@
-/**
- * SSE parser module — pure TypeScript, no React dependencies.
- *
- * Provides `parseSseBlock` for parsing a single SSE block and `createSseProcessor`
- * for streaming chunk-by-chunk consumption over a ReadableStream.
- *
- * Event types mirror the Python qs-chat2viz service wire protocol:
- *   answer | sql | tool | g2_spec | done | error
- */
+// ---------------------------------------------------------------------------
+// SSE Event Parser for Chat2Viz
+//
+// Parses raw SSE text frames (as produced by the SsePassthrough backend) into
+// typed event objects.  Each SSE frame follows the standard format:
+//
+//   event: <type>
+//   data: <json-string>
+//
+// The parser also handles multi-line data fields (split with \n) and frames
+// that omit the explicit `event:` line (defaults to "message").
+// ---------------------------------------------------------------------------
 
-// --- Types ---
+// ---------------------------------------------------------------------------
+// Event type constants
+// ---------------------------------------------------------------------------
 
-export type SseEventType = 'answer' | 'sql' | 'tool' | 'g2_spec' | 'done' | 'error';
-
-export interface AnswerEvent {
-  readonly type: 'answer';
-  readonly data: { delta: string };
-}
-
-export interface SqlEvent {
-  readonly type: 'sql';
-  readonly data: { sql: string };
-}
-
-export interface ToolEvent {
-  readonly type: 'tool';
-  readonly data: { name: string };
-}
-
-export interface G2Event {
-  readonly type: 'g2_spec';
-  readonly data: Record<string, unknown>;
-}
-
-export interface DoneEvent {
-  readonly type: 'done';
-  readonly data: Record<string, unknown>;
-}
-
-export interface ErrorEvent {
-  readonly type: 'error';
-  readonly data: { type: string; info?: string; error?: { code: string; message: string } };
-}
-
-export type SseEvent = AnswerEvent | SqlEvent | ToolEvent | G2Event | DoneEvent | ErrorEvent;
-
-// --- Parser ---
+/** The 11 standard Chat2Viz event types (legacy single-chart conversation). */
+const STANDARD_EVENT_TYPES = [
+  'answer',
+  'sql_generated',
+  'thinking',
+  'thinking_done',
+  'data_preview',
+  'schema_info',
+  'column_stats',
+  'error',
+  'done',
+  'conversation_id',
+  'metadata',
+] as const;
 
 /**
- * Parse a single raw SSE block (text between `\n\n` delimiters) into a typed SseEvent.
- *
- * Handles:
- * - `event:` line → type
- * - `data:` line(s) → parsed JSON or text fallback; multi-line data joined with `\n`
- * - `:` comment lines → returns null
- * - Empty blocks → returns null
+ * Dashboard-specific event types under the declarative-frontend-adapter
+ * whole-tree protocol (contract §1/§5). The deprecated DASHBOARD_INIT /
+ * WIDGET_DATA_UPDATE / dashboard_patch / WIDGET_UPDATE / WIDGET_REMOVE /
+ * dashboard_rollback / action_call / action_call_result were collapsed into
+ * DASHBOARD_REPLACE; tool_start / tool_result are the §5 tool-progress names.
  */
-export function parseSseBlock(raw: string): SseEvent | null {
-  const trimmed = raw.trim();
-  if (trimmed === '') {
-    return null;
-  }
+const DASHBOARD_EVENT_TYPES = [
+  'DASHBOARD_REPLACE',
+  'WIDGET_ERROR',
+  'tool_start',
+  'tool_result',
+] as const;
 
-  // Comment-only block (heartbeat)
-  const lines = trimmed.split('\n');
-  const hasContent = lines.some((l) => l.trim() !== '');
-  const isComment = lines.every((l) => {
-    const t = l.trim();
-    return t === '' || t.startsWith(':');
-  });
-  if (isComment || !hasContent) {
-    return null;
-  }
+export type StandardEventType = (typeof STANDARD_EVENT_TYPES)[number];
+export type DashboardEventType = (typeof DASHBOARD_EVENT_TYPES)[number];
+export type SseEventType = StandardEventType | DashboardEventType;
 
-  let eventType = '';
+// ---------------------------------------------------------------------------
+// Parsed event shape
+// ---------------------------------------------------------------------------
+
+export interface SseEvent {
+  /** The SSE event name (e.g. "WIDGET_DATA_UPDATE", "action_call"). */
+  type: SseEventType | string;
+  /** The parsed JSON data payload. */
+  data: Record<string, unknown>;
+  /** The raw data string (before JSON parse), useful for debugging. */
+  raw: string;
+}
+
+// ---------------------------------------------------------------------------
+// Parser
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse a single SSE frame (the text between two `\n\n` boundaries) into a
+ * structured SseEvent.
+ *
+ * Returns `null` if the frame is empty or the data cannot be parsed.
+ */
+export function parseSseEvent(frame: string): SseEvent | null {
+  const lines = frame.split('\n');
+  let eventType = 'message';
   const dataLines: string[] = [];
 
   for (const line of lines) {
-    const l = line.trim();
-    if (l === '' || l.startsWith(':')) {
-      continue;
-    }
-    if (l.startsWith('event:')) {
-      eventType = l.substring(6).trim();
-    } else if (l.startsWith('data:')) {
-      dataLines.push(l.substring(5).trimStart());
+    // Skip comments
+    if (line.startsWith(':')) continue;
+
+    if (line.startsWith('event:')) {
+      eventType = line.slice(6).trim();
+    } else if (line.startsWith('data:')) {
+      // Per SSE spec: strip exactly ONE leading space (if present), not all.
+      // trimStart() would corrupt data values that legitimately begin with spaces.
+      const afterColon = line.slice(5);
+      dataLines.push(afterColon.startsWith(' ') ? afterColon.slice(1) : afterColon);
+    } else if (line.includes(':')) {
+      // Unknown field; ignore per SSE spec
     }
   }
 
-  if (dataLines.length === 0) {
-    return null;
-  }
+  if (dataLines.length === 0) return null;
 
-  const rawJson = dataLines.join('\n');
+  const raw = dataLines.join('\n');
+
   let data: Record<string, unknown>;
   try {
-    const parsed = JSON.parse(rawJson);
+    const parsed = JSON.parse(raw);
     data = typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
       ? parsed
-      : { text: rawJson };
+      : { value: parsed };
   } catch {
-    data = { text: rawJson };
+    // If JSON parse fails, wrap the raw text
+    data = { text: raw };
   }
 
-  return { type: eventType as SseEventType, data } as SseEvent;
+  return { type: eventType, data, raw };
 }
 
-// --- Streaming processor ---
+// ---------------------------------------------------------------------------
+// Type guards
+// ---------------------------------------------------------------------------
 
-/**
- * Create an SSE streaming processor that buffers partial chunks and emits
- * complete events via the `onEvent` callback.
- */
-export function createSseProcessor(onEvent: (e: SseEvent) => void): {
-  processChunk: (text: string) => void;
-  flush: () => void;
-} {
-  let buffer = '';
-
-  function processChunk(text: string): void {
-    buffer += text;
-    const parts = buffer.split('\n\n');
-    // The last element is the remainder (possibly incomplete)
-    buffer = parts.pop()!;
-
-    for (const part of parts) {
-      const trimmed = part.trim();
-      if (trimmed === '' || trimmed.startsWith(':')) {
-        continue;
-      }
-      const evt = parseSseBlock(trimmed);
-      if (evt !== null) {
-        onEvent(evt);
-      }
-    }
-  }
-
-  function flush(): void {
-    const trimmed = buffer.trim();
-    if (trimmed !== '' && !trimmed.startsWith(':')) {
-      const evt = parseSseBlock(trimmed);
-      if (evt !== null) {
-        onEvent(evt);
-      }
-    }
-    buffer = '';
-  }
-
-  return { processChunk, flush };
+export function isStandardEvent(type: string): type is StandardEventType {
+  return (STANDARD_EVENT_TYPES as readonly string[]).includes(type);
 }
+
+export function isDashboardEvent(type: string): type is DashboardEventType {
+  return (DASHBOARD_EVENT_TYPES as readonly string[]).includes(type);
+}
+

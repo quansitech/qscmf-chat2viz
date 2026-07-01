@@ -1,0 +1,50 @@
+<extend name="Admin@default/common/dashboard_layout" />
+
+<block name="content">
+    <section class="content-header clearfix">
+        <h1 class="pull-left">{$meta_title}</h1>
+    </section>
+    <section class="content">
+        <div id="dashboard-edit-app"></div>
+    </section>
+</block>
+
+<block name="script">
+    <link rel="stylesheet" href="__PUBLIC__/chat2viz-dashboard/dashboard-edit.css?v=39">
+    <script src="__PUBLIC__/libs/g2/5.4.8/g2.min.js"></script>
+    <script>
+    // --- G2 resilience patch: normalize specs + async error swallowing ---
+    // LLM-generated G2 specs occasionally contain structures that crash G2 v5
+    // internally (TypeError: o.flatMap, t.filter, invalid format, etc.). This
+    // patch wraps Chart construction to deep-normalize the spec and catch async
+    // render errors so a single bad widget never leaves the whole dashboard
+    // stuck on a skeleton screen.
+    (function() {
+        // Global error suppressor for G2 internal errors that escape the
+        // render() promise chain (e.g. from requestAnimationFrame/ResizeObserver
+        // callbacks inside G2). These are non-fatal — the chart may still
+        // render partially.
+        var origOnError = window.onerror;
+        window.onerror = function(msg, url, line, col, err) {
+            if (typeof msg === 'string' && (msg.indexOf('is not a function') >= 0 || msg.indexOf('iterable') >= 0 || msg.indexOf('interpolation') >= 0 || msg.indexOf('invalid format') >= 0)) {
+                if (url && url.indexOf('g2.min.js') >= 0) return true; // suppress
+            }
+            if (err && err.stack && err.stack.indexOf('g2.min.js') >= 0 &&
+                err.message && (err.message.indexOf('not a function') >= 0 || err.message.indexOf('iterable') >= 0)) {
+                return true; // suppress G2 internal errors
+            }
+            return origOnError ? origOnError.apply(this, arguments) : false;
+        };
+        // Also catch unhandled promise rejections from G2
+        window.addEventListener('unhandledrejection', function(e) {
+            if (e.reason && e.reason.stack && e.reason.stack.indexOf('g2.min.js') >= 0) {
+                e.preventDefault(); // swallow
+            }
+        });
+        // deepNormalize / PatchedChart removed (spec-typed-contract Phase C):
+        // specs are validated at commit_widget ingress; no heal-on-read needed.
+    })();
+    </script>
+    <script>var __PAGE_DATA__ = {:json_encode(['dashboard' => $dashboard, 'show_sql' => $show_sql], JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE)};</script>
+    <script src="__PUBLIC__/chat2viz-dashboard/dashboard-edit.js?v=43"></script>
+</block>

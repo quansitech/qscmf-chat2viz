@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="renderer" content="webkit">
+        <meta http-equiv="X-UA-Compatible" content="IE=edge">
+        <title>{$meta_title}｜{:C('WEB_SITE_TITLE')}</title>
+        <meta content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" name="viewport">
+        <link href="__PUBLIC__/libs/bootstrap/bootstrap.css" rel="stylesheet" type="text/css" />
+        <link href="__PUBLIC__/libs/font-awesome/font-awesome.css" rel="stylesheet" type="text/css" />
+        <link rel="stylesheet" type="text/css" href="__PUBLIC__/libs/cui/cui.extend.min.css">
+        <script type="text/javascript" src="__PUBLIC__/libs/mod.js"></script>
+        <script src="__PUBLIC__/libs/jquery/jquery.js"></script>
+        <script>
+            const Base = {
+                siteUrl: "{:(HTTP_PROTOCOL . '://' . SITE_URL)}"
+            };
+        </script>
+        <block name="style"></block>
+    </head>
+    <body class="chat2viz-public">
+        <div class="chat2viz-public-container">
+            <block name="content"></block>
+        </div>
+        <block name="script"></block>
+    </body>
+</html>
