@@ -3,6 +3,8 @@ import RGL, { WidthProvider, Layout } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import 'react-grid-layout/css/react-resizable.css';
 import WidgetCard from './WidgetCard';
+import { suggestHeight } from '../utils/suggestHeight';
+import { normalizeRows } from '../store/dashboardStore';
 import type { Widget, WidgetLayout } from '../store/dashboardStore';
 
 // ---------------------------------------------------------------------------
@@ -104,26 +106,27 @@ export default function DashboardGrid({
   renderCard,
 }: DashboardGridProps) {
   // ---- Build react-grid-layout layout array ----
-  // Use the persisted layout as-is. Height auto-tuning (suggestHeight) is the
-  // edit page's job at hydration time (DashboardEdit stores the tuned h); the
-  // grid must NOT recompute h at render time — doing so desyncs h from the
-  // persisted y values, and RGL's compactType="vertical" then corrupts the
-  // layout (items get pushed to y=3612+). Both edit and view pass through
-  // here, so both honor whatever h the store/schema carries.
+  // Height auto-tuning is centralized here (the single shared render path) so
+  // the edit page and view page always produce identical heights:
+  //  - userSized widgets (manually resized by the user) keep their hand-set h.
+  //  - all others get h recomputed via suggestHeight (content-aware: tables
+  //    grow with rows, charts use DEFAULT_H, etc.).
+  //
+  // For auto-tuned widgets we drop the persisted y and let RGL's
+  // compactType="vertical" re-stack them — otherwise the old y (based on the
+  // old h) desyncs from the new h and items get pushed far off-screen.
+  // userSized widgets keep their full persisted layout (x/y/w/h) untouched.
   const layout: Layout[] = useMemo(
     () =>
       widgets.map((w) => {
         const l = w.layout || { x: 0, y: 0, w: 12, h: 6 };
-        return {
-          i: w.id,
-          x: l.x,
-          y: l.y,
-          w: l.w,
-          h: l.h,
-          minW: 4,
-          minH: 3,
-          static: readonly,
-        };
+        if (l.userSized) {
+          // User explicitly resized — honor exactly.
+          return { i: w.id, x: l.x, y: l.y, w: l.w, h: l.h, minW: 4, minH: 3, static: readonly };
+        }
+        // Auto-tuned: recompute h from spec+data, let RGL compact place y.
+        const h = suggestHeight({ spec: w.g2_spec, data: normalizeRows(w.data) });
+        return { i: w.id, x: l.x, y: 0, w: l.w, h, minW: 4, minH: 3, static: readonly };
       }),
     [widgets, readonly],
   );
