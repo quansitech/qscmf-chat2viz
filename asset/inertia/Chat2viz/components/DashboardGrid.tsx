@@ -3,8 +3,6 @@ import RGL, { WidthProvider, Layout } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import 'react-grid-layout/css/react-resizable.css';
 import WidgetCard from './WidgetCard';
-import { suggestHeight } from '../utils/suggestHeight';
-import { normalizeRows } from '../store/dashboardStore';
 import type { Widget, WidgetLayout } from '../store/dashboardStore';
 
 // ---------------------------------------------------------------------------
@@ -106,26 +104,22 @@ export default function DashboardGrid({
   renderCard,
 }: DashboardGridProps) {
   // ---- Build react-grid-layout layout array ----
-  // Height is content-aware: widgets that were NOT explicitly user-sized get
-  // their `h` recomputed from spec+data (mirrors DashboardEdit hydration).
-  // User-sized widgets keep their hand-set h untouched.
+  // Use the persisted layout as-is. Height auto-tuning (suggestHeight) is the
+  // edit page's job at hydration time (DashboardEdit stores the tuned h); the
+  // grid must NOT recompute h at render time — doing so desyncs h from the
+  // persisted y values, and RGL's compactType="vertical" then corrupts the
+  // layout (items get pushed to y=3612+). Both edit and view pass through
+  // here, so both honor whatever h the store/schema carries.
   const layout: Layout[] = useMemo(
     () =>
       widgets.map((w) => {
-        const persisted = w.layout;
-        const baseLayout: WidgetLayout = persisted || { x: 0, y: 0, w: 12, h: 6 };
-        const h = persisted?.userSized
-          ? persisted.h
-          : suggestHeight({
-              spec: w.g2_spec,
-              data: normalizeRows(w.data),
-            });
+        const l = w.layout || { x: 0, y: 0, w: 12, h: 6 };
         return {
           i: w.id,
-          x: baseLayout.x,
-          y: baseLayout.y,
-          w: baseLayout.w,
-          h,
+          x: l.x,
+          y: l.y,
+          w: l.w,
+          h: l.h,
           minW: 4,
           minH: 3,
           static: readonly,
