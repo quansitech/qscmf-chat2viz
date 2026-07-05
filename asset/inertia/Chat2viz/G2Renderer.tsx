@@ -188,6 +188,16 @@ export default function G2Renderer({ spec, data, width, height, className }: G2R
     if (!G2 || typeof G2.Chart !== 'function') return;
     const level = determineUpdateLevel(prevSpecRef.current, spec, prevDataRef.current, data);
 
+    // declarative-dsl-v3 fix: if the chart instance was destroyed by an async
+    // catch handler (G2 internal detached-promise reject on theta/pie specs),
+    // chartRef.current is null but prevSpecRef/prevDataRef still hold the last
+    // values — so determineUpdateLevel returns 'options'/'changeData' (not
+    // 'recreate'), and those branches' `if (chartRef.current)` guards silently
+    // no-op, leaving the canvas empty forever after the first modify turn.
+    // Force recreate whenever the instance is missing, regardless of level.
+    const effectiveLevel: 'changeData' | 'options' | 'recreate' =
+      chartRef.current === null ? 'recreate' : level;
+
     const safeData = sanitizeChartData(data);
 
     // G2 v5 can throw asynchronously (e.g. label/interaction `flatMap` on a
@@ -197,7 +207,7 @@ export default function G2Renderer({ spec, data, width, height, className }: G2R
     // than spawning an uncaught rejection.
     if (!safeData) return;
 
-    switch (level) {
+    switch (effectiveLevel) {
       case 'changeData': {
         // Level 1: Only data changed -> use changeData() for performance
         if (chartRef.current && safeData) {
