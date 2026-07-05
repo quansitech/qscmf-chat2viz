@@ -416,21 +416,28 @@ HTML;
             }
             if (!$this->checkOwnershipAndReject($existing)) return;
 
-            // Validate widget g2_spec structure via Python validate-spec endpoint.
-            // (spec-typed-contract: dashboard-schema Requirement — all spec-write
-            // paths validate). 2s timeout, fail-open on unavailable (blocking all
-            // manual edits when Python is down is worse than the rare dirty-edit risk).
+            // Validate widget spec structure via Python validate-spec endpoint.
+            // v3: reads plugin_spec when plugin_type === 'g2_chart'; falls back to
+            // g2_spec for legacy v2 schemas (no plugin_type field).
+            // 2s timeout, fail-open on unavailable (blocking all manual edits when
+            // Python is down is worse than the rare dirty-edit risk).
             if (isset($input['current_schema']['widgets'])) {
                 $pythonHost = getenv('CHAT2VIZ_PYTHON_HOST') ?: 'http://localhost:7860';
-                $apiKey = getenv('CHAT2VIZ_API_KEY') ?: 'local-test-key-not-secure';
+                $apiKey = $_ENV['CHAT2VIZ_API_KEY'] ?? getenv('CHAT2VIZ_API_KEY') ?? 'local-test-key-not-secure';
                 foreach ($input['current_schema']['widgets'] as $w) {
-                    if (isset($w['g2_spec']) && is_array($w['g2_spec'])) {
+                    if (!is_array($w)) continue;
+                    $pluginType = $w['plugin_type'] ?? null;
+                    // v3 g2_chart → validate plugin_spec; legacy (no plugin_type) → g2_spec.
+                    $spec = ($pluginType === 'g2_chart' && isset($w['plugin_spec']))
+                        ? $w['plugin_spec']
+                        : ($w['g2_spec'] ?? null);
+                    if (is_array($spec) && !empty($spec)) {
                         $validated = $this->validateSpecViaPython(
-                            $pythonHost, $apiKey, $w['g2_spec']
+                            $pythonHost, $apiKey, $spec
                         );
                         if ($validated === false) {
-                            // Validation explicitly failed (not a timeout) → reject
-                            $this->ajaxReturn(['status' => 0, 'info' => '图表规格校验失败，请检查 g2_spec 结构']);
+                            $field = $pluginType === 'g2_chart' ? 'plugin_spec' : 'g2_spec';
+                            $this->ajaxReturn(['status' => 0, 'info' => "图表规格校验失败，请检查 {$field} 结构"]);
                             return;
                         }
                         // $validated === null → timeout/unavailable → fail-open (continue)

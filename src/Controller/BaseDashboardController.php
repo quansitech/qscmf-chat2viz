@@ -58,9 +58,21 @@ abstract class BaseDashboardController extends QsController
     protected function getWidgetDataService(): WidgetDataService
     {
         if ($this->widgetDataService === null) {
+            // Python mode (default) needs the SocketTransport for the form-A→B
+            // forwarding bridge. Native mode skips it (self-executes locally).
+            $socketTransport = null;
+            $executorMode = $_ENV['CHAT2VIZ_QUERY_EXECUTOR'] ?? getenv('CHAT2VIZ_QUERY_EXECUTOR');
+            $isPythonMode = $executorMode !== 'native';
+            if ($isPythonMode && class_exists(\Qscmf\SseCore\SocketTransport::class)) {
+                $socketTransport = new \Qscmf\SseCore\SocketTransport([
+                    'socket_path' => (string) ($_ENV['CHAT2VIZ_SOCKET_PATH'] ?? getenv('CHAT2VIZ_SOCKET_PATH') ?: '/var/www/chat2viz.sock'),
+                    'timeout' => (int) ($_ENV['CHAT2VIZ_SSE_TIMEOUT'] ?? getenv('CHAT2VIZ_SSE_TIMEOUT') ?: 180),
+                ]);
+            }
             $this->widgetDataService = new WidgetDataService(
                 $this->repo,
-                fn(string $tag, string $detail) => $this->logError($tag, $detail)
+                fn(string $tag, string $detail) => $this->logError($tag, $detail),
+                $socketTransport
             );
         }
         return $this->widgetDataService;
