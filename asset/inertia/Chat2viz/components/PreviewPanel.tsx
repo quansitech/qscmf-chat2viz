@@ -1,13 +1,28 @@
 import { useCallback, useMemo, useState } from 'react';
 import { Empty, Spin, Typography } from 'antd';
 import { LayoutOutlined } from '@ant-design/icons';
-import { useQueryClient } from '@tanstack/react-query';
 import type { Layout } from 'react-grid-layout';
-import DashboardGrid from './DashboardGrid';
+import DashboardGrid, { type GridWidget } from './DashboardGrid';
 import WidgetCard from './WidgetCard';
 import { useDashboardStore } from '../store/dashboardStore';
-import { ADMIN_BASE } from '../utils/routes';
-import type { Widget, WidgetLayout } from '../store/dashboardStore';
+
+// Edit-mode single-widget refresh: re-fetch from the draft API and update the
+// in-memory cache. ViewWidgetCard (published page) uses react-query's refetch;
+// edit mode has no react-query layer so this hand-rolled fetch + store update
+// is the manual-refresh path (recovery for network/g2-load timing failures).
+const ADMIN_BASE = (typeof window !== 'undefined' && (window as any).__ADMIN_BASE__) || '';
+async function refreshDraftWidget(uid: string, widgetId: string): Promise<{ rows: Record<string, unknown>[]; total?: number }> {
+  const resp = await fetch(
+    `${ADMIN_BASE}/api_draft_widget_data?uid=${encodeURIComponent(uid)}&widgetId=${encodeURIComponent(widgetId)}`,
+    { credentials: 'same-origin' },
+  );
+  const result = await resp.json();
+  if (result.status !== 1) {
+    throw new Error(result.info || '图表数据刷新失败');
+  }
+  const rows = Array.isArray(result.data) ? (result.data as Record<string, unknown>[]) : [];
+  return { rows, total: typeof result.total === 'number' ? result.total : undefined };
+}
 
 // ---------------------------------------------------------------------------
 // Component
@@ -19,32 +34,39 @@ interface PreviewPanelProps {
 }
 
 export default function PreviewPanel({ showSql = false }: PreviewPanelProps) {
-  const widgets = useDashboardStore((s) => s.widgets);
+  const dsl = useDashboardStore((s) => s.dsl);
+  const widgetDataCache = useDashboardStore((s) => s.widgetDataCache);
   const updateWidget = useDashboardStore((s) => s.updateWidget);
   const updateLayout = useDashboardStore((s) => s.updateLayout);
   const markWidgetUserSized = useDashboardStore((s) => s.markWidgetUserSized);
-  const removePanel = useDashboardStore((s) => s.removePanel);
+  const removeWidget = useDashboardStore((s) => s.removeWidget);
   const streamingState = useDashboardStore((s) => s.streamingState);
   const uid = useDashboardStore((s) => s.uid);
-  const queryClient = useQueryClient();
-  const [refreshing, setRefreshing] = useState<Record<string, boolean>>({});
-  const [dragging, setDragging] = useState(false);
+  const updateWidgetDataCache = useDashboardStore((s) => s.updateWidgetDataCache);
+  // Track which widget is currently being manually refreshed (for the spin icon).
+  const [refreshingId, setRefreshingId] = useState<string | null>(null);
 
-  const widgetList = useMemo(() => Object.values(widgets) as Widget[], [widgets]);
-  const hasWidgets = widgetList.length > 0;
+  // Build GridWidget[] from the DSL + cache.
+  const gridWidgets = useMemo<GridWidget[]>(() => {
+    if (!dsl) return [];
+    return Object.values(dsl.widgets).map((widget) => ({
+      widget,
+      cache: widgetDataCache[widget.widget_id],
+      sql: dsl.queries[widget.query_id]?.raw_sql,
+    }));
+  }, [dsl, widgetDataCache]);
 
-  // ---- Layout change handler (writes back to the store) ----
+  const hasWidgets = gridWidgets.length > 0;
+
   const handleLayoutChange = useCallback(
     (newLayout: Layout[]) => {
       for (const item of newLayout) {
-        const widgetLayout: WidgetLayout = { x: item.x, y: item.y, w: item.w, h: item.h };
-        updateLayout(item.i, widgetLayout);
+        updateLayout(item.i, item.x, item.y, item.w, item.h);
       }
     },
     [updateLayout],
   );
 
-  // ---- Widget actions ----
   const handleTitleChange = useCallback(
     (widgetId: string, title: string) => {
       updateWidget(widgetId, { title });
@@ -54,52 +76,31 @@ export default function PreviewPanel({ showSql = false }: PreviewPanelProps) {
 
   const handleRemove = useCallback(
     (widgetId: string) => {
-      removePanel(widgetId);
+      removeWidget(widgetId);
     },
-    [removePanel],
+    [removeWidget],
   );
+
+  const handleRegenerate = useCallback((_widgetId: string) => {
+    updateWidget(_widgetId, { status: 'success' });
+  }, [updateWidget]);
 
   const handleRefresh = useCallback(
     async (widgetId: string) => {
       if (!uid) return;
-      // Refresh ONLY this widget — invalidate its single query key and refetch.
-      // The backend api_draft_widget_data filters strictly by widgetId, so no
-      // other widget is touched (previously refreshKey was set but never read).
-      setRefreshing((r) => ({ ...r, [widgetId]: true }));
+      setRefreshingId(widgetId);
       try {
-        const resp = await fetch(
-          `${ADMIN_BASE}/api_draft_widget_data?uid=${encodeURIComponent(uid)}&widgetId=${encodeURIComponent(widgetId)}`,
-          { credentials: 'same-origin' },
-        );
-        const result = await resp.json();
-        if (result.status === 1 && Array.isArray(result.data)) {
-          updateWidget(widgetId, { data: result.data as Record<string, unknown>[] });
-        }
-        // Also drop this key from the react-query cache so the next hydration
-        // re-fetches fresh data instead of serving the stale 5min entry.
-        queryClient.removeQueries({ queryKey: ['widget-data', uid, widgetId, 'draft'] });
+        const { rows, total } = await refreshDraftWidget(uid, widgetId);
+        updateWidgetDataCache(widgetId, { rows, columns: [] }, { total, status: rows.length > 0 ? 'chart' : 'empty' });
       } catch {
-        // Non-fatal: leave the existing data in place.
+        updateWidgetDataCache(widgetId, null, { status: 'error', error_msg: '刷新失败，请重试' });
       } finally {
-        setRefreshing((r) => {
-          const next = { ...r };
-          delete next[widgetId];
-          return next;
-        });
+        setRefreshingId(null);
       }
     },
-    [uid, updateWidget, queryClient],
+    [uid, updateWidgetDataCache],
   );
 
-  // ---- Regenerate (error-state widget) ----
-  const handleRegenerate = useCallback((_widgetId: string) => {
-    // Placeholder: regeneration requires a new SSE ask. For now, just clear the
-    // error so the skeleton re-shows; a future iteration can re-issue the last
-    // question scoped to this widget.
-    updateWidget(_widgetId, { status: 'loading' });
-  }, [updateWidget]);
-
-  // ---- Empty state ----
   if (!hasWidgets) {
     return (
       <div style={styles.emptyContainer}>
@@ -127,53 +128,39 @@ export default function PreviewPanel({ showSql = false }: PreviewPanelProps) {
 
   return (
     <div style={styles.viewportWrap}>
-      <div style={{ ...styles.container, overflow: dragging ? 'hidden' : 'auto' }}>
-        {/* 常驻布局提示:有图表时引导用户手动操作(拖拽/缩放/删除),
-            不让这些空间类操作走 LLM 对话。极低视觉权重(灰字小号),
-            始终可见——空状态有自己的引导,故仅此处显示。 */}
+      <div style={{ ...styles.container, overflow: streamingState !== 'idle' ? 'hidden' : 'auto' }}>
         <div style={{ padding: '4px 12px', borderBottom: '1px solid #f0f0f0' }}>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             ✋ 拖拽移动 · 边角缩放 · 🗑️ 删除
           </Typography.Text>
         </div>
         <DashboardGrid
-          widgets={widgetList}
+          widgets={gridWidgets}
+          regions={dsl?.layout.regions}
           readonly={streamingState !== 'idle'}
           onLayoutChange={handleLayoutChange}
-          onDragStart={() => setDragging(true)}
-          onDragStop={() => setDragging(false)}
-          onResizeStart={() => setDragging(true)}
+          onDragStart={() => {}}
+          onDragStop={() => {}}
+          onResizeStart={() => {}}
           onResizeStop={(oldItem) => {
-            // User manually resized → freeze auto-height for this widget so its
-            // chosen size isn't recomputed on the next data refresh.
             markWidgetUserSized(oldItem.i);
           }}
-          renderCard={(w) => (
+          renderCard={(gw) => (
             <WidgetCard
-              widget={w as Widget}
+              widget={gw.widget}
+              cache={gw.cache}
               onTitleChange={handleTitleChange}
               onRemove={handleRemove}
-              onRefresh={handleRefresh}
               onRegenerate={handleRegenerate}
-              refreshing={!!refreshing[w.id]}
+              onRefresh={handleRefresh}
+              refreshing={refreshingId === gw.widget.widget_id}
               showSql={showSql}
+              sql={gw.sql}
               editable={streamingState === 'idle'}
             />
           )}
         />
       </div>
-      {/*
-        流式生成期间整个图表区域显示 loading 遮罩。遮罩挂在 viewportWrap(不可滚动,
-        高度=视口可视区) 而非内部的滚动 container 上 —— 旧实现 absolute 锚定到可
-        滚动 container 的 bottom:0, 多图表时 container 实际高度远超视口, 遮罩要么
-        只盖住初始视口、滚出去的图表露在外面仍可交互, 要么居中 Spin 跑到滚动区中段
-        看不见。现在遮罩覆盖 viewportWrap 的整个可视区, 滚动内容在其下方独立滚动,
-        遮罩始终钉在视口上。
-          - 主防线(功能层): RGL isDraggable/isResizable={false} + WidgetCard
-            editable={false} 禁用所有交互, 从根上阻止拖拽/缩放/删除/编辑.
-          - 视觉+交互层(本遮罩): 半透明蒙层 + 居中大 Spin + 文案, 且 pointer-events
-            拦截指针作为双重防线.
-      */}
       {streamingState !== 'idle' && hasWidgets && (
         <div style={{
           position: 'absolute',
@@ -201,9 +188,6 @@ export default function PreviewPanel({ showSql = false }: PreviewPanelProps) {
 // ---------------------------------------------------------------------------
 
 const styles: Record<string, React.CSSProperties> = {
-  // viewportWrap: 不可滚动的定位上下文, 高度填满父级(previewPane)。loading 遮罩
-  // 以它为 absolute 锚点, 因此遮罩永远覆盖整个可视区, 不随内部滚动内容移动。
-  // overflow:hidden 防止内部 container 的滚动溢出影响遮罩定位。
   viewportWrap: {
     position: 'relative' as const,
     height: '100%',
@@ -212,7 +196,6 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column' as const,
   },
-  // container: 实际的滚动容器, flex:1 填满 viewportWrap 的剩余空间并独立滚动。
   container: {
     flex: 1,
     minHeight: 0,
