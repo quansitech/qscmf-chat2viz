@@ -5,13 +5,16 @@ import { useQueries, QueryClient, QueryClientProvider } from '@tanstack/react-qu
 import { getPageProps, navigate } from './adapters';
 import { ADMIN_BASE } from './utils/routes';
 import { useDashboardStore, normalizeRows } from './store/dashboardStore';
-import type { ChatMessage, MessageStatus, Widget } from './store/dashboardStore';
+import type { ChatMessage, MessageStatus } from './store/dashboardStore';
+import type { DashboardDSL, WidgetSpec, SSEDashboardReplaceV3 } from './types/dsl';
+import { isDashboardReplaceV3 } from './types/dsl';
 import { suggestHeight } from './utils/suggestHeight';
 import { useDashboardDraft } from './hooks/useDashboardDraft';
 import ChatPanel from './components/ChatPanel';
 import PreviewPanel from './components/PreviewPanel';
 import PublishDialog from './components/PublishDialog';
 import { createSemaphore } from './utils/concurrency';
+import './plugins'; // register the five widget plugins at module load
 
 // ---------------------------------------------------------------------------
 // QueryClient — scoped to the edit page (mirrors DashboardView). Used only for
@@ -67,22 +70,6 @@ interface DashboardData {
   title: string;
   current_schema: Record<string, unknown>;
   status?: string;
-}
-
-/**
- * task 7.1: typed shape for a widget element inside
- * dashboard.current_schema.widgets. The server may store widgets loosely, so
- * every field is optional except id; the hydration loop below applies sensible
- * defaults. Replaces the previous `any[]` element type.
- */
-interface HydratedWidget {
-  id: string;
-  title?: string;
-  g2_spec?: Record<string, unknown>;
-  data?: unknown;
-  sql?: string;
-  refreshInterval?: number;
-  layout?: { x: number; y: number; w: number; h: number; userSized?: boolean };
 }
 
 interface DashboardEditProps {
@@ -151,14 +138,14 @@ function DashboardEditInner() {
     })),
   });
 
-  // Write fetched rows back into the store (one-way query → store).
+  // Write fetched rows back into the store's widgetDataCache (one-way query → store).
   const fetchedSignature = widgetQueries.map((q) => q.dataUpdatedAt).join(',');
   useEffect(() => {
     fetchTargets.forEach(({ widgetId }, i) => {
       const q = widgetQueries[i];
       if (q?.isSuccess && Array.isArray(q.data) && q.data.length > 0) {
-        useDashboardStore.getState().updateWidget(widgetId, {
-          data: q.data as Record<string, unknown>[],
+        useDashboardStore.getState().updateWidgetDataCache(widgetId, {
+          rows: q.data as Record<string, unknown>[],
         });
       }
     });
@@ -195,54 +182,33 @@ function DashboardEditInner() {
       title: initTitle,
     });
 
-    // Hydrate widgets from current_schema if present
+    // Hydrate the DSL from current_schema. v3 path: current_schema is a full
+    // DSL AST (version/layout/queries/widgets/slicers/interactions) → replaceDSL.
     // NOTE: ThinkPHP M()->find() returns current_schema as a JSON string.
     // The server-side renderer (SmartyRenderer) should parse it, but we add
     // a client-side fallback for robustness.
-    let schema = dashboard.current_schema as { widgets?: HydratedWidget[] } | string | null;
+    let schema = dashboard.current_schema as unknown;
     if (typeof schema === 'string') {
       try { schema = JSON.parse(schema); } catch { schema = null; }
     }
-    if (schema && typeof schema === 'object' && Array.isArray(schema.widgets)) {
-      const widgetsMap: Record<string, Widget> = {};
-      for (const w of schema.widgets) {
-        if (w.id) {
-          widgetsMap[w.id] = {
-            id: w.id,
-            title: w.title || '未命名',
-            g2_spec: w.g2_spec || {},
-            // DESIGN_BASIS #2: normalize at the hydration boundary too. A
-            // schema persisted before the store-normalization fix may carry a
-            // {rows, columns} envelope here; normalizeRows unwraps it to the
-            // canonical bare Row[] form so the canvas never sees an envelope.
-            data: normalizeRows(w.data),
-            sql: w.sql,
-            refreshInterval: w.refreshInterval,
-            // Content-aware auto-height on hydration: if the persisted layout
-            // was NOT explicitly user-sized, recompute h from the spec/data so
-            // tables (many rows) grow and compact charts shrink. Widgets whose
-            // layout predates suggestHeight are stored flat at h=6 — this makes
-            // the dynamic height visible on existing dashboards too. User-sized
-            // widgets keep their hand-set h untouched.
-            layout: (() => {
-              const persisted = w.layout || { x: 0, y: 0, w: 12, h: 6 };
-              if (persisted.userSized) return persisted;
-              return { ...persisted, h: suggestHeight({ spec: w.g2_spec, data: normalizeRows(w.data) }) };
-            })(),
-          };
-        }
-      }
-      useDashboardStore.setState({ widgets: widgetsMap });
+    if (schema && typeof schema === 'object' && isDashboardReplaceV3(schema)) {
+      // v3 DSL hydration: feed the AST through replaceDSL so the store builds
+      // the full dsl + widgetDataCache. Generated widgets' data is used as-is;
+      // widgets whose data is null (slim / persisted) are recorded for an HTTP
+      // fetch (form A draft fetch).
+      const payload = schema as SSEDashboardReplaceV3;
+      useDashboardStore.getState().replaceDSL(payload);
 
-      // Record which widgets need their data fetched over HTTP (those with a
-      // persisted sql but no inline data). The WidgetDataFetcher hook below
-      // issues these requests with bounded concurrency + caching; SSE remains
-      // the source of truth during live streaming and never touches this path.
+      // Record widgets needing an HTTP data fetch (persisted with data:null).
       const needsFetch: { uid: string; widgetId: string }[] = [];
-      for (const w of schema.widgets) {
-        const hasData = Array.isArray(w.data) && w.data.length > 0;
-        if (w.id && w.sql && !hasData) {
-          needsFetch.push({ uid: dashboard.uid, widgetId: w.id });
+      const hydratedDsl = useDashboardStore.getState().dsl;
+      if (hydratedDsl) {
+        for (const widgetId of Object.keys(hydratedDsl.widgets)) {
+          const cache = useDashboardStore.getState().widgetDataCache[widgetId];
+          // Fetch when there's no inline data (status loading or empty cache).
+          if (!cache || cache.rows.length === 0) {
+            needsFetch.push({ uid: dashboard.uid, widgetId });
+          }
         }
       }
       pendingFetchRef.current = needsFetch;
@@ -418,18 +384,28 @@ function DashboardEditInner() {
   }, []);
 
   // ---- Publish handler: save before opening dialog ----
+  // NOTE: the previous version awaited saveNow() with NO visible feedback
+  // (the publish button's loading was gated on `publishVisible`, which is only
+  // set AFTER the save resolves). If saveNow hung or silently swallowed its
+  // error, setPublishVisible(true) never ran → no dialog, no request, the user
+  // saw a dead button. Now: show a saving hint while awaiting, and surface
+  // save failures clearly.
+  const [publishSaving, setPublishSaving] = useState(false);
   const handlePublish = useCallback(async () => {
     if (isDirty) {
+      setPublishSaving(true);
       try {
         await saveNow();
       } catch {
-        message.error('保存失败，请重试');
+        setPublishSaving(false);
+        message.error('保存失败，无法发布，请重试');
         return;
       }
       // Re-check error state after save — saveNow may have set store.error
       const storeError = useDashboardStore.getState().error;
+      setPublishSaving(false);
       if (storeError) {
-        message.error('保存失败，请重试');
+        message.error('保存失败，无法发布，请重试');
         return;
       }
     }
@@ -480,7 +456,7 @@ function DashboardEditInner() {
           >
             保存
           </Button>
-          <Button type="primary" icon={<CloudUploadOutlined />} onClick={handlePublish} loading={isSaving && publishVisible}>
+          <Button type="primary" icon={<CloudUploadOutlined />} onClick={handlePublish} loading={publishSaving || (isSaving && publishVisible)}>
             发布
           </Button>
         </div>

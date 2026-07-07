@@ -64,17 +64,25 @@ class AdapterFactory
     }
 
     /**
-     * Create the appropriate renderer based on runtime template engine availability.
+     * Create the page renderer.
      *
-     * v13:     No Inertia -> SmartyRenderer
-     * v14/v15: Inertia exists -> InertiaRenderer
+     * chat2viz 始终走 SmartyRenderer —— 用预编译 bundle + Smarty 模板自挂载
+     * (高内聚:bundle 自含 zustand/react-query/react-grid-layout 等前端依赖,
+     *  仅 external G2 走 CDN),不依赖宿主 Vite 编译源码。
+     *
+     * 即使 v14/v15 宿主有 Inertia,也不走 Inertia::render —— 本包前端依赖未
+     * 声明在宿主 package.json,走 Inertia 会让宿主 Vite 因依赖缺失而编译失败。
+     * v15 是 Inertia+Smarty 混合架构(ANTD_ADMIN_BUILDER_ENABLE 控制各页走向,
+     * ListBuilder 已自动桥接到 Inertia),chat2viz 的 edit/view 走 Smarty 与
+     * 列表页(ListBuilder)并存是 v15 官方支持的混合模式(Inertia 的 invalid
+     * handler 会把 text/html 响应降级为整页跳转,互跳不报错)。
+     *
+     * 未来若宿主补全依赖或本包改为 npm 包发布,可在此切回 InertiaRenderer。
      *
      * @param object $controller The calling controller instance (needed by SmartyRenderer)
      */
     public static function createRenderer(object $controller): PageRendererInterface
     {
-        return class_exists('Qscmf\Lib\Inertia\Inertia')
-            ? new InertiaRenderer()
-            : new SmartyRenderer($controller);
+        return new SmartyRenderer($controller);
     }
 }

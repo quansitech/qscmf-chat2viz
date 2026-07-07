@@ -51,7 +51,20 @@ class DashboardController extends BaseDashboardController
             ->addSearchItem('q', 'text', '标题')
             ->addTableColumn('title', '标题')
             ->addTableColumn('dashboard_status', '发布状态', 'fun', self::class . '::statusLabel(__data_id__)')
-            ->addTableColumn('created_at', '创建时间', 'datetime')
+            // fix-datetime-column-v15:
+            //   原列类型 'datetime' 在 think-core v15 中触发 fatal:
+            //     vendor/.../ColumnType/Datetime/Datetime.class.php:17
+            //     new \AntdAdmin\Component\ColumnType\Datetime(...)
+            //   antd-admin 包里真实类名是驼峰 DateTime, think-core 这个分支大小写
+            //   写错 —— v13 走 Smarty 不触发, v15 走 antd 适配就 Class not found.
+            //   本包不应承担框架 bug, 改用 'fun' + 自定义回调做就地格式化:
+            //   - 接受的 created_at 可能是 'Y-m-d H:i:s' 字符串 / unix 时间戳 /
+            //     各种 DateTimeInterface, 一律 'Y-m-d H:i:s' 输出
+            //   - 空值原样返回 (空字符串)
+            //   - ListBuilder 的 fun 列在 antd 适配下渲染为 Text 列, 失去原生
+            //     DateTime 列的前端排序能力; 创建时间在仪表盘列表里基本不参与排序,
+            //     业务影响可接受. think-core 上游修复后可恢复 'datetime'.
+            ->addTableColumn('created_at', '创建时间', 'fun', self::class . '::formatCreatedAt(__data_id__)')
             ->addTableColumn('right_button', '操作', 'btn')
             ->setTableDataList($result['items'])
             ->setTableDataListKey('uid')
@@ -162,6 +175,41 @@ HTML;
             'archived'  => '<span class="label label-warning">已归档</span>',
         ];
         return $map[$value] ?? htmlspecialchars($value);
+    }
+
+    /**
+     * Format the created_at column for ListBuilder's "fun" column type.
+     *
+     * Replaces the framework 'datetime' column type, which on think-core v15
+     * blows up (Datetime.class.php:17 instantiates \AntdAdmin\Component\ColumnType\Datetime,
+     * a class that does not exist — the real class is DateTime). Accepts any of:
+     *   - 'Y-m-d H:i:s' (or similar) datetime string
+     *   - unix timestamp (numeric string)
+     *   - \DateTimeInterface (defensive — Repository normally returns string)
+     * Empty / null / unparseable values pass through unchanged so the admin can
+     * still spot missing data.
+     */
+    public static function formatCreatedAt($value): string
+    {
+        if ($value === null || $value === '') {
+            return (string) $value;
+        }
+
+        if ($value instanceof \DateTimeInterface) {
+            return $value->format('Y-m-d H:i:s');
+        }
+
+        // numeric string → unix timestamp (ThinkPHP int 自动转字符串时会到这里)
+        if (is_string($value) && ctype_digit($value)) {
+            return date('Y-m-d H:i:s', (int) $value);
+        }
+
+        // 已是 'Y-m-d H:i:s' 形式直接返回, 其它可解析字符串走 strtotime 兜底
+        $ts = is_string($value) ? strtotime($value) : false;
+        if ($ts === false) {
+            return (string) $value;
+        }
+        return date('Y-m-d H:i:s', $ts);
     }
 
     /**

@@ -69,27 +69,12 @@ class Chat2VizServiceProvider implements Provider, LaravelProvider
             __DIR__ . '/../asset/chat2viz-dashboard'
         );
 
-        // v14/v15 Inertia source (host Vite compiles) - skip if path unavailable (v13)
-        $inertiaPath = false;
-        if (class_exists(\Illuminate\Foundation\Application::class)) {
-            try {
-                $candidate = realpath(app_path('../../resources/js/backend/Pages/Chat2viz'));
-                if ($candidate !== false) {
-                    $inertiaPath = $candidate;
-                }
-            } catch (\Throwable $e) {
-                $this->logWarning(sprintf(
-                    '[chat2viz:sp] inertia path detection failed: %s',
-                    $e->getMessage()
-                ));
-            }
-        }
-        if ($inertiaPath !== false) {
-            $this->safeRegisterSymLink(
-                $inertiaPath,
-                __DIR__ . '/../asset/inertia/Chat2viz'
-            );
-        }
+        // v14/v15: chat2viz 不再软链源码到宿主 Pages/ 目录。
+        // 本包前端依赖(zustand/react-query/react-grid-layout 等)未声明在宿主
+        // package.json,把源码交给宿主 Vite 编译会因依赖缺失而失败。改为统一走
+        // SmartyRenderer + 预编译 bundle(上面的 Public/chat2viz-dashboard 软链
+        // 已提供产物),v13/v15 共用同一路径。详见 AdapterFactory::createRenderer。
+        // 未来若宿主补全依赖或本包 npm 化,可恢复此软链并切回 InertiaRenderer。
     }
 
     public function registerLara()

@@ -434,4 +434,22 @@ class ThinkModelDashboardRepository implements DashboardRepositoryInterface
         $rows = M()->query($sql);
         return is_array($rows) ? $rows : [];
     }
+
+    public function executeBoundQuery(string $sql, array $params = []): array
+    {
+        // ThinkPHP Model::bind() stores the bind map in options['bind'];
+        // Driver::query() then does PDO prepare + bindValue(':name', $val).
+        // The bind keys MUST include the leading ':' to match the SQL placeholders.
+        $model = M();
+        if (!empty($params)) {
+            $bind = [];
+            foreach ($params as $key => $value) {
+                $bindKey = str_starts_with($key, ':') ? $key : ':' . $key;
+                $bind[$bindKey] = $value;
+            }
+            $model->bind($bind);
+        }
+        $rows = $model->query($sql);
+        return is_array($rows) ? $rows : [];
+    }
 }

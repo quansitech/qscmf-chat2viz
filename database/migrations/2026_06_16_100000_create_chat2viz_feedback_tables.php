@@ -3,6 +3,7 @@
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Database\Migrations\Migration;
+use Qscmf\Chat2Viz\Support\Table;
 
 /**
  * Create the feedback_records table for user feedback on AI answers.
@@ -30,11 +31,11 @@ class CreateChat2vizFeedbackTables extends Migration
 
     public function up()
     {
-        if (Schema::hasTable('qs_chat2viz_feedback_records')) {
+        if (Schema::hasTable(Table::name('chat2viz_feedback_records'))) {
             return;
         }
 
-        Schema::create('qs_chat2viz_feedback_records', function (Blueprint $table) {
+        Schema::create(Table::name('chat2viz_feedback_records'), function (Blueprint $table) {
             $table->bigIncrements('id')->comment('主键 ID');
             $table->string('message_id', 64)->default('')->comment('关联消息 ID');
             $table->string('conversation_id', 64)->default('')->comment('会话 ID（空字符串表示匿名）');
@@ -50,7 +51,9 @@ class CreateChat2vizFeedbackTables extends Migration
             $table->timestamp('created_at')->useCurrent()->comment('创建时间');
 
             $table->index(['thumbs', 'created_at'], 'idx_thumbs_created');
-            $table->index(['conversation_id', 'created_at'], 'idx_conv_created');
+            // Table-segmented name avoids collision with conversation_messages'
+            // idx_msg_conv_created under PostgreSQL (schema-scoped uniqueness).
+            $table->index(['conversation_id', 'created_at'], 'idx_feedback_conv_created');
             $table->index('message_id', 'idx_message_id');
 
             $table->charset = 'utf8mb4';
@@ -60,7 +63,7 @@ class CreateChat2vizFeedbackTables extends Migration
 
     public function down()
     {
-        Schema::dropIfExists('qs_chat2viz_feedback_records');
+        Schema::dropIfExists(Table::name('chat2viz_feedback_records'));
     }
 
     public function afterCmmUp()

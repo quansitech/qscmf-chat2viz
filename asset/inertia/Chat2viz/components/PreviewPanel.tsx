@@ -4,6 +4,7 @@ import { LayoutOutlined } from '@ant-design/icons';
 import type { Layout } from 'react-grid-layout';
 import DashboardGrid, { type GridWidget } from './DashboardGrid';
 import WidgetCard from './WidgetCard';
+import SlicerPanel from './SlicerPanel';
 import { useDashboardStore } from '../store/dashboardStore';
 
 // Edit-mode single-widget refresh: re-fetch from the draft API and update the
@@ -134,6 +135,12 @@ export default function PreviewPanel({ showSql = false }: PreviewPanelProps) {
             ✋ 拖拽移动 · 边角缩放 · 🗑️ 删除
           </Typography.Text>
         </div>
+        {dsl && dsl.slicers && dsl.slicers.length > 0 && (
+          <div style={{ padding: '8px 12px', borderBottom: '1px solid #f0f0f0', display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+            <Typography.Text type="secondary" style={{ fontSize: 12, flexShrink: 0 }}>筛选：</Typography.Text>
+            <SlicerPanel uid={uid || ''} />
+          </div>
+        )}
         <DashboardGrid
           widgets={gridWidgets}
           regions={dsl?.layout.regions}

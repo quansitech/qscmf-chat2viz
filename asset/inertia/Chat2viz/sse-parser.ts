@@ -39,6 +39,7 @@ const STANDARD_EVENT_TYPES = [
  */
 const DASHBOARD_EVENT_TYPES = [
   'DASHBOARD_REPLACE',
+  'WIDGET_READY',
   'WIDGET_ERROR',
   'tool_start',
   'tool_result',

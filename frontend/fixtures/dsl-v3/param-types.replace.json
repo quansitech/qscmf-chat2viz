@@ -1,0 +1,104 @@
+{
+  "version": "3.0.0",
+  "title": "参数类型覆盖看板",
+  "layout": {
+    "regions": ["content"],
+    "slots": [
+      { "widget_id": "w1", "region": "content", "x": 0, "y": 0, "w": 12, "h": 6 },
+      { "widget_id": "w2", "region": "content", "x": 12, "y": 0, "w": 12, "h": 6 },
+      { "widget_id": "w3", "region": "content", "x": 0, "y": 6, "w": 12, "h": 6 },
+      { "widget_id": "w4", "region": "content", "x": 12, "y": 6, "w": 12, "h": 6 }
+    ]
+  },
+  "queries": {
+    "qs": {
+      "query_id": "qs",
+      "raw_sql": "SELECT region, amount FROM sales WHERE region = :region",
+      "params": [
+        { "name": "region", "type": "string", "required": false, "default": null }
+      ],
+      "masked_columns": []
+    },
+    "qn": {
+      "query_id": "qn",
+      "raw_sql": "SELECT region, amount FROM sales WHERE amount > :min_amount",
+      "params": [
+        { "name": "min_amount", "type": "number", "required": false, "default": 0 }
+      ],
+      "masked_columns": []
+    },
+    "qd": {
+      "query_id": "qd",
+      "raw_sql": "SELECT amount FROM sales WHERE order_date = :day",
+      "params": [
+        { "name": "day", "type": "date", "required": false, "default": null }
+      ],
+      "masked_columns": []
+    },
+    "qdt": {
+      "query_id": "qdt",
+      "raw_sql": "SELECT amount FROM sales WHERE created_at >= :since",
+      "params": [
+        { "name": "since", "type": "datetime", "required": false, "default": null }
+      ],
+      "masked_columns": []
+    }
+  },
+  "widgets": {
+    "w1": {
+      "widget_id": "w1",
+      "plugin_type": "g2_chart",
+      "plugin_spec": { "type": "interval", "encode": { "x": "region", "y": "amount" } },
+      "query_id": "qs",
+      "region": "content",
+      "title": "string 参数",
+      "data": { "rows": [{ "region": "华东", "amount": 1000 }], "columns": ["region", "amount"] },
+      "total": 1,
+      "truncated": false,
+      "status": "success",
+      "error_msg": ""
+    },
+    "w2": {
+      "widget_id": "w2",
+      "plugin_type": "g2_chart",
+      "plugin_spec": { "type": "interval", "encode": { "x": "region", "y": "amount" } },
+      "query_id": "qn",
+      "region": "content",
+      "title": "number 参数",
+      "data": { "rows": [{ "region": "华东", "amount": 1000 }], "columns": ["region", "amount"] },
+      "total": 1,
+      "truncated": false,
+      "status": "success",
+      "error_msg": ""
+    },
+    "w3": {
+      "widget_id": "w3",
+      "plugin_type": "g2_chart",
+      "plugin_spec": { "type": "interval", "encode": { "y": "amount" } },
+      "query_id": "qd",
+      "region": "content",
+      "title": "date 参数",
+      "data": { "rows": [{ "amount": 1000 }], "columns": ["amount"] },
+      "total": 1,
+      "truncated": false,
+      "status": "success",
+      "error_msg": ""
+    },
+    "w4": {
+      "widget_id": "w4",
+      "plugin_type": "g2_chart",
+      "plugin_spec": { "type": "interval", "encode": { "y": "amount" } },
+      "query_id": "qdt",
+      "region": "content",
+      "title": "datetime 参数",
+      "data": { "rows": [{ "amount": 2000 }], "columns": ["amount"] },
+      "total": 1,
+      "truncated": false,
+      "status": "success",
+      "error_msg": ""
+    }
+  },
+  "slicers": [],
+  "interactions": [],
+  "answer": "已生成覆盖 string/number/date/datetime 四种参数类型的看板。"
+}

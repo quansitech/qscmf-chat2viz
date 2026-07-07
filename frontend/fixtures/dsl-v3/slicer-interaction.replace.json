@@ -1,0 +1,96 @@
+{
+  "version": "3.0.0",
+  "title": "联动看板",
+  "layout": {
+    "regions": ["content"],
+    "slots": [
+      { "widget_id": "w1", "region": "content", "x": 0, "y": 0, "w": 12, "h": 6 },
+      { "widget_id": "w2", "region": "content", "x": 12, "y": 0, "w": 12, "h": 6 },
+      { "widget_id": "w3", "region": "content", "x": 0, "y": 6, "w": 24, "h": 6 }
+    ]
+  },
+  "queries": {
+    "q1": {
+      "query_id": "q1",
+      "raw_sql": "SELECT region, SUM(amount) AS amount FROM sales WHERE region = :region GROUP BY region",
+      "params": [
+        { "name": "region", "type": "string", "required": false, "default": null }
+      ],
+      "masked_columns": []
+    },
+    "q2": {
+      "query_id": "q2",
+      "raw_sql": "SELECT region, SUM(amount) AS amount FROM sales WHERE region = :region GROUP BY region ORDER BY amount DESC",
+      "params": [
+        { "name": "region", "type": "string", "required": false, "default": null }
+      ],
+      "masked_columns": []
+    },
+    "q_opt_s1": {
+      "query_id": "q_opt_s1",
+      "raw_sql": "SELECT DISTINCT region FROM sales ORDER BY region",
+      "params": [],
+      "masked_columns": []
+    }
+  },
+  "widgets": {
+    "w1": {
+      "widget_id": "w1",
+      "plugin_type": "g2_chart",
+      "plugin_spec": { "type": "interval", "encode": { "x": "region", "y": "amount" } },
+      "query_id": "q1",
+      "region": "content",
+      "title": "区域柱状图",
+      "data": { "rows": [{ "region": "华东", "amount": 1000 }], "columns": ["region", "amount"] },
+      "total": 1,
+      "truncated": false,
+      "status": "success",
+      "error_msg": ""
+    },
+    "w2": {
+      "widget_id": "w2",
+      "plugin_type": "data_table",
+      "plugin_spec": { "columns": ["region", "amount"] },
+      "query_id": "q2",
+      "region": "content",
+      "title": "明细表",
+      "data": { "rows": [{ "region": "华东", "amount": 1000 }], "columns": ["region", "amount"] },
+      "total": 1,
+      "truncated": false,
+      "status": "success",
+      "error_msg": ""
+    },
+    "w3": {
+      "widget_id": "w3",
+      "plugin_type": "g2_chart",
+      "plugin_spec": { "type": "line", "encode": { "x": "month", "y": "amount" } },
+      "query_id": "q1",
+      "region": "content",
+      "title": "月度趋势",
+      "data": null,
+      "total": 0,
+      "truncated": false,
+      "status": "success",
+      "error_msg": ""
+    }
+  },
+  "slicers": [
+    {
+      "slicer_id": "s1",
+      "field": "region",
+      "label": "区域",
+      "options_query_id": "q_opt_s1",
+      "target_query_params": { "q1": "region", "q2": "region" }
+    }
+  ],
+  "interactions": [
+    {
+      "source_id": "w1",
+      "event_type": "click",
+      "target_id": "w3",
+      "action": "drill",
+      "params": { "dim": "month" }
+    }
+  ],
+  "answer": "已生成联动看板，区域筛选器影响柱状图与明细表。"
+}

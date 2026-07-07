@@ -24,7 +24,9 @@
       "zustand": ["./node_modules/zustand"],
       "zustand/middleware/immer": ["./node_modules/zustand/middleware/immer"],
       "zundo": ["./node_modules/zundo"],
-      "immer": ["./node_modules/immer"]
+      "immer": ["./node_modules/immer"],
+      "react-markdown": ["./node_modules/react-markdown"],
+      "rehype-sanitize": ["./node_modules/rehype-sanitize"]
     },
     "allowJs": true,
     "allowImportingTsExtensions": true,

@@ -95,22 +95,106 @@ class PublicDashboardController extends BaseDashboardController
 
     public function api_widget_data()
     {
-        if (!$this->requireMethod('GET')) return;
+        // Support both GET (form A — uid-based) and POST (form B — dsl in body).
+        $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
         $clientIp = (string) ($_SERVER['REMOTE_ADDR'] ?? '0.0.0.0');
         if (!$this->getWidgetDataService()->checkRateLimit($clientIp)) {
-            // Return a proper HTTP 429 so clients, CDNs, and gateways can
-            // identify rate limiting and respect Retry-After.
             http_response_code(429);
             header('Retry-After: 60');
             $this->ajaxReturn(['status' => 0, 'info' => '请求过于频繁，请稍后再试']);
             return;
         }
 
-        $uid = (string) I('get.uid', '');
-        $widgetId = (string) I('get.widgetId', '');
+        $uid = '';
+        $widgetId = '';
+        $dsl = null;
+        $slicerValues = [];
 
-        if ($uid === '' || $widgetId === '') {
+        if ($method === 'POST') {
+            // Form B (contract §3.2): body carries {widget_id, dsl, slicer_values}.
+            $input = $this->parseJsonInput();
+            if ($input === null) {
+                $this->ajaxReturn(['status' => 0, 'info' => '请求格式错误']);
+                return;
+            }
+            $widgetId = (string) ($input['widget_id'] ?? '');
+            $dsl = isset($input['dsl']) && is_array($input['dsl']) ? $input['dsl'] : null;
+            $slicerValues = isset($input['slicer_values']) && is_array($input['slicer_values'])
+                ? $input['slicer_values'] : [];
+            // uid is optional in form B (edit-page unsaved linkage / MCP); when
+            // present it's carried for audit but dsl takes precedence.
+            $uid = (string) ($input['uid'] ?? '');
+        } else {
+            // Form A (contract §3.2): GET by uid + widgetId.
+            $uid = (string) I('get.uid', '');
+            $widgetId = (string) I('get.widgetId', '');
+            $rawSlicerValues = (string) I('get.slicer_values', '');
+            if ($rawSlicerValues !== '') {
+                $decoded = json_decode($rawSlicerValues, true);
+                $slicerValues = is_array($decoded) ? $decoded : [];
+            }
+        }
+
+        if ($widgetId === '') {
+            $this->ajaxReturn(['status' => 0, 'info' => '缺少必要参数']);
+            return;
+        }
+        // Form A requires uid; form B requires dsl.
+        if ($dsl === null && $uid === '') {
+            http_response_code(400);
+            $this->ajaxReturn(['status' => 0, 'info' => '缺少 dsl 与 uid（需至少提供其一）']);
+            return;
+        }
+        if ($uid !== '' && !self::validateUuid($uid)) {
+            $this->ajaxReturn(['status' => 0, 'info' => '无效的仪表盘ID']);
+            return;
+        }
+
+        try {
+            $result = $this->getWidgetDataService()->queryPublicWidgetData(
+                $uid, $widgetId, $clientIp, $dsl, $slicerValues
+            );
+            // Response mapping (§3.2): rows/columns → data; total/truncated → top-level.
+            $data = ['rows' => $result->rows];
+            $this->ajaxReturn(['status' => 1, 'data' => $data]);
+        } catch (DashboardNotFoundException $e) {
+            $this->ajaxReturn(['status' => 0, 'info' => '仪表盘不存在']);
+        } catch (DashboardException $e) {
+            $this->logError('api_widget_data query failed', sprintf(
+                'uid=%s widget=%s err=%s', $uid, $widgetId, $e->getMessage()
+            ));
+            // Surface the HTTP status code the service intended (400/503/etc).
+            if ($e->getCode() > 0) {
+                http_response_code($e->getCode());
+            }
+            $this->ajaxReturn(['status' => 0, 'info' => $e->getMessage()]);
+        } catch (\InvalidArgumentException $e) {
+            // Generic message — do NOT leak the specific validation rule that
+            // fired (avoids aiding SQL-injection reconnaissance).
+            $this->ajaxReturn(['status' => 0, 'info' => '查询不被允许']);
+        } catch (\Exception $e) {
+            $this->logError('api_widget_data query failed', sprintf(
+                'uid=%s widget=%s err=%s', $uid, $widgetId, $e->getMessage()
+            ));
+            $this->ajaxReturn(['status' => 0, 'info' => '数据查询失败']);
+        }
+    }
+
+    /**
+     * GET /api_slicer_options?uid=<uid>&slicerId=<slicerId>
+     *
+     * Returns the option list for a slicer (contract §3.3). The column-mapping
+     * rule (first column → value, second → label) is applied by the frontend.
+     */
+    public function api_slicer_options()
+    {
+        if (!$this->requireMethod('GET')) return;
+
+        $uid = (string) I('get.uid', '');
+        $slicerId = (string) I('get.slicerId', '');
+
+        if ($uid === '' || $slicerId === '') {
             $this->ajaxReturn(['status' => 0, 'info' => '缺少必要参数']);
             return;
         }
@@ -120,23 +204,18 @@ class PublicDashboardController extends BaseDashboardController
         }
 
         try {
-            $result = $this->getWidgetDataService()->queryPublicWidgetData($uid, $widgetId, $clientIp);
-            // Canonical form: `data` is a BARE rows array (not an envelope).
-            $this->ajaxReturn(['status' => 1, 'data' => $result->rows]);
-        } catch (DashboardNotFoundException $e) {
-            $this->ajaxReturn(['status' => 0, 'info' => '仪表盘不存在']);
+            $rows = $this->getWidgetDataService()->querySlicerOptions($slicerId, null, $uid);
+            $this->ajaxReturn(['status' => 1, 'data' => $rows]);
         } catch (DashboardException $e) {
-            $this->logError('api_widget_data query failed', sprintf(
-                'uid=%s widget=%s err=%s', $uid, $widgetId, $e->getMessage()
-            ));
-            $this->ajaxReturn(['status' => 0, 'info' => $e->getMessage()]);
-        } catch (\InvalidArgumentException $e) {
+            if ($e->getCode() > 0) {
+                http_response_code($e->getCode());
+            }
             $this->ajaxReturn(['status' => 0, 'info' => $e->getMessage()]);
         } catch (\Exception $e) {
-            $this->logError('api_widget_data query failed', sprintf(
-                'uid=%s widget=%s err=%s', $uid, $widgetId, $e->getMessage()
+            $this->logError('api_slicer_options failed', sprintf(
+                'uid=%s slicer=%s err=%s', $uid, $slicerId, $e->getMessage()
             ));
-            $this->ajaxReturn(['status' => 0, 'info' => '数据查询失败']);
+            $this->ajaxReturn(['status' => 0, 'info' => '选项加载失败']);
         }
     }
 }

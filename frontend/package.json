@@ -10,7 +10,8 @@
     "lint": "eslint --config .eslintrc.cjs \"entries/**/*.{ts,tsx}\" \"../asset/inertia/Chat2viz/**/*.{ts,tsx}\"",
     "lint:fix": "eslint --config .eslintrc.cjs \"entries/**/*.{ts,tsx}\" \"../asset/inertia/Chat2viz/**/*.{ts,tsx}\" --fix",
     "test": "vitest run",
-    "test:node": "node --test tests/node-smoke.test.mjs"
+    "test:node": "node --test tests/node-smoke.test.mjs",
+    "test:e2e-deterministic": "node --test ../tests/e2e-browser/deterministic/*.test.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.0.0",

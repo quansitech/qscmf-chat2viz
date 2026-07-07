@@ -1,0 +1,293 @@
+{
+  "type": "DASHBOARD_REPLACE",
+  "version": "3.0.0",
+  "layout": {
+    "regions": [
+      "header",
+      "content",
+      "footer"
+    ],
+    "slots": [
+      {
+        "widget_id": "w2",
+        "region": "content",
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 4
+      },
+      {
+        "widget_id": "w1",
+        "region": "header",
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 4
+      },
+      {
+        "widget_id": "w3",
+        "region": "footer",
+        "x": 0,
+        "y": 8,
+        "w": 24,
+        "h": 4
+      }
+    ]
+  },
+  "queries": {
+    "q1": {
+      "query_id": "q1",
+      "raw_sql": "SELECT category, CAST(total_sales AS DECIMAL(12,2)) AS total_sales FROM qs_cmf_13_3.qs_sales_by_film_category ORDER BY total_sales DESC",
+      "params": [],
+      "masked_columns": []
+    },
+    "q2": {
+      "query_id": "q2",
+      "raw_sql": "SELECT SUM(amount) AS total_revenue FROM qs_cmf_13_3.qs_payment",
+      "params": [],
+      "masked_columns": []
+    },
+    "q3": {
+      "query_id": "q3",
+      "raw_sql": "SELECT c.customer_id AS customer_id, CONCAT(c.first_name, ' ', c.last_name) AS customer_name, c.email AS email, CAST(SUM(p.amount) AS DECIMAL(10,2)) AS total_spent, COUNT(p.payment_id) AS rental_count\nFROM qs_cmf_13_3.qs_customer c\nJOIN qs_cmf_13_3.qs_payment p ON c.customer_id = p.customer_id\nGROUP BY c.customer_id, c.first_name, c.last_name, c.email\nORDER BY total_spent DESC\nLIMIT 10",
+      "params": [],
+      "masked_columns": []
+    }
+  },
+  "widgets": {
+    "w2": {
+      "widget_id": "w2",
+      "plugin_type": "g2_chart",
+      "plugin_spec": {
+        "type": "interval",
+        "encode": {
+          "x": "category",
+          "y": "total_sales"
+        },
+        "transform": [],
+        "children": [],
+        "axis": {
+          "x": {
+            "title": "电影类别"
+          },
+          "y": {
+            "title": "营收(元)"
+          }
+        }
+      },
+      "query_id": "q1",
+      "region": "content",
+      "title": "各电影类别营收",
+      "full_width": true,
+      "data": {
+        "rows": [
+          {
+            "category": "Sports",
+            "total_sales": "5314.21"
+          },
+          {
+            "category": "Sci-Fi",
+            "total_sales": "4756.98"
+          },
+          {
+            "category": "Animation",
+            "total_sales": "4656.30"
+          },
+          {
+            "category": "Drama",
+            "total_sales": "4587.39"
+          },
+          {
+            "category": "Comedy",
+            "total_sales": "4383.58"
+          },
+          {
+            "category": "Action",
+            "total_sales": "4375.85"
+          },
+          {
+            "category": "New",
+            "total_sales": "4351.62"
+          },
+          {
+            "category": "Games",
+            "total_sales": "4281.33"
+          },
+          {
+            "category": "Foreign",
+            "total_sales": "4270.67"
+          },
+          {
+            "category": "Family",
+            "total_sales": "4226.07"
+          },
+          {
+            "category": "Documentary",
+            "total_sales": "4217.52"
+          },
+          {
+            "category": "Horror",
+            "total_sales": "3722.54"
+          },
+          {
+            "category": "Children",
+            "total_sales": "3655.55"
+          },
+          {
+            "category": "Classics",
+            "total_sales": "3639.59"
+          },
+          {
+            "category": "Travel",
+            "total_sales": "3549.64"
+          },
+          {
+            "category": "Music",
+            "total_sales": "3417.72"
+          }
+        ],
+        "columns": [
+          "category",
+          "total_sales"
+        ]
+      },
+      "total": 16,
+      "truncated": false,
+      "status": "success"
+    },
+    "w1": {
+      "widget_id": "w1",
+      "plugin_type": "stat_card",
+      "plugin_spec": {
+        "field": "total_revenue",
+        "label": "总营收(元)",
+        "formatter": "currency"
+      },
+      "query_id": "q2",
+      "region": "header",
+      "title": "总营收",
+      "full_width": false,
+      "data": {
+        "rows": [
+          {
+            "total_revenue": "67406.56"
+          }
+        ],
+        "columns": [
+          "total_revenue"
+        ]
+      },
+      "total": 1,
+      "truncated": false,
+      "status": "success"
+    },
+    "w3": {
+      "widget_id": "w3",
+      "plugin_type": "data_table",
+      "plugin_spec": {
+        "columns": [
+          "customer_id",
+          "customer_name",
+          "email",
+          "total_spent",
+          "rental_count"
+        ]
+      },
+      "query_id": "q3",
+      "region": "footer",
+      "title": "TOP10 客户消费明细",
+      "full_width": true,
+      "data": {
+        "rows": [
+          {
+            "customer_id": 526,
+            "customer_name": "KARL SEAL",
+            "email": "KARL.SEAL@sakilacustomer.org",
+            "total_spent": "221.55",
+            "rental_count": 45
+          },
+          {
+            "customer_id": 148,
+            "customer_name": "ELEANOR HUNT",
+            "email": "ELEANOR.HUNT@sakilacustomer.org",
+            "total_spent": "216.54",
+            "rental_count": 46
+          },
+          {
+            "customer_id": 144,
+            "customer_name": "CLARA SHAW",
+            "email": "CLARA.SHAW@sakilacustomer.org",
+            "total_spent": "195.58",
+            "rental_count": 42
+          },
+          {
+            "customer_id": 137,
+            "customer_name": "RHONDA KENNEDY",
+            "email": "RHONDA.KENNEDY@sakilacustomer.org",
+            "total_spent": "194.61",
+            "rental_count": 39
+          },
+          {
+            "customer_id": 178,
+            "customer_name": "MARION SNYDER",
+            "email": "MARION.SNYDER@sakilacustomer.org",
+            "total_spent": "194.61",
+            "rental_count": 39
+          },
+          {
+            "customer_id": 459,
+            "customer_name": "TOMMY COLLAZO",
+            "email": "TOMMY.COLLAZO@sakilacustomer.org",
+            "total_spent": "186.62",
+            "rental_count": 38
+          },
+          {
+            "customer_id": 469,
+            "customer_name": "WESLEY BULL",
+            "email": "WESLEY.BULL@sakilacustomer.org",
+            "total_spent": "177.60",
+            "rental_count": 40
+          },
+          {
+            "customer_id": 468,
+            "customer_name": "TIM CARY",
+            "email": "TIM.CARY@sakilacustomer.org",
+            "total_spent": "175.61",
+            "rental_count": 39
+          },
+          {
+            "customer_id": 236,
+            "customer_name": "MARCIA DEAN",
+            "email": "MARCIA.DEAN@sakilacustomer.org",
+            "total_spent": "175.58",
+            "rental_count": 42
+          },
+          {
+            "customer_id": 181,
+            "customer_name": "ANA BRADLEY",
+            "email": "ANA.BRADLEY@sakilacustomer.org",
+            "total_spent": "174.66",
+            "rental_count": 34
+          }
+        ],
+        "columns": [
+          "customer_id",
+          "customer_name",
+          "email",
+          "total_spent",
+          "rental_count"
+        ]
+      },
+      "total": 10,
+      "truncated": false,
+      "status": "success"
+    }
+  },
+  "slicers": [],
+  "interactions": [],
+  "answer": "",
+  "suggested_followups": [
+    "试试按【电影类别】拆开来看",
+    "换个角度看：按【电影类别】分组对比【营收(元)】"
+  ]
+}

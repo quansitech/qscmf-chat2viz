@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { Modal, message } from 'antd';
 import { useDashboardStore, saveDashboardDraft } from '../store/dashboardStore';
-import { buildSchema } from '../utils/buildSchema';
+import { buildDslSchema } from '../utils/buildSchema';
 import { ADMIN_BASE } from '../utils/routes';
 
 // ---------------------------------------------------------------------------
@@ -55,7 +55,7 @@ export function useDashboardDraft(): UseDashboardDraftReturn {
     async (uid: string, options: SaveOptions = {}) => {
       const state = useDashboardStore.getState();
 
-      const schema = buildSchema(state.widgets);
+      const schema = buildDslSchema(state.dsl);
       setSaving(true);
 
       try {
@@ -72,13 +72,33 @@ export function useDashboardDraft(): UseDashboardDraftReturn {
           body.force_overwrite = true;
         }
 
-        const resp = await fetch(`${ADMIN_BASE}/api_update/uid/${uid}`, {
-          method: 'PUT',
-          credentials: 'same-origin',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-          signal: abortRef.current?.signal,
-        });
+        // Timeout guard: a hung PUT (PHP session lock / Python spec-validate
+        // stall) previously made `await saveNow()` never resolve, which kept
+        // handlePublish stuck before opening the publish dialog — the user saw
+        // a dead "发布" button. Abort after 30s (mirrors _saveDashboardDraftCore)
+        // so the caller's catch can surface the failure.
+        const timeoutController = new AbortController();
+        const timeoutId = window.setTimeout(() => timeoutController.abort(), 30000);
+        // Chain the caller's abort signal (Ctrl+S re-trigger / unmount) with
+        // the timeout signal: abort if EITHER fires.
+        const callerSignal = abortRef.current?.signal;
+        if (callerSignal) {
+          if (callerSignal.aborted) timeoutController.abort();
+          else callerSignal.addEventListener('abort', () => timeoutController.abort());
+        }
+
+        let resp: Response;
+        try {
+          resp = await fetch(`${ADMIN_BASE}/api_update/uid/${uid}`, {
+            method: 'PUT',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+            signal: timeoutController.signal,
+          });
+        } finally {
+          window.clearTimeout(timeoutId);
+        }
 
         if (resp.ok) {
           const result = await resp.json();
@@ -95,10 +115,23 @@ export function useDashboardDraft(): UseDashboardDraftReturn {
             handleConflict(uid);
           } else {
             message.error(result.info || '保存失败');
+            throw new Error(result.info || '保存失败');
           }
+        } else {
+          message.error(`保存失败 (HTTP ${resp.status})`);
+          throw new Error(`save HTTP ${resp.status}`);
         }
       } catch (err) {
-        // ignore abort errors
+        // Distinguish abort (user re-triggered / unmount — silent) from real
+        // failures (network / timeout / server error — must propagate so
+        // handlePublish's catch can tell the user publish was blocked).
+        // Previously ALL errors were swallowed, which hid hung/failed saves
+        // and made the publish button appear dead.
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          // caller-initiated abort (a newer save superseded this one) — silent
+        } else {
+          throw err;
+        }
       } finally {
         setSaving(false);
       }
@@ -284,7 +317,7 @@ export function useDashboardDraft(): UseDashboardDraftReturn {
   saveNowRef.current = saveNow;
 
   useEffect(() => {
-    let prevWidgets = useDashboardStore.getState().widgets;
+    let prevDsl = useDashboardStore.getState().dsl;
     let prevTitle = useDashboardStore.getState().title;
 
     const unsubscribe = useDashboardStore.subscribe((state, prevState) => {
@@ -302,9 +335,9 @@ export function useDashboardDraft(): UseDashboardDraftReturn {
       if (state.title !== prevTitle) {
         source = 'title';
         prevTitle = state.title;
-      } else if (state.widgets !== prevWidgets) {
+      } else if (state.dsl !== prevDsl) {
         source = 'layout';
-        prevWidgets = state.widgets;
+        prevDsl = state.dsl;
       }
 
       saveRef.current(source);

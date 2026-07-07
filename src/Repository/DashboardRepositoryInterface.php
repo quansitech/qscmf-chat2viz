@@ -98,4 +98,18 @@ interface DashboardRepositoryInterface
      * @return array<int, array<string, mixed>> Query result rows
      */
     public function executeRawQuery(string $sql): array;
+
+    /**
+     * Execute a parameterized SQL SELECT with bound values (PDO prepared statement).
+     *
+     * The SQL uses named placeholders (`:name`); `$params` maps placeholder name
+     * (with leading `:`) → value. This is the SQL-injection-safe execution path
+     * for queries carrying user-supplied slicer values. The caller is responsible
+     * for SQL validation (SqlValidator) before calling.
+     *
+     * @param string $sql Validated SQL query string with `:name` placeholders
+     * @param array<string, mixed> $params Bind values keyed by `:name`
+     * @return array<int, array<string, mixed>> Query result rows
+     */
+    public function executeBoundQuery(string $sql, array $params = []): array;
 }

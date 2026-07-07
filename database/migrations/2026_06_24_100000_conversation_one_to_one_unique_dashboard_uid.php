@@ -3,6 +3,7 @@
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Database\Migrations\Migration;
+use Qscmf\Chat2Viz\Support\Table;
 
 /**
  * 强制 conversations 与 dashboard 的 1:1 关系：
@@ -17,14 +18,14 @@ class ConversationOneToOneUniqueDashboardUid extends Migration
 
     public function up()
     {
-        Schema::table('qs_chat2viz_conversations', function (Blueprint $table) {
+        Schema::table(Table::name('chat2viz_conversations'), function (Blueprint $table) {
             $table->unique('dashboard_uid', 'uq_dashboard_uid');
         });
     }
 
     public function down()
     {
-        Schema::table('qs_chat2viz_conversations', function (Blueprint $table) {
+        Schema::table(Table::name('chat2viz_conversations'), function (Blueprint $table) {
             $table->dropUnique('uq_dashboard_uid');
         });
     }

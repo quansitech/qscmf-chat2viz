@@ -2,9 +2,9 @@
 
 QSCMF 自然语言数据可视化集成包：**自然语言 → SQL → G2 图表**。
 
-> **版本匹配**：本分支（`v13`）仅兼容 QSCMF v13。
-> - QSCMF v14 请使用 `quansitech/qscmf-chat2viz:^2.0`
-> - QSCMF v15+ 请使用 `quansitech/qscmf-chat2viz:^3.0`
+> **版本兼容**：单一代码库同时服务 QSCMF v13 / v14 / v15。
+> - `tiderjian/think-core: >=13.0.0`（无上界）；ORM 走 `AdapterFactory` 运行时挑实现（v13 Think\Model / v14+ Eloquent），渲染走 Smarty（v13）/ Inertia（v14+）。
+> - 表名前缀由 `Qscmf\Chat2Viz\Support\Table` 统一解析：`Table::name()` 喂 Schema 构建器/Eloquent（v13 返 `qs_xxx`、v15 返裸名由框架补 `qs_`），`Table::physicalName()` 喂裸 SQL（`DB::statement`/`unprepared` 不自动补前缀，故需完整物理名）。
 
 ## 它做什么
 
@@ -91,7 +91,9 @@ php artisan chat2viz:seed-sakila --prefix=t_  # 自定义前缀
 php artisan chat2viz:unseed-sakila            # 卸载
 ```
 
-数据文件位于 `src/Sakila/data/`，含中文表/字段 COMMENT，便于 NL2SQL 模型识别业务字段。
+- 跨库（mysql/pg）：16 表用 Laravel Schema 构建器（可移植类型 + 中文 COMMENT 内联）；7 视图 / 3 触发器 / 6 存储过程按驱动分支建（`SakilaProceduralObjects`）；数据由 `SakilaDataLoader` 清洗官方 `sakila-data.sql` 灌入（pg 自动改写 BLOB hex 为 bytea）。
+- 表名前缀跨版本自适应（`Table::physicalName()`），无需关心当前库是 mysql 还是 pg、前缀是 `qs_` 还是空。
+- 唯一例外：`address.location` GEOMETRY 列省略（pg 需 PostGIS，demo 不用）。
 
 ## 常见问题
 

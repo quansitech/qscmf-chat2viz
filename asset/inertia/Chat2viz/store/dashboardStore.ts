@@ -3,9 +3,18 @@ import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { temporal } from 'zundo';
 import type { Draft } from 'immer';
-import { buildSchema } from '../utils/buildSchema';
+import { buildDslSchema } from '../utils/buildSchema';
 import { ADMIN_BASE } from '../utils/routes';
 import { suggestHeight } from '../utils/suggestHeight';
+import type {
+  DashboardDSL,
+  WidgetSpec,
+  QuerySpec,
+  SlicerSpec,
+  InteractionSpec,
+  LayoutSlot,
+  SSEDashboardReplaceV3,
+} from '../types/dsl';
 
 // ---------------------------------------------------------------------------
 // Utility — safe UUID generation with fallback for non-secure contexts
@@ -26,55 +35,51 @@ export function generateId(): string {
 }
 
 // ---------------------------------------------------------------------------
-// Types
+// Types — re-exported DSL types + render-level widget cache + chat concerns
 // ---------------------------------------------------------------------------
 
-export interface WidgetLayout {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  /**
-   * True once the user has manually dragged/resized this widget. While false,
-   * updateWidgetData may auto-tune `h` to fit the rendered content (tables grow
-   * with rows, KPI cards shrink, etc.). Once true, the user's chosen size is
-   * honored and never overridden by the auto-height logic.
-   */
-  userSized?: boolean;
-}
+export type {
+  DashboardDSL,
+  WidgetSpec,
+  QuerySpec,
+  SlicerSpec,
+  InteractionSpec,
+  LayoutSlot,
+  SSEDashboardReplaceV3,
+} from '../types/dsl';
 
 /**
  * Render-level widget status (distinct from the contract's event-level status).
- * Event-level: pending | success | error | empty → mapped to render-level before store write:
- *   pending→loading, success→chart, error→error, empty→empty.
- * Legacy widgets without a status field default to 'chart' (zero-regression).
- * 'empty' (P0-A): SQL succeeded but returned 0 rows — a legitimate result,
- * rendered as a friendly "no data" card with an explanation instead of a blank chart.
+ * Event-level: success | error | removed → mapped to render-level before store write:
+ *   success→chart, error→error, removed→empty. Widgets without a status field
+ * default to 'chart' (zero-regression). 'empty' = SQL returned 0 rows.
  */
 export type WidgetStatus = 'loading' | 'error' | 'chart' | 'empty';
 
-export interface Widget {
-  id: string;
-  title: string;
-  g2_spec: Record<string, unknown>;
-  /** Canonical bare rows array (Row[]). Envelopes are never stored here;
-   *  updateWidgetData is the sole normalization boundary. */
-  data: Record<string, unknown>[];
-  sql?: string;
-  /** Render-level status driving PreviewPanel's render branches. */
-  status?: WidgetStatus;
-  /** When true, the widget's data was truncated by the dispatcher row cap. */
-  truncated?: boolean;
-  /** Total row count reported by Python (read-only display, never recomputed). */
+/**
+ * Per-widget data cache entry. `dsl.widgets[id].data` carries the wire payload;
+ * this cache is the render-side mirror that survives slim `data:null` reuses
+ * (contract §4.1) and is overwritten idempotently by WIDGET_READY frames (§4.2).
+ *
+ * `lastReadyRowsRef` tracks the rows array reference last delivered by
+ * WIDGET_READY so the §4.2 no-flicker check can shallow-compare it against the
+ * whole-tree DASHBOARD_REPLACE payload (skip store write when identical).
+ */
+export interface WidgetCacheEntry {
+  rows: Record<string, unknown>[];
   total?: number;
-  refreshInterval?: number;
-  /** Monotonically increasing counter set to Date.now() on manual refresh. */
-  refreshKey?: number;
-  layout: WidgetLayout;
-  /** P0-A: deterministic explanation shown when status='empty' (0 rows). */
-  data_explain?: string;
-  /** P0-A: advisory flag — WHERE may reference a non-existent literal value. */
-  suspect_value_mismatch?: boolean;
+  truncated?: boolean;
+  /** §4 line 274: aligned to Python errors.py `.code`. */
+  error_code?: string;
+  /** User-readable error message (when status='error'). */
+  error_msg?: string;
+  /** Render-level status driving the WidgetCard shell branches. */
+  status?: WidgetStatus;
+  /**
+   * Last rows array reference received via WIDGET_READY, for the §4.2
+   * READY→REPLACE idempotency shallow-compare (no-flicker). Cleared on change.
+   */
+  lastReadyRowsRef?: Record<string, unknown>[] | null;
 }
 
 export interface ActionCall {
@@ -89,44 +94,6 @@ export interface ActionCallResult {
   error_code?: string;
   /** DEF-07: human-readable failure detail. Absent on success. */
   error?: string;
-}
-
-/**
- * Layout entry carried by DASHBOARD_REPLACE (contract §2). `i` == widget_id.
- */
-export interface DashboardLayoutSlot {
-  i: string;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
-
-/**
- * Raw widget payload as it arrives on DASHBOARD_REPLACE (contract §2). Field
- * names mirror the cross-repo contract (widget_id / chart_type / data|null /
- * status / error_msg). replaceDashboard normalizes this into the store Widget
- * shape (id / g2_spec / data / status / layout).
- *
- * `data: null` is the slim signal — the widget's SQL did not change
- * (MergeScheduler REUSE/RE_SPEC), so the frontend reuses its cached data.
- */
-export interface DashboardReplaceWidget {
-  widget_id?: string;
-  id?: string;
-  title?: string;
-  chart_type?: string;
-  status?: 'success' | 'error' | 'empty';
-  sql?: string;
-  g2_spec?: Record<string, unknown>;
-  data?: Record<string, unknown>[] | null;
-  error_msg?: string;
-  truncated?: boolean;
-  total?: number;
-  /** P0-A: deterministic explanation shown when status='empty'. */
-  data_explain?: string;
-  /** P0-A: advisory — WHERE may reference a non-existent literal. */
-  suspect_value_mismatch?: boolean;
 }
 
 export type MessageStatus = 'streaming' | 'complete' | 'interrupted' | 'failed';
@@ -151,34 +118,16 @@ export interface ChatMessage {
  * Conversation streaming status. Drives AI-step indicators and auto-save edges.
  *
  * - 'idle'      — ready, no request in flight
- * - 'submitted' — request sent, awaiting the FIRST SSE frame (the "thinking"
- *                 phase before any token/tool arrives). Semantically part of a
- *                 stream; auto-save suppression treats both 'submitted' and
- *                 'streaming' as active (see useDashboardDraft, which keys off
- *                 `!== 'idle'`).
- * - 'streaming' — SSE frames are arriving (answer text and/or tool calls).
- * - 'error'     — the request failed.
- *
- * NOTE: the literal 'streaming' MUST be preserved verbatim — useDashboardDraft's
- * stream-end edge detection depends on it. 'submitted' is purely additive.
+ * - 'submitted' — request sent, awaiting the FIRST SSE frame
+ * - 'streaming' — SSE frames are arriving (answer text and/or tool calls)
+ * - 'error'     — the request failed
  */
 export type StreamingState = 'idle' | 'submitted' | 'streaming' | 'error';
 
-/**
- * Session-level history hydration status — orthogonal to StreamingState (which
- * tracks a single ask). Drives the initial "loading history" gate so the chat
- * panel can disable send + show a spinner until the conversation is loaded.
- * Not part of the temporal partialize whitelist, so it never enters undo state.
- */
 export type HistoryStatus = 'idle' | 'loading' | 'ready' | 'error';
 
 export interface AiStep {
   id: string;
-  /**
-   * declarative-frontend-adapter: the 'sql_ready'/'data_ready' variants were
-   * removed (sql_generated/data_preview events are gone). tool_start drives
-   * the AI-step indicator; 'thinking' is the pre-tool placeholder.
-   */
   type: 'tool_start' | 'thinking';
   label: string;
   timestamp: string;
@@ -188,12 +137,16 @@ export interface AiStep {
 export interface DashboardState {
   uid: string;
   title: string;
-  widgets: Record<string, Widget>;
+  /** DSL AST (contract §2.1) — the single widget/query/slicer source of truth. */
+  dsl: DashboardDSL | null;
+  /** slicer_id → value (drives react-query keys via useWidgetData). */
+  slicerValues: Record<string, unknown>;
+  /** widget_id → render-side cache (rows + status + error_code + lastReadyRef). */
+  widgetDataCache: Record<string, WidgetCacheEntry>;
   conversationId: string;
   messages: ChatMessage[];
   isLoading: boolean;
   streamingState: StreamingState;
-  /** Session-level history hydration status (orthogonal to streamingState). */
   historyStatus: HistoryStatus;
   aiSteps: AiStep[];
   error: string;
@@ -210,48 +163,45 @@ export interface DashboardState {
 
 export interface DashboardActions {
   startConversation: (question: string) => void;
-  addPanel: (widget: Widget) => void;
-  removePanel: (widgetId: string) => void;
-  updateWidget: (widgetId: string, partial: Partial<Widget>) => void;
   /**
-   * Whole-tree replace (declarative-frontend-adapter, contract §2).
-   *
-   * Clears the existing widgets map and rebuilds it from `newWidgets`,
-   * updating `layout` from `layoutSlots`. Widgets absent from the new tree
-   * are cleared. For a widget whose payload `data` is null (slim — its SQL
-   * did not change), the prior cached data is reused instead of being wiped.
-   *
-   * `layoutSlots` (from DASHBOARD_REPLACE.layout) overrides each widget's
-   * embedded layout slot; missing slots fall back to the embedded/default slot.
+   * Whole-tree DSL replace (contract §4.1). Clears the old DSL and rebuilds
+   * the entire AST (queries/widgets/slicers/interactions/layout). `data:null`
+   * slim widgets reuse the prior `widgetDataCache` entry. Bad fields degrade
+   * (missing query_id → widget status='error'; missing slot → default layout)
+   * rather than mid-tree throwing. Applies the §4.2 no-flicker rule (skip the
+   * store write for widgets whose payload data is reference-identical to the
+   * last WIDGET_READY rows).
    */
-  replaceDashboard: (
-    layoutSlots: DashboardLayoutSlot[],
-    newWidgets: Record<string, DashboardReplaceWidget>,
+  replaceDSL: (payload: SSEDashboardReplaceV3) => void;
+  /** Progressive per-widget pre-render (contract §4 WIDGET_READY). */
+  updateWidgetDataCache: (
+    widgetId: string,
+    data: { rows?: Record<string, unknown>[]; columns?: string[] } | null,
+    meta?: { total?: number; truncated?: boolean; error_code?: string; error_msg?: string; status?: WidgetStatus },
   ) => void;
-  /** Create a widget placeholder (status=loading, no g2_spec required). */
-  createWidgetPlaceholder: (widgetId: string, partial: Partial<Widget>) => void;
-  /** Inject data for a widget. Status is DERIVED from data + spec (not hardcoded).
-   *  `data` is normalized to bare Row[] at this boundary (envelope {rows} unwrapped). */
-  updateWidgetData: (widgetId: string, data: unknown, meta?: { truncated?: boolean; total?: number; g2_spec?: Record<string, unknown>; sql?: string }) => void;
   /** Mark a single widget as errored (local degradation; MUST NOT touch store.error). */
-  setWidgetError: (widgetId: string) => void;
+  setWidgetError: (widgetId: string, errorCode?: string, errorMsg?: string) => void;
   /** Fallback: set any widget still loading to error (e.g. on stream done). */
   fallbackLoadingWidgetsToError: () => void;
-  updateLayout: (widgetId: string, layout: WidgetLayout) => void;
-  /** Mark a widget as manually resized by the user — disables content
-   *  auto-height so the user's chosen size is preserved. */
+  /** Update a single widget's plugin_spec/title (edit-page interactions). */
+  updateWidget: (widgetId: string, partial: Partial<WidgetSpec>) => void;
+  /** Update a widget's layout slot (drag/resize). */
+  updateLayout: (widgetId: string, x: number, y: number, w: number, h: number) => void;
+  /** Freeze a widget's auto-height after a manual resize. */
   markWidgetUserSized: (widgetId: string) => void;
+  /** Remove a widget from the DSL (edit-page delete). */
+  removeWidget: (widgetId: string) => void;
+  /** Set a slicer value (drives useWidgetData key invalidation). */
+  setSlicerValue: (slicerId: string, value: unknown) => void;
+  /** Reset the DSL + caches (new conversation / clear). */
+  resetDSL: () => void;
   executeAction: (action: ActionCall) => void;
   appendAnswer: (text: string) => void;
   appendThought: (text: string) => void;
-  setSql: (widgetId: string, sql: string) => void;
-  /** Set the dashboard page title (update_page_title / WIDGET_UPDATE set_title). */
   setTitle: (title: string) => void;
   setError: (error: string) => void;
   completeConversation: () => void;
-  /** Transition from 'submitted' to 'streaming' on the first real SSE frame. */
   markStreaming: () => void;
-  /** P0-B: store the latest suggested follow-ups (from DASHBOARD_REPLACE). */
   setSuggestedFollowups: (followups: string[]) => void;
   saveDraft: () => Promise<void>;
   setConversationId: (id: string) => void;
@@ -260,14 +210,12 @@ export interface DashboardActions {
   getDashboardContext: () => object;
   addAiStep: (step: AiStep) => void;
   completeAiStep: (stepId: string) => void;
-  /** Bump an in-progress step's timestamp so its spinner restarts, without
-   *  completing it (no ghost row) and without adding a new row. */
   refreshAiStep: (stepId: string) => void;
   clearAiSteps: () => void;
 }
 
 // ---------------------------------------------------------------------------
-// Full store type (state + actions)
+// Full store type
 // ---------------------------------------------------------------------------
 
 type StoreType = DashboardState & DashboardActions;
@@ -279,7 +227,9 @@ type StoreType = DashboardState & DashboardActions;
 const initialState: DashboardState = {
   uid: '',
   title: '',
-  widgets: {},
+  dsl: null,
+  slicerValues: {},
+  widgetDataCache: {},
   conversationId: '',
   messages: [],
   isLoading: false,
@@ -294,28 +244,21 @@ const initialState: DashboardState = {
 };
 
 // ---------------------------------------------------------------------------
-// Store
-//
-// The middleware composition (immer inside temporal) produces complex generics
-// that confuse TypeScript's inference.  We type the store factory body
-// explicitly and cast the final result to the public interface so consumers
-// get clean types without exposing the middleware internals.
+// Store factory (immer inside temporal)
 // ---------------------------------------------------------------------------
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const _create = create as any;
 
-// Typed setter/ungetter — narrow the any to Draft<DashboardState> inside callbacks.
 type SetFn = (fn: (draft: Draft<DashboardState>) => void) => void;
 type GetFn = () => DashboardState;
 
 // ---------------------------------------------------------------------------
-// Unified chart-existence helper (DESIGN_BASIS #7)
+// Chart-spec validity helper (DESIGN_BASIS #7)
 //
-// Single source of truth for "does this spec render a chart". Shared by
-// updateWidgetData (status derivation), getDashboardContext (chart type
-// inference), G2Renderer, and WidgetCard. A spec is a valid chart iff it has
-// `type` OR `mark` (G2 v5 mark style) OR a non-empty `children` array.
+// Single source of truth for "does this spec render a G2 chart". Used by the
+// g2_chart plugin and G2Renderer. A spec is a valid chart iff it has `type` OR
+// `mark` (G2 v5 mark style) OR a non-empty `children` array.
 // ---------------------------------------------------------------------------
 
 export function hasChartSpec(spec: unknown): boolean {
@@ -327,11 +270,13 @@ export function hasChartSpec(spec: unknown): boolean {
   return false;
 }
 
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
 /**
- * Normalize widget data to a bare Row[] at the store write boundary
- * (DESIGN_BASIS #2 / D2). Envelope `{rows, columns}` → `.rows`; bare array
- * passthrough; anything else → `[]` (defensive, never throws).
- * `columns` is metadata and dropped (G2 infers columns from rows).
+ * Normalize wire data ({rows,columns} envelope or bare array) to bare Row[].
+ * Defensive: never throws. Mirrors the legacy normalizeRows philosophy.
  */
 export function normalizeRows(data: unknown): Record<string, unknown>[] {
   if (Array.isArray(data)) return data as Record<string, unknown>[];
@@ -342,36 +287,20 @@ export function normalizeRows(data: unknown): Record<string, unknown>[] {
   return [];
 }
 
-
-
-function extractEncodeSummary(
-  encode: Record<string, unknown>,
-): Record<string, string> | null {
-  const result: Record<string, string> = {};
-  for (const [channel, value] of Object.entries(encode)) {
-    if (typeof value === 'object' && value !== null && 'field' in (value as Record<string, unknown>)) {
-      const fieldName = (value as Record<string, unknown>).field;
-      if (typeof fieldName === 'string') {
-        result[channel] = fieldName;
-      }
-    } else if (Array.isArray(value)) {
-      // Multi-field encode (rare), take first field
-      for (const item of value) {
-        if (typeof item === 'object' && item !== null && 'field' in item) {
-          const fieldName = (item as Record<string, unknown>).field;
-          if (typeof fieldName === 'string') {
-            result[channel] = fieldName;
-            break;
-          }
-        }
-      }
-    }
-  }
-  return Object.keys(result).length > 0 ? result : null;
+/**
+ * Map event-level lifecycle status (contract §2.4: success|error|removed) to
+ * the render-level status driving the WidgetCard shell. Defaults to 'chart'
+ * for any unknown/absent value (zero-regression for legacy widgets).
+ */
+function mapStatus(wireStatus: string | undefined, cachedStatus: WidgetStatus | undefined): WidgetStatus {
+  if (wireStatus === 'error') return 'error';
+  if (wireStatus === 'removed') return 'empty';
+  if (wireStatus === 'success') return 'chart';
+  return cachedStatus ?? 'loading';
 }
 
 // ---------------------------------------------------------------------------
-// Raw store (any-typed for middleware composition compatibility)
+// Store
 // ---------------------------------------------------------------------------
 
 const _store = _create()(
@@ -389,8 +318,6 @@ const _store = _create()(
         startConversation: (question: string) => {
           set((state) => {
             state.isLoading = true;
-            // 'submitted' = request sent, awaiting first frame. Transitions to
-            // 'streaming' on the first answer/action frame (markStreaming).
             state.streamingState = 'submitted';
             state.aiSteps = [];
             state.error = '';
@@ -443,7 +370,6 @@ const _store = _create()(
 
         markStreaming: () => {
           set((state) => {
-            // Only flip 'submitted' → 'streaming'; never override 'error'/'idle'.
             if (state.streamingState === 'submitted') {
               state.streamingState = 'streaming';
             }
@@ -458,190 +384,178 @@ const _store = _create()(
           });
         },
 
-        // ------- Widget CRUD -------
+        // ------- DSL whole-tree replace (contract §4.1) -------
 
-        addPanel: (widget: Widget) => {
+        replaceDSL: (payload: SSEDashboardReplaceV3) => {
           set((state) => {
-            state.widgets[widget.id] = {
-              ...widget,
-              layout: widget.layout || { x: 0, y: 0, w: 12, h: 6 },
-            };
-            state.isDirty = true;
-          });
-        },
-
-        removePanel: (widgetId: string) => {
-          set((state) => {
-            delete state.widgets[widgetId];
-            state.isDirty = true;
-          });
-        },
-
-        updateWidget: (widgetId: string, partial: Partial<Widget>) => {
-          set((state) => {
-            const widget = state.widgets[widgetId];
-            if (!widget) return;
-            Object.assign(widget, partial);
-            state.isDirty = true;
-          });
-        },
-
-        // declarative-frontend-adapter: whole-tree replace (contract §2). The
-        // store is a render-only cache — it never participates in state
-        // computation (no reducer / applyPatches). data:null slim widgets reuse
-        // the prior cached data (the frontend is the cache-reuse boundary).
-        replaceDashboard: (
-          layoutSlots: DashboardLayoutSlot[],
-          newWidgets: Record<string, DashboardReplaceWidget>,
-        ) => {
-          set((state) => {
-            const prior = state.widgets;
-            const slotById = new Map<string, DashboardLayoutSlot>();
-            for (const slot of layoutSlots ?? []) {
-              if (slot && typeof slot.i === 'string') {
-                slotById.set(slot.i, slot);
+            const priorCache = state.widgetDataCache;
+            const widgetEntries = Object.entries(payload.widgets ?? {});
+            const slotById = new Map<string, LayoutSlot>();
+            for (const slot of payload.layout?.slots ?? []) {
+              if (slot && typeof slot.widget_id === 'string') {
+                slotById.set(slot.widget_id, slot);
               }
             }
+            const queriesPresent = new Set(Object.keys(payload.queries ?? {}));
 
-            const next: Record<string, Widget> = {};
-            for (const [id, w] of Object.entries(newWidgets)) {
+            const nextWidgets: Record<string, WidgetSpec> = {};
+            const nextCache: Record<string, WidgetCacheEntry> = {};
+
+            for (const [id, w] of widgetEntries) {
               const widgetId = (w && typeof w.widget_id === 'string' && w.widget_id) || id;
-              // data:null slim → reuse the prior cached data (the widget's SQL
-              // did not change, MergeScheduler REUSE/RE_SPEC). Anything else
-              // (array data, or absent with no cache) resolves to [].
-              const cached = prior[widgetId];
-              const priorData = cached?.data ?? [];
-              const payloadData = (w && w.data === null) ? priorData : normalizeRows(w?.data);
 
-              // event-level status → render-level status (mirrors the WIDGET_*
-              // status mapping: success→chart, error→error, empty→empty, else keep cached).
-              let status: WidgetStatus;
-              if (w?.status === 'error') {
-                status = 'error';
-              } else if (w?.status === 'empty') {
-                // P0-A: SQL succeeded with 0 rows — a legitimate "no data" result,
-                // not an error. Rendered as a friendly empty card with data_explain.
-                status = 'empty';
-              } else if (w?.status === 'success') {
-                status = 'chart';
+              // §4.2 no-flicker: if payload.data.rows is reference-identical to
+              // the last WIDGET_READY rows for this widget, skip the store write
+              // entirely (reuse DOM key, avoid READY→REPLACE flicker). Only the
+              // rows reference identity matters; other fields are updated.
+              const priorEntry = priorCache[widgetId];
+              const payloadRows = w?.data ? normalizeRows(w.data) : null;
+
+              // §4.1 slim: data:null → reuse prior cached rows
+              let resolvedRows: Record<string, unknown>[];
+              if (w?.data === null || w?.data === undefined) {
+                resolvedRows = priorEntry?.rows ?? [];
               } else {
-                status = cached?.status ?? 'loading';
+                resolvedRows = payloadRows ?? [];
               }
 
-              const slot = slotById.get(widgetId);
-              const layout: WidgetLayout = slot
-                ? { x: slot.x, y: slot.y, w: slot.w, h: slot.h }
-                : (cached?.layout ?? { x: 0, y: 0, w: 12, h: suggestHeight({ spec: w?.g2_spec ?? {}, data: payloadData }) });
+              // Determine render-level status. If the widget references a
+              // missing query_id, force status='error' (degrade, don't throw).
+              const queryMissing =
+                typeof w?.query_id === 'string' &&
+                w.query_id !== '' &&
+                !queriesPresent.has(w.query_id);
 
-              next[widgetId] = {
-                id: widgetId,
-                title: w?.title ?? cached?.title ?? '',
-                g2_spec: w?.g2_spec ?? cached?.g2_spec ?? {},
-                data: payloadData,
-                sql: typeof w?.sql === 'string' && w.sql !== '' ? w.sql : cached?.sql,
+              const wireStatus = queryMissing ? 'error' : w?.status;
+              const status = queryMissing
+                ? 'error'
+                : mapStatus(wireStatus, priorEntry?.status);
+
+              // Layout: payload slot wins; else prior slot; else content-aware default.
+              const slot = slotById.get(widgetId);
+              // build the merged WidgetSpec (carrying a layout slot for the grid)
+              const widgetRegion = w?.region ?? slot?.region ?? 'content';
+              const mergedWidget: WidgetSpec = {
+                widget_id: widgetId,
+                plugin_type: w?.plugin_type ?? 'markdown',
+                plugin_spec: w?.plugin_spec ?? {},
+                query_id: w?.query_id ?? '',
+                region: widgetRegion,
+                ...(typeof w?.title === 'string' ? { title: w.title } : {}),
+                ...(typeof w?.full_width === 'boolean' ? { full_width: w.full_width } : {}),
+                // DSL store form: data is the wire payload (may be null slim).
+                // The render cache below holds the resolved rows.
+                data: w?.data ?? null,
+                ...(typeof w?.total === 'number' ? { total: w.total } : {}),
+                ...(typeof w?.truncated === 'boolean' ? { truncated: w.truncated } : {}),
+                status: wireStatus === 'error' || queryMissing ? 'error' : (w?.status ?? 'success'),
+                ...(typeof w?.error_msg === 'string' && w.error_msg ? { error_msg: w.error_msg } : {}),
+                ...(typeof w?.error_code === 'string' && w.error_code ? { error_code: w.error_code } : {}),
+              };
+              // Embed the resolved slot coordinates on the widget for the grid.
+              (mergedWidget as WidgetSpec & { layout?: LayoutSlot }).layout = slot ?? {
+                widget_id: widgetId,
+                region: widgetRegion,
+                x: 0,
+                y: 0,
+                w: 12,
+                h: suggestHeight({
+                  pluginType: mergedWidget.plugin_type,
+                  data: resolvedRows,
+                }),
+              };
+              nextWidgets[widgetId] = mergedWidget;
+
+              // §4.2 no-flicker idempotency: when the payload data is
+              // reference-identical to the last WIDGET_READY rows for this
+              // widget, reuse the prior cache entry verbatim (skip the store
+              // write so React reuses the DOM key — no READY→REPLACE flash).
+              // Reference identity is achievable when updateWidgetDataCache
+              // (WIDGET_READY) and replaceDSL share the same parsed object
+              // (e.g. when the SSE layer hands the same rows reference through,
+              // or when a slim `data:null` reuse keeps the prior ref). For
+              // independently-parsed frames this falls through to a normal write.
+              const priorRef = priorEntry?.lastReadyRowsRef;
+              const isReadyIdentical =
+                payloadRows !== null &&
+                priorRef !== null &&
+                priorRef !== undefined &&
+                payloadRows === priorRef;
+              if (isReadyIdentical && priorEntry) {
+                nextCache[widgetId] = priorEntry;
+                continue;
+              }
+
+              // Cache entry: resolved rows + status + §4.2 ref tracking.
+              const lastRef =
+                w?.data === null || w?.data === undefined
+                  ? priorEntry?.lastReadyRowsRef ?? null
+                  : payloadRows;
+              nextCache[widgetId] = {
+                rows: resolvedRows,
+                ...(typeof w?.total === 'number' ? { total: w.total } : (priorEntry?.total !== undefined ? { total: priorEntry.total } : {})),
+                ...(typeof w?.truncated === 'boolean' ? { truncated: w.truncated } : (priorEntry?.truncated !== undefined ? { truncated: priorEntry.truncated } : {})),
                 status,
-                layout,
-                ...(typeof w?.truncated === 'boolean' ? { truncated: w.truncated } : (cached?.truncated !== undefined ? { truncated: cached.truncated } : {})),
-                ...(typeof w?.total === 'number' ? { total: w.total } : (cached?.total !== undefined ? { total: cached.total } : {})),
-                ...(cached?.refreshInterval !== undefined ? { refreshInterval: cached.refreshInterval } : {}),
-                // P0-A: pass through empty-data fields (only meaningful when status='empty').
-                ...(typeof w?.data_explain === 'string' && w.data_explain ? { data_explain: w.data_explain } : {}),
-                ...(w?.suspect_value_mismatch === true ? { suspect_value_mismatch: true } : {}),
+                ...(queryMissing || w?.error_msg ? { error_msg: w?.error_msg || '该图表引用了不存在的查询，请重新生成' } : {}),
+                ...(w?.error_code || queryMissing ? { error_code: w?.error_code || 'WIDGET_QUERY_MISSING' } : {}),
+                lastReadyRowsRef: lastRef ?? null,
               };
             }
 
-            state.widgets = next;
-            state.isDirty = true;
-          });
-        },
-
-        // Multi-widget lifecycle actions (D5: placeholder path bypasses
-        // validateWidget since placeholders legitimately carry no g2_spec).
-        createWidgetPlaceholder: (widgetId: string, partial: Partial<Widget>) => {
-          set((state) => {
-            // Preserve any pre-existing fields (e.g. title from a prior partial),
-            // default status to 'loading', assign a layout slot.
-            const existing = state.widgets[widgetId];
-            const baseLayout = partial.layout ?? existing?.layout;
-            const spec = partial.g2_spec ?? existing?.g2_spec ?? {};
-            const data = partial.data ?? existing?.data ?? [];
-            // Content-aware default height: when no layout was provided, derive
-            // a sensible h from the spec/data instead of the flat 6. Existing
-            // persisted layouts are honored as-is.
-            const layout = baseLayout ?? {
-              x: 0,
-              y: 0,
-              w: 12,
-              h: suggestHeight({ spec, data }),
+            // Build the new DSL AST.
+            const nextDsl: DashboardDSL = {
+              version: payload.version,
+              ...(typeof payload.title === 'string' ? { title: payload.title } : {}),
+              layout: payload.layout ?? { regions: ['content'], slots: [] },
+              queries: payload.queries ?? {},
+              widgets: nextWidgets,
+              slicers: payload.slicers ?? [],
+              interactions: payload.interactions ?? [],
             };
-            state.widgets[widgetId] = {
-              id: widgetId,
-              title: partial.title ?? existing?.title ?? '',
-              g2_spec: partial.g2_spec ?? existing?.g2_spec ?? {},
-              data: partial.data ?? existing?.data ?? [],
-              sql: partial.sql ?? existing?.sql,
-              status: 'loading',
-              layout,
-              ...(partial.refreshInterval !== undefined ? { refreshInterval: partial.refreshInterval } : {}),
+
+            state.dsl = nextDsl;
+            state.widgetDataCache = nextCache;
+            state.isDirty = true;
+          });
+        },
+
+        // ------- Progressive WIDGET_READY (contract §4) -------
+
+        updateWidgetDataCache: (
+          widgetId: string,
+          data: { rows?: Record<string, unknown>[]; columns?: string[] } | null,
+          meta?: { total?: number; truncated?: boolean; error_code?: string; error_msg?: string; status?: WidgetStatus },
+        ) => {
+          set((state) => {
+            const rows = data ? normalizeRows(data) : [];
+            const prior = state.widgetDataCache[widgetId];
+            // Status derivation: explicit meta.status wins; else rows+presence.
+            const status: WidgetStatus = meta?.status ?? (rows.length > 0 ? 'chart' : 'empty');
+            state.widgetDataCache[widgetId] = {
+              rows,
+              ...(meta?.total !== undefined ? { total: meta.total } : (prior?.total !== undefined ? { total: prior.total } : {})),
+              ...(meta?.truncated !== undefined ? { truncated: meta.truncated } : (prior?.truncated !== undefined ? { truncated: prior.truncated } : {})),
+              status,
+              ...(meta?.error_code ? { error_code: meta.error_code } : {}),
+              ...(meta?.error_msg ? { error_msg: meta.error_msg } : {}),
+              // §4.2: track this rows reference for the no-flicker compare.
+              lastReadyRowsRef: rows,
             };
             state.isDirty = true;
           });
         },
 
-        updateWidgetData: (widgetId: string, data: unknown, meta?: { truncated?: boolean; total?: number; g2_spec?: Record<string, unknown>; sql?: string }) => {
+        setWidgetError: (widgetId: string, errorCode?: string, errorMsg?: string) => {
           set((state) => {
-            const widget = state.widgets[widgetId];
-            if (!widget) return;
-            // DESIGN_BASIS #2: this is the SOLE normalization boundary. Envelope
-            // {rows,columns} → bare Row[]; bare array passthrough; else []. The
-            // canonical store form is always a bare array (never an envelope).
-            const rows = normalizeRows(data);
-            widget.data = rows;
-            // g2_spec is the widget config, delivered by WIDGET_DATA_UPDATE
-            // (contract §3/§7). When present it transitions loading→chart with
-            // the real spec; when absent the placeholder's spec is preserved.
-            if (meta?.g2_spec !== undefined) widget.g2_spec = meta.g2_spec;
-            // DESIGN_BASIS #4/#5: sql is widget config (must persist). SSE
-            // WIDGET_DATA_UPDATE carries the widget's sql in its envelope; bind
-            // it here so buildSchema serializes it for HTTP re-fetch / publish.
-            if (typeof meta?.sql === 'string' && meta.sql !== '') widget.sql = meta.sql;
-            // DESIGN_BASIS #7: status is DERIVED from data + spec, not hardcoded.
-            // Empty rows or no valid spec → stay 'loading' (watchdog falls back
-            // to error if no real frame ever arrives); real data + valid spec →
-            // 'chart'. setWidgetError explicitly sets 'error' independently.
-            if (rows.length > 0 && hasChartSpec(widget.g2_spec)) {
-              widget.status = 'chart';
-              // Content-aware auto-height: when real data + spec arrive and the
-              // user has NOT manually resized this widget, recompute `h` to fit
-              // the content (tables scale with rows, dense charts breathe, KPI
-              // value cards stay compact). This makes suggestHeight's logic
-              // actually take effect on data load instead of every widget
-              // staying at its placeholder height. User-resized widgets are
-              // left alone (their userSized flag is set in updateLayout).
-              if (!widget.layout?.userSized) {
-                const suggested = suggestHeight({
-                  spec: widget.g2_spec,
-                  data: rows,
-                  currentH: widget.layout?.h,
-                });
-                // Only grow or shrink toward the suggestion; never enlarge a
-                // widget the data says should be small beyond a sane cap.
-                widget.layout = { ...(widget.layout as WidgetLayout), h: suggested };
-              }
-            } else {
-              widget.status = 'loading';
-            }
-            if (meta?.truncated !== undefined) widget.truncated = meta.truncated;
-            if (meta?.total !== undefined) widget.total = meta.total;
-            state.isDirty = true;
-          });
-        },
-
-        setWidgetError: (widgetId: string) => {
-          set((state) => {
-            const widget = state.widgets[widgetId];
-            if (!widget) return;
-            widget.status = 'error';
+            const prior = state.widgetDataCache[widgetId];
+            state.widgetDataCache[widgetId] = {
+              rows: prior?.rows ?? [],
+              ...(prior?.total !== undefined ? { total: prior.total } : {}),
+              ...(prior?.truncated !== undefined ? { truncated: prior.truncated } : {}),
+              status: 'error',
+              ...(errorCode ? { error_code: errorCode } : {}),
+              ...(errorMsg ? { error_msg: errorMsg } : {}),
+            };
             state.isDirty = true;
           });
         },
@@ -649,49 +563,101 @@ const _store = _create()(
         fallbackLoadingWidgetsToError: () => {
           set((state) => {
             let changed = false;
-            for (const w of Object.values(state.widgets)) {
-              // Event-driven cleanup: flip only true loading placeholders (lost
-              // their WIDGET_DATA_UPDATE/WIDGET_ERROR frames) to error. Fully
-              // rendered (chart) or already-errored widgets are left untouched.
-              if (w.status === 'loading') {
-                w.status = 'error';
+            for (const [id, entry] of Object.entries(state.widgetDataCache)) {
+              if (entry.status === 'loading') {
+                state.widgetDataCache[id] = { ...entry, status: 'error' };
                 changed = true;
+              }
+            }
+            // Also cover widgets declared in the DSL but not yet cached.
+            if (state.dsl) {
+              for (const widgetId of Object.keys(state.dsl.widgets)) {
+                if (!state.widgetDataCache[widgetId] || state.widgetDataCache[widgetId].status === 'loading') {
+                  state.widgetDataCache[widgetId] = {
+                    rows: [],
+                    status: 'error',
+                  };
+                  changed = true;
+                }
               }
             }
             if (changed) state.isDirty = true;
           });
         },
 
-        updateLayout: (widgetId: string, layout: WidgetLayout) => {
+        // ------- Widget CRUD (edit page) -------
+
+        updateWidget: (widgetId: string, partial: Partial<WidgetSpec>) => {
           set((state) => {
-            const widget = state.widgets[widgetId];
-            if (!widget) return;
-            widget.layout = { ...layout };
+            if (!state.dsl) return;
+            const w = state.dsl.widgets[widgetId];
+            if (!w) return;
+            Object.assign(w, partial);
+            state.isDirty = true;
+          });
+        },
+
+        updateLayout: (widgetId: string, x: number, y: number, w: number, h: number) => {
+          set((state) => {
+            if (!state.dsl) return;
+            const slot = state.dsl.layout.slots.find((s) => s.widget_id === widgetId);
+            if (slot) {
+              slot.x = x;
+              slot.y = y;
+              slot.w = w;
+              slot.h = h;
+            }
+            // Also reflect on the widget's embedded layout for the grid.
+            const widget = state.dsl.widgets[widgetId];
+            if (widget) {
+              const wl = (widget as WidgetSpec & { layout?: LayoutSlot }).layout;
+              if (wl) {
+                wl.x = x; wl.y = y; wl.w = w; wl.h = h;
+              }
+            }
             state.isDirty = true;
           });
         },
 
         markWidgetUserSized: (widgetId: string) => {
           set((state) => {
-            const widget = state.widgets[widgetId];
-            if (!widget || !widget.layout) return;
-            widget.layout = { ...widget.layout, userSized: true };
+            if (!state.dsl) return;
+            const slot = state.dsl.layout.slots.find((s) => s.widget_id === widgetId);
+            if (slot) {
+              (slot as LayoutSlot & { userSized?: boolean }).userSized = true;
+            }
+            const widget = state.dsl.widgets[widgetId];
+            if (widget) {
+              const wl = (widget as WidgetSpec & { layout?: LayoutSlot & { userSized?: boolean } }).layout;
+              if (wl) wl.userSized = true;
+            }
           });
         },
 
-        setSql: (widgetId: string, sql: string) => {
+        removeWidget: (widgetId: string) => {
           set((state) => {
-            const widget = state.widgets[widgetId];
-            if (!widget) return;
-            widget.sql = sql;
+            if (!state.dsl) return;
+            delete state.dsl.widgets[widgetId];
+            state.dsl.layout.slots = state.dsl.layout.slots.filter((s) => s.widget_id !== widgetId);
+            delete state.widgetDataCache[widgetId];
             state.isDirty = true;
           });
         },
 
-        setTitle: (title: string) => {
+        // ------- Slicers -------
+
+        setSlicerValue: (slicerId: string, value: unknown) => {
           set((state) => {
-            state.title = title;
+            state.slicerValues[slicerId] = value;
             state.isDirty = true;
+          });
+        },
+
+        resetDSL: () => {
+          set((state) => {
+            state.dsl = null;
+            state.slicerValues = {};
+            state.widgetDataCache = {};
           });
         },
 
@@ -703,12 +669,8 @@ const _store = _create()(
               .reverse()
               .find((m) => m.role === 'assistant');
             if (lastAssistant) {
-              if (!lastAssistant.metadata) {
-                lastAssistant.metadata = {};
-              }
-              if (!lastAssistant.metadata.actionCalls) {
-                lastAssistant.metadata.actionCalls = [];
-              }
+              if (!lastAssistant.metadata) lastAssistant.metadata = {};
+              if (!lastAssistant.metadata.actionCalls) lastAssistant.metadata.actionCalls = [];
               lastAssistant.metadata.actionCalls.push(action);
             }
             state.isDirty = true;
@@ -745,6 +707,15 @@ const _store = _create()(
           });
         },
 
+        // ------- Title -------
+
+        setTitle: (title: string) => {
+          set((state) => {
+            state.title = title;
+            state.isDirty = true;
+          });
+        },
+
         // ------- Persistence -------
 
         saveDraft: async () => {
@@ -760,44 +731,48 @@ const _store = _create()(
         // ------- Context for AI -------
 
         getDashboardContext: () => {
-          const { widgets, conversationId, uid } = get();
-          // Python NL2SQL service expects widgets as a dict keyed by id, not an array.
-          const widgetDict: Record<string, unknown> = {};
-          for (const w of Object.values(widgets) as Widget[]) {
-            // DESIGN_BASIS #7: chart type inference MUST use the same validity
-            // judgment as the render layer (hasChartSpec). Invalid spec →
-            // 'unknown'; valid spec → mark ?? type.
-            const validSpec = hasChartSpec(w.g2_spec);
-            const mark = (w.g2_spec?.mark ?? w.g2_spec?.type) as string | undefined;
-            const chartType = validSpec ? (mark || 'unknown') : 'unknown';
-            // Extract encode channel summary: {channel: field_name}
-            const encodeSpec = w.g2_spec?.encode as Record<string, unknown> | undefined;
-            const encodeSummary: Record<string, string> | null = encodeSpec
-              ? extractEncodeSummary(encodeSpec)
-              : null;
-            // Strip data array from g2_spec before sending to backend (token budget).
-            // The snapshot only needs spec structure, not query results.
-            const g2SpecNoData: Record<string, unknown> | null = w.g2_spec
-              ? (() => {
-                  const clone = JSON.parse(JSON.stringify(w.g2_spec as Record<string, unknown>));
-                  delete clone.data;
-                  return clone;
-                })()
-              : null;
-            widgetDict[w.id] = {
-              id: w.id,
-              type: chartType,
-              title: w.title,
-              sql: w.sql ?? null,
-              layout: w.layout,
-              ...(encodeSummary ? { encode: encodeSummary } : {}),
-              ...(g2SpecNoData ? { g2_spec: g2SpecNoData } : {}),
+          const { dsl, conversationId, uid } = get();
+          // Serialize the DSL AST with widget data stripped to null (slim,
+          // contract §5). Python reads topology + plugin_spec only.
+          //
+          // The DSL fields (version/layout/queries/widgets/slicers/interactions)
+          // are spread to the TOP LEVEL of the context (not nested under `dsl`)
+          // so Python's DashboardArtifact.from_dict — which reads
+          // data.get("widgets") at the top level — can reconstruct the current
+          // dashboard for modify-mode REUSE. The previous `{dsl: {...}}` nesting
+          // made from_dict see widgets=None → current.widgets=[] →
+          // MergeScheduler dropped every prior widget on the next turn
+          // (agent-browser-confirmed data loss). Python also has a defensive
+          // unnest now, but keeping the wire shape flat matches the documented
+          // contract (design.md §dashboard_context.widgets, schemas.py).
+          if (!dsl) {
+            return {
+              dashboard_uid: uid,
+              conversation_id: conversationId,
+              version: null,
+              layout: [],
+              queries: {},
+              widgets: {},
+              slicers: [],
+              interactions: [],
             };
           }
+          const slimWidgets: Record<string, WidgetSpec> = {};
+          for (const [id, w] of Object.entries(dsl.widgets)) {
+            // Strip the render-only `layout` field (embedded by replaceDSL for
+            // the grid) so the backend payload matches contract §2.4 exactly.
+            // Also force data:null (slim, contract §5).
+            const { layout: _omit, data: _omitData, ...rest } = w as WidgetSpec & { layout?: unknown };
+            slimWidgets[id] = { ...rest, data: null };
+          }
+          const slimDsl: DashboardDSL = {
+            ...dsl,
+            widgets: slimWidgets,
+          };
           return {
             dashboard_uid: uid,
             conversation_id: conversationId,
-            widgets: widgetDict,
+            ...slimDsl,
           };
         },
 
@@ -831,17 +806,17 @@ const _store = _create()(
     }),
     {
       limit: 50,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       partialize: (state: any) => {
-        const { widgets, title, uid, isDirty } = state;
-        return { widgets, title, uid, isDirty };
+        const { dsl, slicerValues, widgetDataCache, title, uid, isDirty } = state;
+        return { dsl, slicerValues, widgetDataCache, title, uid, isDirty };
       },
     },
   ),
 );
 
 // ---------------------------------------------------------------------------
-// Typed export — IIFE creates a callable function with Zustand static methods.
-// The type annotation on the const provides overload resolution for selectors.
+// Typed export
 // ---------------------------------------------------------------------------
 
 type UseDashboardStore = {
@@ -877,51 +852,38 @@ export const useDashboardStore: UseDashboardStore = (() => {
 
 // ---------------------------------------------------------------------------
 // Async persistence — lives outside the store to keep actions synchronous.
-// Reads via getState(), writes via setState() — no immer draft context.
 // ---------------------------------------------------------------------------
 
 export async function saveDashboardDraft(): Promise<void> {
-  const { uid, title, widgets, isDirty, conversationId } = _store.getState() as DashboardState;
+  const { uid, title, dsl, isDirty, conversationId } = _store.getState() as DashboardState;
   if (!isDirty) return;
 
   // conversation-one-to-one: if the backend has already initialized a dashboard
-  // (conversationId is set from the conversation_id SSE frame) but uid is still
-  // empty (the frame's uid write is racing), SKIP api_create — it would create
-  // a SECOND orphan dashboard. The flush-on-stream-end subscription retries
-  // once the uid is backfilled.
+  // but uid is still empty, SKIP api_create — defer until uid is backfilled.
   if (!uid && conversationId) {
-    // Check if uid arrived in the meantime (race window)
     const settledUid = _store.getState().uid;
     if (settledUid) {
-      // uid arrived — re-call with the now-populated uid so the url/method below
-      // correctly take the api_update path.
       const state2 = _store.getState() as DashboardState;
-      return _saveDashboardDraftCore(settledUid, state2.title, state2.widgets, state2.conversationId);
+      return _saveDashboardDraftCore(settledUid, state2.title, state2.dsl, state2.conversationId);
     }
-    // uid not yet settled — defer this save (stream-end flush retries)
     return;
   }
 
-  return _saveDashboardDraftCore(uid, title, widgets, conversationId);
+  return _saveDashboardDraftCore(uid, title, dsl, conversationId);
 }
 
-// Core save logic, extracted so the race-guard above can call it with the
-// settled uid after the conversation_id frame backfills it.
 async function _saveDashboardDraftCore(
   uid: string,
   title: string,
-  widgets: DashboardState['widgets'],
+  dsl: DashboardDSL | null,
   conversationId: string,
 ): Promise<void> {
-  const schema = buildSchema(widgets);
+  const schema = buildDslSchema(dsl);
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 30000);
 
   try {
-    // task 3.6: uid is validated server-side (UUID v4) but encode here too
-    // so any unexpected value (e.g. a stale id with special chars from an
-    // older buggy build) cannot inject path segments.
     const url = uid
       ? `${ADMIN_BASE}/api_update/uid/${encodeURIComponent(uid)}`
       : `${ADMIN_BASE}/api_create`;
@@ -960,9 +922,6 @@ async function _saveDashboardDraftCore(
       useDashboardStore.setState({ error: result.info || '保存失败' });
     }
   } catch (e) {
-    // task 3.7: AbortController timeout (30s) → user-facing timeout message
-    // rather than a raw AbortError. Manual cancellation is not a path here
-    // (saveDashboardDraft has no external cancel caller), so abort == timeout.
     const isAbort = e instanceof DOMException && e.name === 'AbortError';
     useDashboardStore.setState({
       error: isAbort ? '保存超时，请重试' : (e instanceof Error ? e.message : '保存失败'),

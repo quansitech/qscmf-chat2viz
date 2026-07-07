@@ -6,6 +6,10 @@ use Illuminate\Database\Eloquent\Model;
 
 class Dashboard extends Model
 {
+    // Bare table name. The host's framework grammar adds the project-level
+    // DB_PREFIX (Laravel database.connections.*.prefix in v15, ThinkPHP
+    // DB_PREFIX in v13) exactly once at query-wrap time. See
+    // src/Support/Table.php for the raw-SQL path and the migration contract.
     protected $table = 'chat2viz_dashboards';
 
     protected $fillable = [

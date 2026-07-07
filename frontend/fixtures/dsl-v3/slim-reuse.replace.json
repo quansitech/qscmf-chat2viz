@@ -1,0 +1,70 @@
+{
+  "version": "3.0.0",
+  "title": "瘦态复用看板",
+  "layout": {
+    "regions": ["content"],
+    "slots": [
+      { "widget_id": "w1", "region": "content", "x": 0, "y": 0, "w": 12, "h": 6 },
+      { "widget_id": "w2", "region": "content", "x": 12, "y": 0, "w": 12, "h": 6 },
+      { "widget_id": "w3", "region": "content", "x": 0, "y": 6, "w": 24, "h": 6 }
+    ]
+  },
+  "queries": {
+    "q1": {
+      "query_id": "q1",
+      "raw_sql": "SELECT region, SUM(amount) AS amount FROM sales GROUP BY region",
+      "params": [],
+      "masked_columns": []
+    },
+    "q3": {
+      "query_id": "q3",
+      "raw_sql": "SELECT region, amount FROM sales WHERE amount > 5000 ORDER BY amount DESC",
+      "params": [],
+      "masked_columns": []
+    }
+  },
+  "widgets": {
+    "w1": {
+      "widget_id": "w1",
+      "plugin_type": "g2_chart",
+      "plugin_spec": { "type": "interval", "encode": { "x": "region", "y": "amount" } },
+      "query_id": "q1",
+      "region": "content",
+      "title": "区域柱状图（已更新）",
+      "data": { "rows": [{ "region": "华东", "amount": 9999 }], "columns": ["region", "amount"] },
+      "total": 1,
+      "truncated": false,
+      "status": "success",
+      "error_msg": ""
+    },
+    "w2": {
+      "widget_id": "w2",
+      "plugin_type": "g2_chart",
+      "plugin_spec": { "type": "point", "encode": { "x": "region", "y": "amount" } },
+      "query_id": "q1",
+      "region": "content",
+      "title": "散点图（SQL 未变，复用缓存）",
+      "data": null,
+      "total": 0,
+      "truncated": false,
+      "status": "success",
+      "error_msg": ""
+    },
+    "w3": {
+      "widget_id": "w3",
+      "plugin_type": "data_table",
+      "plugin_spec": { "columns": ["region", "amount"] },
+      "query_id": "q3",
+      "region": "content",
+      "title": "高销售额明细（新增，SQL 未变，复用缓存）",
+      "data": null,
+      "total": 0,
+      "truncated": false,
+      "status": "success",
+      "error_msg": ""
+    }
+  },
+  "slicers": [],
+  "interactions": [],
+  "answer": ""
+}

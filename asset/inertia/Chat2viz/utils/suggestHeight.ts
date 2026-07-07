@@ -1,22 +1,27 @@
 /**
  * Content-aware default grid height suggestion for a widget.
  *
- * react-grid-layout lays widgets out in `h` units of ROW_HEIGHT (60px). The
- * AI emits widgets with a flat default of h=6; this helper derives a more
- * fitting initial height from the spec/data so tables and dense charts aren't
- * cramped while single-value/small charts don't waste space.
+ * react-grid-layout lays widgets out in `h` units of ROW_HEIGHT (60px). This
+ * helper derives a fitting initial height from the plugin_type/data so tables
+ * and dense charts aren't cramped while single-value/small widgets don't waste
+ * space.
  *
- * Returned values always respect `minH` (the grid's minimum) and never shrink
- * an explicitly-large persisted layout below its current height — callers
- * merge the suggestion only when the widget has no meaningful layout yet.
+ * Dispatch is by `plugin_type` (contract §2.7): data_table scales with row
+ * count; stat_card/markdown use a compact fixed height; others (g2_chart/map)
+ * use the neutral default. The shared MIN_H = 3 constant is preserved.
  */
 
-/** Grid constants mirrored from PreviewPanel/DashboardView. */
+/** Grid constants mirrored from DashboardGrid. */
 export const MIN_H = 3;
 const DEFAULT_H = 6;
+const COMPACT_H = 3;
+const TABLE_MIN_H = 5;
+const TABLE_MAX_H = 16;
 
 export interface SuggestHeightInput {
-  /** g2_spec object (may be empty during placeholder phase). */
+  /** Widget plugin_type (contract §2.7). Drives the dispatch. */
+  pluginType?: string;
+  /** Legacy: g2_spec object (still accepted for the g2_chart path). */
   spec?: Record<string, unknown> | null;
   /** Current data rows (may be empty pre-fetch). */
   data?: unknown[] | null;
@@ -25,39 +30,44 @@ export interface SuggestHeightInput {
 }
 
 /**
- * Suggest a default `h` (in grid units) for a widget.
+ * Suggest a default `h` (in grid units) for a widget by plugin_type.
  *
  * Heuristics:
- *  - `type === 'table'`: scale with row count — header + ~1 unit per 4 rows,
- *    capped so very large tables still scroll internally.
- *  - other chart types with many data points: slightly taller to breathe.
- *  - empty spec/data (placeholder): the neutral DEFAULT_H.
+ *  - data_table: scale with row count — header + ~1 unit per 4 rows, clamped
+ *    to [TABLE_MIN_H, TABLE_MAX_H] so large tables scroll internally.
+ *  - stat_card / markdown: compact fixed height.
+ *  - g2_chart / map / unknown: neutral DEFAULT_H (charts with many rows breathe).
  */
 export function suggestHeight(input: SuggestHeightInput): number {
-  const spec = input.spec ?? null;
   const data = Array.isArray(input.data) ? input.data : [];
+  const pluginType = input.pluginType ?? inferPluginTypeFromSpec(input.spec);
 
-  const type = typeof spec?.type === 'string' ? (spec.type as string) : '';
-  const hasSpec =
-    spec !== null &&
-    (type !== '' ||
-      (typeof spec?.mark === 'string' && (spec.mark as string) !== '') ||
-      (Array.isArray(spec?.children) && (spec.children as unknown[]).length > 0));
-
-  // No spec yet (DASHBOARD_INIT placeholder) — neutral default.
-  if (!hasSpec) return DEFAULT_H;
-
-  if (type === 'table') {
-    // Table: header (~1) + 1 unit per ~4 visible rows, clamped to [5, 16].
+  if (pluginType === 'data_table') {
     const rows = data.length;
-    const h = Math.min(16, Math.max(5, 2 + Math.ceil(rows / 4)));
-    return h;
+    return Math.min(TABLE_MAX_H, Math.max(TABLE_MIN_H, 2 + Math.ceil(rows / 4)));
   }
 
-  // Charts with many records benefit from a bit more vertical room.
-  if (data.length > 50) return 8;
-  if (data.length > 0) return DEFAULT_H;
+  if (pluginType === 'stat_card' || pluginType === 'markdown') {
+    return COMPACT_H;
+  }
 
-  // Spec present but no data yet — keep the neutral default.
+  // g2_chart / map / unknown — neutral default with a slight bump for dense data.
+  if (data.length > 50) return 8;
   return DEFAULT_H;
+}
+
+/**
+ * Legacy compat: infer a plugin_type from a g2_spec when pluginType is absent.
+ * `type === 'table'` → data_table (the v2 table spec convention); any other
+ * valid spec → g2_chart; no spec → unknown (neutral default).
+ */
+function inferPluginTypeFromSpec(spec: Record<string, unknown> | null | undefined): string | undefined {
+  if (!spec || typeof spec !== 'object') return undefined;
+  const type = typeof spec.type === 'string' ? (spec.type as string) : '';
+  if (type === 'table') return 'data_table';
+  const hasSpec =
+    type !== '' ||
+    (typeof spec.mark === 'string' && (spec.mark as string) !== '') ||
+    (Array.isArray(spec.children) && (spec.children as unknown[]).length > 0);
+  return hasSpec ? 'g2_chart' : undefined;
 }

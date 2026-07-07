@@ -1,0 +1,26 @@
+{
+  "description": "A sequence of WIDGET_READY frames (§4 progressive) to be replayed one-by-one. Each entry is the `data` field of a `WIDGET_READY` SSE event.",
+  "frames": [
+    {
+      "event": "WIDGET_READY",
+      "widget_id": "w1",
+      "data": { "rows": [{ "region": "华东", "amount": 1000 }, { "region": "华北", "amount": 800 }], "columns": ["region", "amount"] },
+      "total": 2,
+      "truncated": false
+    },
+    {
+      "event": "WIDGET_READY",
+      "widget_id": "w2",
+      "data": { "rows": [{ "region": "华东", "amount": 1000 }, { "region": "华北", "amount": 800 }], "columns": ["region", "amount"] },
+      "total": 2,
+      "truncated": false
+    },
+    {
+      "event": "WIDGET_READY",
+      "widget_id": "w3",
+      "data": { "rows": [{ "month": "2026-01", "amount": 200 }], "columns": ["month", "amount"] },
+      "total": 1,
+      "truncated": false
+    }
+  ]
+}

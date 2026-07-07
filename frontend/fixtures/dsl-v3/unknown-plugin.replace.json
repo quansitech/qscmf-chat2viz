@@ -1,0 +1,36 @@
+{
+  "version": "3.0.0",
+  "title": "未知插件看板",
+  "layout": {
+    "regions": ["content"],
+    "slots": [
+      { "widget_id": "w1", "region": "content", "x": 0, "y": 0, "w": 24, "h": 6 }
+    ]
+  },
+  "queries": {
+    "q1": {
+      "query_id": "q1",
+      "raw_sql": "SELECT region, amount FROM sales",
+      "params": [],
+      "masked_columns": []
+    }
+  },
+  "widgets": {
+    "w1": {
+      "widget_id": "w1",
+      "plugin_type": "treemap",
+      "plugin_spec": { "type": "treemap", "encode": { "color": "region", "size": "amount" } },
+      "query_id": "q1",
+      "region": "content",
+      "title": "矩形树图（未注册插件，触发分阶段处理）",
+      "data": { "rows": [{ "region": "华东", "amount": 1000 }], "columns": ["region", "amount"] },
+      "total": 1,
+      "truncated": false,
+      "status": "success",
+      "error_msg": ""
+    }
+  },
+  "slicers": [],
+  "interactions": [],
+  "answer": "已生成矩形树图（treemap 类型未注册，前端按 §2.7 分阶段处理）。"
+}

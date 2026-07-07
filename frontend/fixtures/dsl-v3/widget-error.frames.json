@@ -1,0 +1,29 @@
+{
+  "description": "A sequence of WIDGET_ERROR frames carrying error_code (QUERY_TIMEOUT / SQL_VALIDATION_ERROR / DATABASE_ERROR) aligned to Python app/errors.py .code (contract §4 line 274). Each entry is the `data` field of a `WIDGET_ERROR` SSE event.",
+  "frames": [
+    {
+      "event": "WIDGET_ERROR",
+      "widget_id": "w1",
+      "error_msg": "查询超时，请稍后重试",
+      "error_code": "QUERY_TIMEOUT"
+    },
+    {
+      "event": "WIDGET_ERROR",
+      "widget_id": "w2",
+      "error_msg": "查询语句不合法，禁止非 SELECT 操作",
+      "error_code": "SQL_VALIDATION_ERROR"
+    },
+    {
+      "event": "WIDGET_ERROR",
+      "widget_id": "w3",
+      "error_msg": "数据源连接异常",
+      "error_code": "DATABASE_ERROR"
+    },
+    {
+      "event": "WIDGET_ERROR",
+      "widget_id": "w4",
+      "error_msg": "未知错误类型，error_code 未对齐 errors.py",
+      "error_code": "UNKNOWN_CODE_FUTURE"
+    }
+  ]
+}

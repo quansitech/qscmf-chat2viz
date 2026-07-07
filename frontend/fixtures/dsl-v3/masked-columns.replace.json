@@ -1,0 +1,36 @@
+{
+  "version": "3.0.0",
+  "title": "脱敏列看板",
+  "layout": {
+    "regions": ["content"],
+    "slots": [
+      { "widget_id": "w1", "region": "content", "x": 0, "y": 0, "w": 12, "h": 6 }
+    ]
+  },
+  "queries": {
+    "q1": {
+      "query_id": "q1",
+      "raw_sql": "SELECT customer_name, phone, amount FROM orders ORDER BY amount DESC",
+      "params": [],
+      "masked_columns": ["phone"]
+    }
+  },
+  "widgets": {
+    "w1": {
+      "widget_id": "w1",
+      "plugin_type": "data_table",
+      "plugin_spec": { "columns": ["customer_name", "phone", "amount"] },
+      "query_id": "q1",
+      "region": "content",
+      "title": "客户订单（手机号脱敏）",
+      "data": { "rows": [{ "customer_name": "张三", "phone": "138****8888", "amount": 1200 }], "columns": ["customer_name", "phone", "amount"] },
+      "total": 1,
+      "truncated": false,
+      "status": "success",
+      "error_msg": ""
+    }
+  },
+  "slicers": [],
+  "interactions": [],
+  "answer": "已生成脱敏看板，phone 列被脱敏处理。"
+}

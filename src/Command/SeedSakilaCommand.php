@@ -4,78 +4,118 @@ namespace Qscmf\Chat2Viz\Command;
 
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
-use Qscmf\Chat2Viz\Sakila\CommentAnnotator;
+use Qscmf\Chat2Viz\Sakila\SakilaDataLoader;
+use Qscmf\Chat2Viz\Sakila\SakilaProceduralObjects;
+use Qscmf\Chat2Viz\Sakila\SakilaSchema;
 use Qscmf\Chat2Viz\Sakila\SakilaTables;
-use Qscmf\Chat2Viz\Sakila\SqlTransformer;
+use Qscmf\Chat2Viz\Support\Table;
 
 /**
- * php artisan chat2viz:seed-sakila [--prefix=qs_] [--force]
+ * php artisan chat2viz:seed-sakila [--prefix=qs_] [--data-dir=...]
  *
- * 把 Sakila 16 张表灌到当前数据库（默认加 qs_ 前缀），含中文 COMMENT。
- * 幂等：执行前先 unseed 再 seed。可重复运行。
+ * 用 migration 语法（Schema 构建器 + DB::statement）把 Sakila 16 表 + 7 视图
+ * + 3 触发器 + 6 存储过程/函数跨库（mysql/pg）建到当前库，并灌入官方数据。
+ *
+ * 表名默认走 Table::physicalName()（= ENV('DB_PREFIX', '') . $bare），与
+ * Eloquent grammar 加的 prefix 同源；--prefix= 显式覆盖（沙箱内生效）。
+ * 幂等：执行前先 unseed。
+ *
+ * 建序：表 → 触发器 → 数据 → 外键 → 视图/SP。
+ *  触发器先于数据：film_text 由 ins_film 在灌 film 数据时填充；
+ *  外键后于数据：mysqldump 的 INSERT 顺序非拓扑（address 早于 city）。
  */
 class SeedSakilaCommand extends Command
 {
     protected $signature = 'chat2viz:seed-sakila
-        {--prefix= : 表前缀，默认读取 env DB_PREFIX 或 qs_}
-        {--skip-comments : 跳过中文 COMMENT 注入}
-        {--data-dir= : sakila-data.sql 和 sakila-schema.sql 所在目录}';
+        {--prefix= : 表前缀；留空则读取环境变量 DB_PREFIX}
+        {--data-dir= : sakila-data.sql 所在目录}';
 
-    protected $description = '将 Sakila 真实数据集载入当前数据库（含中文 COMMENT），用于 chat2viz 回归测试';
+    protected $description = '将 Sakila 真实数据集跨库（mysql/pg）载入当前数据库，用于 chat2viz 回归测试';
 
     public function handle(): int
     {
-        $prefix = $this->resolvePrefix();
+        $physical = $this->physicalResolver();
         $dataDir = $this->resolveDataDir();
+        $driver = DB::getDriverName();
 
-        $this->info(sprintf('准备载入 Sakila fixture（表前缀: %s）', $prefix));
-        $this->line(sprintf('数据目录: %s', $dataDir));
+        $this->info(sprintf('准备载入 Sakila fixture（驱动: %s，物理表名样例: %s）', $driver, $physical('film')));
 
-        if (!is_file($dataDir . '/sakila-schema.sql') || !is_file($dataDir . '/sakila-data.sql')) {
-            $this->error("Sakila SQL 文件未找到，请确认 data-dir 路径正确");
+        $dataFile = $dataDir . '/sakila-data.sql';
+        if (!is_file($dataFile)) {
+            $this->error("sakila-data.sql 未找到，请确认 data-dir 路径正确: $dataFile");
             return self::FAILURE;
         }
 
-        $unseed = $this->laravel->make(UnseedSakilaCommand::class);
-        $unseed->setLaravel($this->laravel);
-        $unseed->run(new \Symfony\Component\Console\Input\ArrayInput([
-            '--prefix' => $prefix,
-        ]), $this->output);
+        // 前缀沙箱：裸 SQL（DB::statement/unprepared）不会自动补 Laravel 连接
+        // 前缀，而 Schema 构建器会补——同一裸名在两条路径上结果不同。全程压制
+        // 框架前缀并改用物理名 resolver（qs_xxx），让 Schema 与裸 SQL 都落到 qs_xxx。
+        $conn = DB::connection();
+        $savedPrefix = $conn->getTablePrefix();
+        $conn->setTablePrefix('');
+        try {
+            // 幂等：先 unseed（在同一沙箱内，避免二次套娃）
+            $unseed = $this->laravel->make(UnseedSakilaCommand::class);
+            $unseed->setLaravel($this->laravel);
+            $unseed->run(new \Symfony\Component\Console\Input\ArrayInput([
+                '--prefix' => (string) $this->option('prefix'),
+            ]), $this->output);
 
-        $transformer = new SqlTransformer($prefix);
+            $schema = new SakilaSchema($physical);
+            $procedural = new SakilaProceduralObjects($physical);
+            $loader = new SakilaDataLoader($physical, $dataFile);
 
-        $this->info('1/3 载入 schema...');
-        $schemaSql = file_get_contents($dataDir . '/sakila-schema.sql');
-        $schemaTransformed = $transformer->transformSchema($schemaSql);
-        $this->executeSql($schemaTransformed);
+            $this->info('1/6 建表（Schema 构建器）...');
+            $schema->createTables();
 
-        $this->info('2/3 载入 data...');
-        $dataSql = file_get_contents($dataDir . '/sakila-data.sql');
-        $dataTransformed = $transformer->transformData($dataSql);
-        $this->executeSql($dataTransformed);
+            $this->info('2/6 建触发器（先于数据，以便 film_text 自动填充）...');
+            $procedural->createTriggers();
 
-        if (!$this->option('skip-comments')) {
-            $this->info('3/3 注入中文 COMMENT...');
-            $annotator = new CommentAnnotator($prefix);
-            $count = $annotator->applyAll();
-            $this->line("  共写入 $count 条 COMMENT（表 + 字段）");
+            $this->info('3/6 灌数据...');
+            $loader->load();
+
+            $this->info('4/6 加外键（后于数据，规避 INSERT 顺序）...');
+            $schema->addForeignKeys();
+
+            $this->info('5/6 建视图...');
+            $procedural->createViews();
+
+            $this->info('6/6 建存储过程/函数...');
+            try {
+                $procedural->createRoutines();
+            } catch (\Throwable $e) {
+                // 6 个 routine 无任何 NL2SQL demo 调用（见 SakilaProceduralObjects 注释），
+                // 仅为 Sakila 完整性保留；pg 的 PL/pgSQL 忠实改写可能因方言细节失败。
+                // 降级为警告不抛错——demo 关键产物（表/数据/外键/视图/触发器，步骤 1-5）
+                // 此时已全部建成。失败信息原样透出，便于按真实报错精修。
+                $this->warn('6/6 存储过程/函数建表未完全成功（不影响 demo）：' . $e->getMessage());
+            }
+
+            $this->newLine();
+            $this->info('Sakila fixture 载入完成，验证行数:');
+            $this->renderRowCountTable($physical);
+        } finally {
+            $conn->setTablePrefix($savedPrefix);
         }
-
-        $this->newLine();
-        $this->info('Sakila fixture 载入完成，验证行数:');
-        $this->renderRowCountTable($prefix);
 
         return self::SUCCESS;
     }
 
-    private function resolvePrefix(): string
+    /**
+     * 物理表名 resolver（裸 SQL/Schema 通用）。
+     *
+     * 显式 --prefix → prefix.bare（已是物理名，如 t_film）；
+     * 否则 Table::physicalName()（= ENV('DB_PREFIX', '') . $bare）。
+     * 配合前缀沙箱，Schema 构建器与裸 SQL 落到同一物理名。
+     *
+     * @return \Closure(string):string
+     */
+    private function physicalResolver(): \Closure
     {
-        $cli = $this->option('prefix');
-        if (is_string($cli) && $cli !== '') {
-            return $cli;
+        $explicit = $this->option('prefix');
+        if (is_string($explicit) && $explicit !== '') {
+            return static fn (string $bare): string => $explicit . $bare;
         }
-        $env = env('DB_PREFIX', 'qs_');
-        return is_string($env) ? $env : 'qs_';
+        return static fn (string $bare): string => Table::physicalName($bare);
     }
 
     private function resolveDataDir(): string
@@ -87,24 +127,11 @@ class SeedSakilaCommand extends Command
         return realpath(__DIR__ . '/../Sakila/data') ?: __DIR__ . '/../Sakila/data';
     }
 
-    private function executeSql(string $sql): void
-    {
-        DB::statement('SET FOREIGN_KEY_CHECKS=0');
-        DB::statement('SET UNIQUE_CHECKS=0');
-        DB::statement('SET SQL_MODE="NO_AUTO_VALUE_ON_ZERO"');
-        try {
-            DB::unprepared($sql);
-        } finally {
-            DB::statement('SET FOREIGN_KEY_CHECKS=1');
-            DB::statement('SET UNIQUE_CHECKS=1');
-        }
-    }
-
-    private function renderRowCountTable(string $prefix): void
+    private function renderRowCountTable(\Closure $resolver): void
     {
         $rows = [];
         foreach (SakilaTables::DROP_ORDER as $table) {
-            $fullName = $prefix . $table;
+            $fullName = $resolver($table);
             try {
                 $count = DB::table($fullName)->count();
                 $rows[] = [$fullName, number_format($count)];

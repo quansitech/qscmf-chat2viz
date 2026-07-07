@@ -35,6 +35,7 @@ class DashboardDeleteTest extends TestCase
             public function getVersions(string $uid, int $page = 1, int $perPage = 20): array { return []; }
             public function updateWidgetSql(string $uid, string $widgetId, string $sql): void {}
             public function executeRawQuery(string $sql): array { return []; }
+            public function executeBoundQuery(string $sql, array $params = []): array { return []; }
         };
     }
 

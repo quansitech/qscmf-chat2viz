@@ -1,6 +1,7 @@
 import { useRef, useCallback } from 'react';
 import { useDashboardStore, generateId } from '../store/dashboardStore';
-import type { Widget, ActionCall, ActionCallResult } from '../store/dashboardStore';
+import type { ActionCall, ActionCallResult } from '../store/dashboardStore';
+import { isDashboardReplaceV3 } from '../types/dsl';
 import { parseSseEvent, type SseEvent } from '../sse-parser';
 import { planActionCall, findInProgressToolStep } from '../utils/aiSteps';
 
@@ -362,26 +363,21 @@ function dispatchEvent(event: SseEvent | null): boolean {
 
   switch (event.type) {
     case 'DASHBOARD_REPLACE': {
-      // Whole-tree replace (contract §2). The store action clears the old
-      // widgets and rebuilds from the payload, reusing cached data for any
-      // widget whose data is null (slim). MUST NOT set global store.error.
-      const widgetsField = event.data.widgets;
-      const widgetMap = (widgetsField !== null && typeof widgetsField === 'object' && !Array.isArray(widgetsField))
-        ? widgetsField as Record<string, Record<string, unknown>>
-        : {};
-
-      const layoutField = event.data.layout;
-      const layout = Array.isArray(layoutField)
-        ? layoutField as Array<{ i: string; x: number; y: number; w: number; h: number }>
-        : [];
-
-      useDashboardStore.getState().replaceDashboard(layout, widgetMap);
+      // Whole-tree replace (contract §4.1 v3.0.0). Guard the payload with
+      // isDashboardReplaceV3 — malformed top-level payloads write store.error
+      // instead of polluting the AST. replaceDSL applies §4.1 slim cache reuse
+      // + §4.2 no-flicker internally.
+      if (!isDashboardReplaceV3(event.data)) {
+        useDashboardStore.getState().setError('收到的仪表盘数据格式不合法（缺少 version/layout/queries/widgets）');
+        break;
+      }
+      useDashboardStore.getState().replaceDSL(event.data);
 
       // First real frame — flip 'submitted' → 'streaming'.
       useDashboardStore.getState().markStreaming();
 
       // The DASHBOARD_REPLACE frame also carries the LLM answer text (contract
-      // §2 answer field). Apply it as the assistant message content.
+      // §4.1 answer field). Apply it as the assistant message content.
       const answer = str(event.data.answer);
       if (answer !== '') {
         useDashboardStore.getState().appendAnswer(answer);
@@ -399,11 +395,32 @@ function dispatchEvent(event: SseEvent | null): boolean {
       break;
     }
 
+    case 'WIDGET_READY': {
+      // §4 progressive pre-render: a single widget's data landed before the
+      // round-end whole-tree DASHBOARD_REPLACE. updateWidgetDataCache renders
+      // it immediately; the subsequent REPLACE applies the §4.2 no-flicker
+      // rule (skip store write when rows reference is identical).
+      const widgetId = str(event.data.widget_id);
+      if (widgetId) {
+        const dataField = event.data.data;
+        const total = typeof event.data.total === 'number' ? (event.data.total as number) : undefined;
+        const truncated = typeof event.data.truncated === 'boolean' ? (event.data.truncated as boolean) : undefined;
+        useDashboardStore.getState().updateWidgetDataCache(widgetId, dataField as { rows?: Record<string, unknown>[] } | null, { total, truncated });
+        clearWidgetLoading(widgetId);
+      }
+      useDashboardStore.getState().markStreaming();
+      break;
+    }
+
     case 'WIDGET_ERROR': {
       const widgetId = str(event.data.widget_id) || str((event.data as { id?: string }).id);
       if (widgetId) {
         // Local degradation: only this widget → error. MUST NOT set store.error.
-        useDashboardStore.getState().setWidgetError(widgetId);
+        // §4 line 274: forward error_code (aligned to errors.py .code) to the
+        // store so the UI can differentiate timeout vs validation vs DB error.
+        const errorCode = str(event.data.error_code) || undefined;
+        const errorMsg = str(event.data.error_msg) || undefined;
+        useDashboardStore.getState().setWidgetError(widgetId, errorCode, errorMsg);
         clearWidgetLoading(widgetId);
       }
       runWatchdog();
@@ -603,6 +620,3 @@ const TOOL_LABELS: Record<string, string> = {
 function getToolLabel(actionType: string): string {
   return TOOL_LABELS[actionType] || '执行操作...';
 }
-
-// Re-export Widget so existing imports of the type from this module still work.
-export type { Widget };

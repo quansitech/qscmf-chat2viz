@@ -1,0 +1,98 @@
+{
+  "version": "3.0.0",
+  "title": "销售看板",
+  "layout": {
+    "regions": ["header", "content", "footer"],
+    "slots": [
+      { "widget_id": "w1", "region": "header", "x": 0, "y": 0, "w": 8, "h": 1 },
+      { "widget_id": "w2", "region": "header", "x": 8, "y": 0, "w": 8, "h": 1 },
+      { "widget_id": "w3", "region": "content", "x": 0, "y": 0, "w": 12, "h": 6 },
+      { "widget_id": "w4", "region": "content", "x": 12, "y": 0, "w": 12, "h": 6 },
+      { "widget_id": "w5", "region": "footer", "x": 0, "y": 0, "w": 24, "h": 3 }
+    ]
+  },
+  "queries": {
+    "q1": {
+      "query_id": "q1",
+      "raw_sql": "SELECT region, SUM(amount) AS amount FROM sales GROUP BY region",
+      "params": [],
+      "masked_columns": []
+    },
+    "q2": {
+      "query_id": "q2",
+      "raw_sql": "SELECT month, SUM(amount) AS amount FROM sales GROUP BY month ORDER BY month",
+      "params": [],
+      "masked_columns": []
+    }
+  },
+  "widgets": {
+    "w1": {
+      "widget_id": "w1",
+      "plugin_type": "stat_card",
+      "plugin_spec": { "field": "amount", "label": "总销售额", "formatter": "currency" },
+      "query_id": "q1",
+      "region": "header",
+      "title": "总销售额",
+      "data": { "rows": [{ "region": "华东", "amount": 1234567 }], "columns": ["region", "amount"] },
+      "total": 1,
+      "truncated": false,
+      "status": "success",
+      "error_msg": ""
+    },
+    "w2": {
+      "widget_id": "w2",
+      "plugin_type": "stat_card",
+      "plugin_spec": { "field": "amount", "label": "区域数", "formatter": "number" },
+      "query_id": "q1",
+      "region": "header",
+      "title": "活跃区域",
+      "data": { "rows": [{ "region": "华东", "amount": 1234567 }, { "region": "华北", "amount": 987654 }], "columns": ["region", "amount"] },
+      "total": 2,
+      "truncated": false,
+      "status": "success",
+      "error_msg": ""
+    },
+    "w3": {
+      "widget_id": "w3",
+      "plugin_type": "g2_chart",
+      "plugin_spec": { "type": "interval", "encode": { "x": "region", "y": "amount" } },
+      "query_id": "q1",
+      "region": "content",
+      "title": "区域销售柱状图",
+      "data": { "rows": [{ "region": "华东", "amount": 1234567 }, { "region": "华北", "amount": 987654 }], "columns": ["region", "amount"] },
+      "total": 2,
+      "truncated": false,
+      "status": "success",
+      "error_msg": ""
+    },
+    "w4": {
+      "widget_id": "w4",
+      "plugin_type": "data_table",
+      "plugin_spec": { "columns": ["region", "amount"] },
+      "query_id": "q2",
+      "region": "content",
+      "title": "月度趋势明细",
+      "data": { "rows": [{ "month": "2026-01", "amount": 200000 }, { "month": "2026-02", "amount": 220000 }], "columns": ["month", "amount"] },
+      "total": 2,
+      "truncated": false,
+      "status": "success",
+      "error_msg": ""
+    },
+    "w5": {
+      "widget_id": "w5",
+      "plugin_type": "markdown",
+      "plugin_spec": { "content": "## 数据说明\n\n本看板数据为示例数据，**仅供演示**。" },
+      "query_id": "q1",
+      "region": "footer",
+      "title": "数据说明",
+      "data": null,
+      "total": 0,
+      "truncated": false,
+      "status": "success",
+      "error_msg": ""
+    }
+  },
+  "slicers": [],
+  "interactions": [],
+  "answer": "已生成销售看板，包含区域 KPI、柱状图与明细表。"
+}

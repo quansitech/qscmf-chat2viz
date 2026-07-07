@@ -58,7 +58,7 @@ class SqlValidator
             // Block UNION combined with dangerous targets (already checked above
             // for INFORMATION_SCHEMA and INTO OUTFILE, but re-check here to be
             // explicit and provide a precise error message).
-            if (preg_match('/\bINFORMATION_SCHEMA\b/i', $normalized)
+            if (self::referencesSystemSchema($normalized)
                 || preg_match('/\b(INTO\s+OUTFILE|INTO\s+DUMPFILE)\b/i', $normalized)
                 || preg_match('/\b(LOAD_FILE|BENCHMARK|SLEEP)\s*\(/i', $normalized)) {
                 throw new \InvalidArgumentException('UNION with dangerous function/schema is not allowed');
@@ -76,33 +76,80 @@ class SqlValidator
             throw new \InvalidArgumentException('Disallowed function in query');
         }
 
-        // 7. Reject INFORMATION_SCHEMA access (schema/table enumeration, privilege escalation)
-        if (preg_match('/\bINFORMATION_SCHEMA\b/i', $normalized)) {
-            throw new \InvalidArgumentException('INFORMATION_SCHEMA access is not allowed');
+        // 7. Reject system-schema access (schema/table enumeration, privilege
+        //    escalation, credential exfiltration). INFORMATION_SCHEMA + mysql.*
+        //    (user/password-hash tables) + sys.* + performance_schema.* are all
+        //    blocked unconditionally — these are never legitimate in a widget
+        //    data query.
+        if (self::referencesSystemSchema($normalized)) {
+            throw new \InvalidArgumentException('System schema access is not allowed');
         }
 
         // 8. Allow subqueries in FROM clause (derived tables) — LLMs use them
         //    for pivoting and multi-metric aggregation (e.g. SELECT ... FROM
         //    (SELECT metric, value FROM ...) AS t). The real exfiltration risk
-        //    (information_schema, other DBs) is already blocked by rules 7 and 6.
-        //    INFORMATION_SCHEMA inside a subquery is explicitly caught here too.
+        //    (information_schema, other DBs) is already blocked by rule 7.
+        //    System-schema inside a subquery is explicitly caught here too.
         if (preg_match('/\bFROM\s*\(/i', $normalized)
-            && preg_match('/\bINFORMATION_SCHEMA\b/i', $normalized)) {
-            throw new \InvalidArgumentException('INFORMATION_SCHEMA in subquery is not allowed');
+            && self::referencesSystemSchema($normalized)) {
+            throw new \InvalidArgumentException('System schema in subquery is not allowed');
         }
     }
 
     /**
-     * Append a LIMIT clause if none exists.
+     * Detect references to sensitive system schemas in a normalized SQL string.
      *
-     * @param int $maxRows Maximum rows to return when no LIMIT is present
-     * @return string The SQL with a guaranteed LIMIT clause
+     * Matches: INFORMATION_SCHEMA, mysql.*, sys.*, performance_schema.*
+     * (word-boundary + optional dot qualifier, case-insensitive).
+     */
+    private static function referencesSystemSchema(string $normalized): bool
+    {
+        return (bool) preg_match(
+            '/\b(INFORMATION_SCHEMA|MYSQL|SYS|PERFORMANCE_SCHEMA)\b\s*\./i',
+            $normalized
+        );
+    }
+
+    /**
+     * Ensure a LIMIT clause is present and capped at $maxRows.
+     *
+     * - No LIMIT → append `LIMIT $maxRows`.
+     * - `LIMIT n` where n > $maxRows → replace n with $maxRows.
+     * - `LIMIT offset, count` where count > $maxRows → cap count.
+     * - LIMIT already ≤ $maxRows → unchanged.
+     *
+     * @param int $maxRows Maximum rows to return (default 1000)
+     * @return string The SQL with a guaranteed, capped LIMIT clause
      */
     public static function enforceLimit(string $sql, int $maxRows = 1000): string
     {
-        if (!preg_match('/\bLIMIT\s+\d+/i', $sql)) {
-            return rtrim($sql, '; ') . " LIMIT {$maxRows}";
+        // Two-arg form: `LIMIT offset, count` — cap the count.
+        if (preg_match('/\bLIMIT\s+(\d+)\s*,\s*(\d+)\s*$/i', $sql, $m)) {
+            $count = (int) $m[2];
+            if ($count > $maxRows) {
+                return preg_replace(
+                    '/\bLIMIT\s+\d+\s*,\s*\d+\s*$/i',
+                    "LIMIT {$m[1]}, {$maxRows}",
+                    $sql
+                ) ?? $sql;
+            }
+            return $sql;
         }
-        return $sql;
+
+        // One-arg form: `LIMIT n`.
+        if (preg_match('/\bLIMIT\s+(\d+)\s*$/i', $sql, $m)) {
+            $n = (int) $m[1];
+            if ($n > $maxRows) {
+                return preg_replace(
+                    '/\bLIMIT\s+\d+\s*$/i',
+                    "LIMIT {$maxRows}",
+                    $sql
+                ) ?? $sql;
+            }
+            return $sql;
+        }
+
+        // No LIMIT → append.
+        return rtrim($sql, '; ') . " LIMIT {$maxRows}";
     }
 }

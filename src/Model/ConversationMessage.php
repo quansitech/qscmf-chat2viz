@@ -6,6 +6,8 @@ use Illuminate\Database\Eloquent\Model;
 
 class ConversationMessage extends Model
 {
+    // Bare table name. The host's framework grammar adds the project-level
+    // DB_PREFIX exactly once at query-wrap time. See src/Support/Table.php.
     protected $table = 'chat2viz_conversation_messages';
 
     public $timestamps = false;

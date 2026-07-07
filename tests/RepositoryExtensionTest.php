@@ -165,8 +165,8 @@ class RepositoryExtensionTest extends TestCase
         $content = file_get_contents($migrationFile);
 
         // Verify dashboard_uid is NOT in conversation_messages table (derived via JOIN)
-        $convMessagesStart = strpos($content, 'qs_chat2viz_conversation_messages');
-        $convMessagesEnd = strpos($content, 'idx_conv_created', $convMessagesStart);
+        $convMessagesStart = strpos($content, "Table::name('chat2viz_conversation_messages')");
+        $convMessagesEnd = strpos($content, "'idx_msg_conv_created'", $convMessagesStart);
         $this->assertNotFalse($convMessagesStart, 'conversation_messages table definition not found');
 
         $convMessagesBlock = substr($content, $convMessagesStart, $convMessagesEnd - $convMessagesStart);
@@ -179,8 +179,8 @@ class RepositoryExtensionTest extends TestCase
         $migrationFile = dirname(__DIR__) . '/database/migrations/2026_06_08_100000_create_chat2viz_dashboard_tables.php';
         $content = file_get_contents($migrationFile);
 
-        $blockStart = strpos($content, 'qs_chat2viz_conversation_messages');
-        $blockEnd = strpos($content, 'idx_conv_created', $blockStart);
+        $blockStart = strpos($content, "Table::name('chat2viz_conversation_messages')");
+        $blockEnd = strpos($content, "'idx_msg_conv_created'", $blockStart);
         $this->assertNotFalse($blockStart, 'conversation_messages table not found');
 
         $block = substr($content, $blockStart, $blockEnd - $blockStart);

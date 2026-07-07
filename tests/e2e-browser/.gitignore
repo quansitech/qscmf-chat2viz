@@ -1,0 +1,2 @@
+# E2E artifacts（截图/录屏/DOM/console/network）— 本地产物，不入 git
+artifacts/

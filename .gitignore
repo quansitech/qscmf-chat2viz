@@ -28,6 +28,12 @@ asset/chat2viz-dashboard/*.css.map
 # Playwright/test runner output (regenerated each run)
 asset/chat2viz-dashboard/test-results/
 
+# E2E run artifacts (screenshots, recordings, DOM/console dumps, run reports)
+# 这些是测试运行产物，含本地主机名/内网 IP/DB 名等环境信息，不入库。
+# 入库的测试资产放在 specs/ lib/ deterministic/，不含运行时 metadata。
+tests/e2e/artifacts/
+tests/e2e-browser/artifacts/
+
 # Frontend dependencies
 frontend/node_modules/
 frontend/package-lock.json

@@ -272,4 +272,77 @@ class SqlValidatorTest extends TestCase
         );
         $this->assertTrue(true);
     }
+
+    // =========================================================================
+    // System-schema access — must be blocked (rule 7, code-review H5)
+    // =========================================================================
+
+    public function testRejectsMysqlSchemaAccess(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('System schema');
+        SqlValidator::validateSelectOnly("SELECT user, host FROM mysql.user");
+    }
+
+    public function testRejectsSysSchemaAccess(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        SqlValidator::validateSelectOnly("SELECT * FROM sys.schema_table_statistics");
+    }
+
+    public function testRejectsPerformanceSchemaAccess(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        SqlValidator::validateSelectOnly("SELECT * FROM performance_schema.threads");
+    }
+
+    public function testRejectsUnionWithMysqlSchema(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        SqlValidator::validateSelectOnly(
+            "SELECT id FROM qs_film UNION SELECT password FROM mysql.user"
+        );
+    }
+
+    public function testRejectsSystemSchemaInSubquery(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        SqlValidator::validateSelectOnly(
+            "SELECT t.* FROM (SELECT user FROM mysql.user) AS t"
+        );
+    }
+
+    // =========================================================================
+    // enforceLimit — cap existing LIMIT (code-review H3/MEDIUM)
+    // =========================================================================
+
+    public function testEnforceLimitAppendsWhenAbsent(): void
+    {
+        $out = SqlValidator::enforceLimit('SELECT * FROM t', 1000);
+        $this->assertStringEndsWith('LIMIT 1000', $out);
+    }
+
+    public function testEnforceLimitCapsOversizedSingleArg(): void
+    {
+        $out = SqlValidator::enforceLimit('SELECT * FROM t LIMIT 999999', 1000);
+        $this->assertSame('SELECT * FROM t LIMIT 1000', $out);
+    }
+
+    public function testEnforceLimitPreservesSmallLimit(): void
+    {
+        $out = SqlValidator::enforceLimit('SELECT * FROM t LIMIT 100', 1000);
+        $this->assertSame('SELECT * FROM t LIMIT 100', $out);
+    }
+
+    public function testEnforceLimitCapsTwoArgFormCount(): void
+    {
+        $out = SqlValidator::enforceLimit('SELECT * FROM t LIMIT 0, 999999', 1000);
+        $this->assertSame('SELECT * FROM t LIMIT 0, 1000', $out);
+    }
+
+    public function testEnforceLimitPreservesSmallTwoArg(): void
+    {
+        $out = SqlValidator::enforceLimit('SELECT * FROM t LIMIT 10, 50', 1000);
+        $this->assertSame('SELECT * FROM t LIMIT 10, 50', $out);
+    }
 }

@@ -20,6 +20,13 @@ class CreateChat2vizDashboardTables extends Migration
      *
      * 3. Conversations are tracked in qs_chat2viz_conversations (linked by dashboard_uid),
      *    not via a conversation_id column on dashboards.
+     *
+     * Cross-version: the qs_ prefix is applied by the host's framework grammar
+     * (Laravel database.connections.*.prefix in v15, ThinkPHP DB_PREFIX in v13)
+     * exactly once. Migrations and Eloquent models use bare names so the
+     * framework prepends the project-level DB_PREFIX a single time. The raw-SQL
+     * path (Table::physicalName) follows the same project-level prefix; see
+     * src/Support/Table.php.
      */
 
     public function beforeCmmUp()
@@ -39,7 +46,7 @@ class CreateChat2vizDashboardTables extends Migration
      */
     public function up()
     {
-        Schema::create('qs_chat2viz_dashboards', function (Blueprint $table) {
+        Schema::create('chat2viz_dashboards', function (Blueprint $table) {
             $table->bigIncrements('id')->comment('主键 ID');
             $table->string('uid', 36)->unique()->comment('UUID v4，URL 友好的短标识符');
             $table->string('title', 255)->default('')->comment('看板标题');
@@ -58,7 +65,7 @@ class CreateChat2vizDashboardTables extends Migration
             $table->collation = 'utf8mb4_general_ci';
         });
 
-        Schema::create('qs_chat2viz_dashboard_versions', function (Blueprint $table) {
+        Schema::create('chat2viz_dashboard_versions', function (Blueprint $table) {
             $table->bigIncrements('id')->comment('主键 ID');
             $table->unsignedBigInteger('dashboard_id')->comment('所属看板 ID（关联 qs_chat2viz_dashboards.id）');
             $table->integer('version')->default(1)->comment('版本号，同一看板下从 1 递增');
@@ -76,7 +83,7 @@ class CreateChat2vizDashboardTables extends Migration
             $table->collation = 'utf8mb4_general_ci';
         });
 
-        Schema::create('qs_chat2viz_conversations', function (Blueprint $table) {
+        Schema::create('chat2viz_conversations', function (Blueprint $table) {
             $table->bigIncrements('id')->comment('主键 ID');
             $table->string('dashboard_uid', 36)->comment('关联看板 UID（qs_chat2viz_dashboards.uid）');
             $table->string('title', 255)->default('')->comment('会话标题');
@@ -90,7 +97,7 @@ class CreateChat2vizDashboardTables extends Migration
             $table->collation = 'utf8mb4_general_ci';
         });
 
-        Schema::create('qs_chat2viz_conversation_messages', function (Blueprint $table) {
+        Schema::create('chat2viz_conversation_messages', function (Blueprint $table) {
             $table->bigIncrements('id')->comment('主键 ID');
             $table->unsignedBigInteger('conversation_id')->comment('会话 ID，关联 qs_chat2viz_conversations.id');
             $table->enum('role', ['user', 'assistant', 'system'])->comment('消息角色：user-用户提问，assistant-助手回复，system-系统提示');
@@ -104,7 +111,10 @@ class CreateChat2vizDashboardTables extends Migration
             $table->timestamp('created_at')->useCurrent()->comment('创建时间');
             $table->timestamp('updated_at')->useCurrent()->useCurrentOnUpdate()->comment('更新时间');
 
-            $table->index(['conversation_id', 'created_at'], 'idx_conv_created');
+            // Index name carries the table segment so it cannot collide with the
+            // same-named index on feedback_records under PostgreSQL (schema-scoped
+            // global uniqueness, error 42P07).
+            $table->index(['conversation_id', 'created_at'], 'idx_msg_conv_created');
 
             $table->charset = 'utf8mb4';
             $table->collation = 'utf8mb4_general_ci';
@@ -118,10 +128,10 @@ class CreateChat2vizDashboardTables extends Migration
      */
     public function down()
     {
-        Schema::dropIfExists('qs_chat2viz_conversation_messages');
-        Schema::dropIfExists('qs_chat2viz_conversations');
-        Schema::dropIfExists('qs_chat2viz_dashboard_versions');
-        Schema::dropIfExists('qs_chat2viz_dashboards');
+        Schema::dropIfExists('chat2viz_conversation_messages');
+        Schema::dropIfExists('chat2viz_conversations');
+        Schema::dropIfExists('chat2viz_dashboard_versions');
+        Schema::dropIfExists('chat2viz_dashboards');
     }
 
     public function afterCmmUp()

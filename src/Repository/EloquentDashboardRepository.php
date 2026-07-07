@@ -290,4 +290,13 @@ class EloquentDashboardRepository implements DashboardRepositoryInterface
         $results = DB::select($sql);
         return array_map(fn ($row) => (array) $row, $results);
     }
+
+    public function executeBoundQuery(string $sql, array $params = []): array
+    {
+        // DB::select accepts named-bindings `[':name' => $value]` and prepares
+        // via PDO (ATTR_EMULATE_PREPARES=false on the connection). Matches the
+        // pattern already used by UnseedSakilaCommand (DB::selectOne with bindings).
+        $results = DB::select($sql, $params);
+        return array_map(fn ($row) => (array) $row, $results);
+    }
 }
